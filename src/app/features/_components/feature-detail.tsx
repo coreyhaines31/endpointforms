@@ -31,7 +31,18 @@ export function featureMetadata(feature: Feature): Metadata {
   };
 }
 
-export function FeatureDetail({ feature }: { feature: Feature }) {
+type FeatureDetailProps = {
+  feature: Feature;
+  /**
+   * The page's product mockup. Every one is drawn, not screenshotted, and every
+   * one says so in its own frame — see src/components/mockup/frame.tsx. The
+   * prose above and below carries the same point, so a reader who skips the
+   * mockup entirely loses nothing.
+   */
+  mockup?: React.ReactNode;
+};
+
+export function FeatureDetail({ feature, mockup }: FeatureDetailProps) {
   return (
     <main className="flex flex-1 flex-col pb-[clamp(4rem,9vw,7rem)]">
       <Container className="pt-8">
@@ -77,6 +88,10 @@ export function FeatureDetail({ feature }: { feature: Feature }) {
           </div>
         </div>
       </Container>
+
+      {mockup ? (
+        <Container className="mt-[clamp(2.5rem,5vw,3.5rem)]">{mockup}</Container>
+      ) : null}
 
       <Container className="mt-[clamp(3.5rem,7vw,5rem)]">
         <h2 className="text-h3 sm:text-h2">How it works</h2>

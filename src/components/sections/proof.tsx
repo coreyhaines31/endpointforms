@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Container } from "@/components/container";
+import { IllustrationTag } from "@/components/mockup/frame";
 import { cn } from "@/lib/utils";
 
 type Metric = "completion" | "yield";
@@ -75,9 +76,13 @@ export function Proof() {
 
         <div className="mt-10 border border-border bg-card">
           <div className="flex flex-col gap-4 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-            <p className="font-mono text-label uppercase text-muted-foreground">
-              Hindsight split test · Demo request form · 30 days
-            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="font-mono text-label uppercase text-muted-foreground">
+                Hindsight split test · Demo request form · 30 days
+              </p>
+              {/* Same stamp every mockup on the site carries. */}
+              <IllustrationTag />
+            </div>
 
             <div
               role="group"

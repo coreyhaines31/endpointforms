@@ -1,5 +1,3 @@
-import { cn } from "@/lib/utils";
-
 export type Origin = "human" | "agent" | "unverified";
 
 // Shape, label and colour ship together — always. Colour alone cannot carry three
@@ -30,11 +28,10 @@ type ProvenanceChipProps = {
 export function ProvenanceChip({ origin, className }: ProvenanceChipProps) {
   return (
     <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 font-mono text-label uppercase",
-        styles[origin],
-        className,
-      )}
+      // Deliberately not cn(): twMerge classifies `text-label` as a colour and
+      // drops it next to `text-human` / `text-agent` / `text-bot`, which is how
+      // the stamp loses its size. See src/components/prose.tsx.
+      className={`inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 font-mono text-label uppercase ${styles[origin]} ${className ?? ""}`}
     >
       <svg viewBox="0 0 10 10" className="size-2.5 shrink-0 fill-current" aria-hidden="true">
         {glyphs[origin]}
