@@ -241,7 +241,7 @@ and reframe rather than argue — the research shows this audience can smell a d
 | **"The last cheap Typeform alternative I tried was broken."** | Fair, and that specific graveyard is why we're not competing on price. Three separate people in our research abandoned a cheaper clone over bugs and downtime — that's the failure mode we're most afraid of. It's also why the core is open source: you can read it, host it, and leave with your data if we let you down. | "Incredibly buggy… doesn't reflect changes in real time." · "Tried too hard to make it work but finally gave up." · "I've had a form there for 48 hours and most of the time the form is down." The corpus taught us this lesson at someone else's expense |
 | **"I've built my whole workflow around Jotform/Gravity Forms."** | Then don't rip it out. Point one form at us — the one your paid traffic hits — and leave everything else where it is. If Yield doesn't tell you something your current stack can't, you've lost a Tuesday afternoon. | "I still use Jotform since it's been reliable for me… I built my workflow around them." Inertia is real and arguing with it loses. The wedge is one form, not a migration |
 | **"Isn't open source just harder to run and less secure?"** | Harder to run, historically yes — the corpus is brutal about how painful OSS form builders are to deploy, and one-command self-hosting is a promise we're making because of it. Less secure, no: you can read exactly how Origin is determined and where submissions are stored, which is more than any hosted competitor offers. Most people should use the hosted version anyway. | "Deploying them is much harder than signing up for their managed version." · "Only very technical users self-host apps." · Counterweight: "It's way easier to trust something open source in this regard" |
-| **"Aren't you just Reform.app or Heyflow with extra steps?"** | They're the closest neighbors and both are good. Heyflow sends server-side conversions — but it sends "a lead," not "a lead worth $4,200," and it optimizes funnels on completion like everyone else. Reform does qualification routing and enrichment beautifully, upstream of the submit button. Neither one takes the downstream outcome and re-ranks your variants with it. That's the whole difference and it's a narrow one — we'd rather state it narrowly and be right. | Landscape research: Heyflow does CAPI but on lead events, ROASForm tracks funnel-step movement, not outcomes. Nobody scores variants on downstream value |
+| **"Aren't you just Reform.app or Heyflow with extra steps?"** | They're the closest neighbors and both are good. Heyflow sends server-side conversions with a real value on them — that claim of ours was wrong and is retired (see `13-competitive-verification.md`). The difference is that their value is scored at submit time from the lead's own answers and never revised by the outcome, and it optimizes funnels on completion. Reform does qualification routing and enrichment beautifully, upstream of the submit button. Neither one takes the downstream outcome and re-ranks your variants with it. That's the whole difference and it's a narrow one — we'd rather state it narrowly and be right. | Landscape research: Heyflow does CAPI but on lead events, ROASForm tracks funnel-step movement, not outcomes. Nobody scores variants on downstream value |
 
 **Anti-personas — who we tell to go elsewhere, by name:**
 casual/one-off form users (Tally, and we'll say so), survey researchers (Perspective, Typeform),
@@ -307,9 +307,13 @@ once as evidence that team-level access shouldn't be an enterprise upsell — do
 > a genuinely serious paid-acquisition tool and the closest thing to a peer we have on
 > tracking.
 >
-> **What changes:** Heyflow sends the ad platform *a lead*. It doesn't send *a lead worth
-> $4,200*, and it doesn't bring the answer back to the form. Its funnels are still optimized
-> on step completion, which is the same vanity metric in a nicer suit.
+> **What changes:** Heyflow *does* send a conversion value — corrected 2026-08-28, see
+> `13-competitive-verification.md`. But that value is a guess made at submit time from what the
+> lead said about itself, and it is never corrected by what the lead turned out to be worth.
+> Heyflow frames this as a *replacement* for outcome feedback, calling offline imports "stale."
+> The answer never comes back to the form: their own Google Ads doc has no value field at all
+> and tells customers that "in most lead generation cases... each lead should have the same
+> value."
 
 ### Reform.app
 
