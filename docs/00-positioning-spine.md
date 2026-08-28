@@ -90,7 +90,14 @@ These are what make it *better*, not what it *is*. They belong on feature pages 
 argument essay — not in the first sentence a stranger reads.
 
 - **Origin** — every submission stamped Human, Agent, or Unverified, because one form
-  definition publishes both a human UI and a machine-callable tool surface.
+  definition publishes both a human UI and a machine-callable **Manifest**.
+
+  *Renamed from "Handshake" on 2026-08-28 after trademark screening
+  (`12-trademark-screening.md`). Not mainly a legal call — three live registrants across
+  classes 9/35/42, one a $3.5B careers platform actively extending into AI, made the
+  capitalized name unownable and search-invisible. "Manifest" already means a machine-readable
+  declaration to developers, which fixes the thing the old name never explained. Lowercase
+  "handshake" survives as the verb: "Real agents shake hands. Bots pick the lock." stays.*
 - **Verdict + Yield** — submissions carry a downstream outcome, and split tests rank on what
   closed rather than what completed.
 

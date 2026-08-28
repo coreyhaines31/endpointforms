@@ -543,7 +543,7 @@ the list credible.
 
 **Send:** Day 24 (10 days after welcome ends).
 
-**Subject:** Hindsight, Handshake, Verdict, Origin, Yield
+**Subject:** Hindsight, Manifest, Verdict, Origin, Yield
 **Alt A:** Why the feature isn't called "Agent Mode"
 **Alt B:** Five product names, and the rule that killed the rest
 
@@ -572,7 +572,7 @@ the list credible.
 > Rejected: **Outcome Tests** (zero learning curve, and a competitor ships it the same week)
 > and **Verdict Testing** (wastes the word "Verdict" on the wrong object).
 >
-> **Handshake** — the tool surface an agent submits against. One word carrying both halves of
+> **Manifest** — the tool surface an agent submits against. One word carrying both halves of
 > the mechanism: the agent identifies itself, and that identification *is* the filter. It also
 > lets us describe an anti-fraud feature without the defensive arms-race tone every CAPTCHA
 > vendor is stuck in.
@@ -1255,7 +1255,7 @@ forces the honest ones.
    suspected bot) on the rule that the spine wins, but the messaging doc's reasoning about
    "Unverified" is good and deserves adjudication rather than a default. N4 and L2 both depend
    on the answer. **[judgment call]**
-2. **Feature names are unscreened.** Verdict, Origin, Yield, Hindsight, Handshake need USPTO
+2. **Feature names are unscreened.** Verdict, Origin, Yield, Hindsight, Manifest need USPTO
    and domain screening before N1 goes out — N1 is the email that puts all five in a subject
    line. Carried forward from `02-messaging.md` §9.
 3. **The essay slug is undecided** (`05-site-architecture.md` §10, `[NEEDS KEYWORD VALIDATION

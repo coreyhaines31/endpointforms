@@ -292,7 +292,7 @@ Homepage (/)
 │   ├── (/features/{provenance-slug})           ← Origin        [NEEDS KEYWORD VALIDATION]
 │   ├── (/features/{outcome-slug})              ← Verdict       [NEEDS KEYWORD VALIDATION]
 │   ├── (/features/{split-test-slug})           ← Hindsight     [NEEDS KEYWORD VALIDATION]
-│   ├── (/features/{agent-slug})                ← Handshake     [NEEDS KEYWORD VALIDATION]
+│   ├── (/features/{agent-slug})                ← Manifest     [NEEDS KEYWORD VALIDATION]
 │   └── (/features/{analytics-slug})            ← Yield         [NEEDS KEYWORD VALIDATION]
 ├── Pricing (/pricing)
 ├── Open source (/open-source)
@@ -381,7 +381,7 @@ Reserved and never assignable to a marketing page:
 /f          /r         /embed      /_next      /.well-known
 ```
 
-`/mcp` is **not** reserved — it is a marketing page about Handshake (Typeform ships `/mcp`,
+`/mcp` is **not** reserved — it is a marketing page about Manifest (Typeform ships `/mcp`,
 Heyflow `/features/mcp/`). The machine-callable surface lives on a different host entirely (§4.4).
 
 ### 4.4 The product's URL space — decided now
@@ -393,7 +393,7 @@ A form builder does not have two URL spaces. It has **four**, and only one of th
 | Marketing + docs | apex | ours, public, indexed |
 | Authenticated app | builder, dashboard, settings | ours, private, `noindex` |
 | **Publicly rendered forms** | customer-authored markup, customer CSS, customer redirect targets, embedded in third-party pages | **untrusted, and by our own positioning, hammered by bots** |
-| **Handshake surface** | per-form MCP / WebMCP tool definition | machine-callable, per-form |
+| **Manifest surface** | per-form MCP / WebMCP tool definition | machine-callable, per-form |
 
 **Decision:**
 
@@ -979,12 +979,12 @@ Each names the specific data that settles it.
 | # | Where | The decision | What settles it |
 |---|---|---|---|
 | 1 | §10, `/{pov-slug}` | Essay slug: argument-bearing vs keyword-bearing | Whether any head term exists with commercial intent that reaches agencies/PPC rather than SMB price-shoppers. If nothing qualifies, Risk 9 is confirmed and the slug is the argument. |
-| 2 | §3 Tier 1, `/features/*` | The five capability slugs (Origin, Verdict, Hindsight, Handshake, Yield) | Volume + intent on the descriptive alternatives: "form spam protection," "form analytics," "form a/b testing," "lead source tracking," "form conversion tracking," "ai agent form fill." Brand nouns are the H1; slugs must carry search intent. |
+| 2 | §3 Tier 1, `/features/*` | The five capability slugs (Origin, Verdict, Hindsight, Manifest, Yield) | Volume + intent on the descriptive alternatives: "form spam protection," "form analytics," "form a/b testing," "lead source tracking," "form conversion tracking," "ai agent form fill." Brand nouns are the H1; slugs must carry search intent. |
 | 3 | §3 Tier 1 | Whether the features hub is `/features` or `/product` | Whether "form builder features" carries volume worth an indexed hub. |
 | 4 | §4.5 | Comparison shape: `/alternatives/{competitor}` vs `/alternatives/endpoint-forms-vs-{competitor}` | Relative volume of "{competitor} alternative" vs "{competitor} vs {x}". Recommendation stands at the former until data says otherwise. |
 | 5 | §6.4 | Whether `/templates` is worth building at all, and which ~30 slugs | Whether any "{x} form template" terms carry intent from our ICP rather than generic template intent. Default is do not build. |
 | 6 | §3 Tier 1, `/alternatives/*` | Which 6–10 competitors get a page, and in what order | Volume on "{competitor} alternative" for Typeform · Jotform · Tally · Google Forms · Fillout · Heyflow · Formbricks · OpnForm · Gravity Forms. |
-| 7 | §3 Tier 2 | Slug for the Handshake merchandising page — `/mcp` vs `/agent-forms` vs other | Emergent volume on "webmcp," "mcp forms," "agent form fill." 2 of 9 sites merchandise this already; it's early enough that the term may not be settled. |
+| 7 | §3 Tier 2 | Slug for the Manifest merchandising page — `/mcp` vs `/agent-forms` vs other | Emergent volume on "webmcp," "mcp forms," "agent form fill." 2 of 9 sites merchandise this already; it's early enough that the term may not be settled. |
 | 8 | §10, `/` | The homepage `<title>` head term and modifier | Volume + commercial intent across "form builder for lead generation," "lead capture form builder," "form builder with analytics." The H1 is fixed by the spine; only the title and first subhead are in play. |
 | 9 | §3 Tier 2, `/solutions/*` | Whether `/solutions/agencies` and a PPC-audience page are worth building, and the PPC slug | Volume on "form builder for agencies," "lead gen forms for agencies," and whatever the in-house PPC segment actually types. |
 | 10 | §6.3 | Which ~40 integrations, in what order | "{tool} form integration" volume, cross-checked against actual CRM share among agencies and SMB B2B. Ordering is ICP-share first, volume second. |
@@ -999,7 +999,7 @@ Each names the specific data that settles it.
 | Launch tier | **6 pages.** Homepage, the argument essay, `/open-source`, `/about`, `/privacy`, `/terms`, plus `/thanks` (noindex). No pricing, no blog, no features, no docs, no comparisons, no templates. |
 | App URL space | **`app.endpointforms.com`** — subdomain, not `/app`. Untrusted-content adjacency, cookie isolation from marketing tags, independent deploy cadence, opposite caching posture. Analytics cost is one config line. |
 | Public form rendering | **A separate registrable domain**, `{workspace}.<render-domain>/f/{formId}`. Register before Part 2. Keeps customer end-users out of our analytics by construction. |
-| Handshake surface | `{workspace}.<render-domain>/f/{formId}/mcp` — co-located with the form it describes. |
+| Manifest surface | `{workspace}.<render-domain>/f/{formId}/mcp` — co-located with the form it describes. |
 | Marketing root | **Closed vocabulary.** No UGC at `endpointforms.com/{anything}`, ever. Reserved-path list asserted in CI. |
 | Canonical host | Apex. `www` 301s in. No `Domain` cookies from the marketing site. |
 | Trailing slashes | None. 308 enforced. |
@@ -1020,7 +1020,7 @@ Each names the specific data that settles it.
    and blocks everything the day Part 2 starts.
 3. **The self-host column on `/pricing` is a commercial decision, not an IA one.** Flagged in §7.2;
    it needs whoever owns pricing to agree before it's designed.
-4. **Feature naming is still unscreened** (`02 §9`). Verdict, Origin, Yield, Hindsight, Handshake
+4. **Feature naming is still unscreened** (`02 §9`). Verdict, Origin, Yield, Hindsight, Manifest
    need USPTO screening before they appear as H1s on `/features/*`. The URL slugs are descriptive,
    so a naming change would not force a URL change — that separation is deliberate.
 5. **This markdown is the source of truth; the review surface is an Artifact.** Per `CLAUDE.md`,
