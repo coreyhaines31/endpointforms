@@ -3,19 +3,19 @@ import { WaitlistForm } from "@/components/waitlist-form";
 
 const figures = [
   {
-    value: "57.5%",
-    label: "of HTML requests",
-    detail: "are automated, not human.",
+    value: "AGPL",
+    label: "open source",
+    detail: "Self-host it, or let us run it.",
   },
   {
-    value: "40%",
-    label: "of internet traffic",
-    detail: "was bad bots in 2025, up from 37%.",
+    value: "No caps",
+    label: "on responses",
+    detail: "You shouldn't pay a tax per submission.",
   },
   {
-    value: "13%",
-    label: "of MQLs",
-    detail: "ever become a real opportunity.",
+    value: "Loudly",
+    label: "is how syncs fail",
+    detail: "A broken integration tells you.",
   },
 ];
 
@@ -28,14 +28,13 @@ export function Hero() {
         </p>
 
         <h1 className="mt-6 max-w-[19ch] text-display sm:text-display-xl lg:max-w-[22ch]">
-          Your form can&rsquo;t tell a buyer from a bot &mdash; and it&rsquo;s reporting
-          both as conversions.
+          The open-source form builder for marketers.
         </h1>
 
         <p className="mt-7 max-w-[60ch] text-lead text-muted-foreground">
-          Endpoint Forms knows who filled out your form, and what the lead turned out to be
-          worth. Every submission arrives stamped human, agent, or unverified. Every
-          submission gets a verdict back from your CRM. Your split tests rank on that.
+          Build high-converting forms for your website, and pipe the data wherever you
+          need it &mdash; your CRM, your warehouse, a webhook. Open source, self-hostable,
+          and it tells you when a sync breaks instead of failing quietly.
         </p>
 
         <WaitlistForm className="mt-10" note="Waitlist" />
@@ -56,8 +55,8 @@ export function Hero() {
           ))}
         </dl>
         <p className="mt-5 max-w-[68ch] text-sm text-muted-foreground">
-          Verified figures, 2025&ndash;2026. Completion rate counts all of it the same way
-          it counts a buyer.
+          The three things people actually complain about in every form-builder thread we
+          read: price, broken integrations, and being locked in.
         </p>
       </Container>
     </section>

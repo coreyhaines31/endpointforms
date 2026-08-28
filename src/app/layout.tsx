@@ -26,12 +26,11 @@ export const metadata: Metadata = {
   // renders as a bare text card. The homepage is the only distribution surface
   // a pre-launch waitlist has, so this is load-bearing.
   metadataBase: new URL(SITE_URL),
-  title:
-    "Endpoint Forms — your form can't tell a buyer from a bot",
+  title: "Endpoint Forms — the open-source form builder for marketers",
   description:
-    "A form builder that stamps every submission human, agent, or unverified on arrival, and ranks split tests on what the leads turned out to be worth instead of completion rate. Open source, AGPL, self-hostable.",
+    "Build high-converting forms for your website and pipe the data wherever you need it. Open source, AGPL, self-hostable, with integrations that fail loudly instead of quietly.",
   openGraph: {
-    title: "Endpoint Forms — your form can't tell a buyer from a bot",
+    title: "Endpoint Forms — the open-source form builder for marketers",
     description:
       "Every form builder reports completion rate. Completion rate counts bots and buyers identically. Endpoint Forms stamps every submission with its origin and grades every form on what closed.",
     siteName: "Endpoint Forms",
@@ -40,7 +39,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Endpoint Forms — your form can't tell a buyer from a bot",
+    title: "Endpoint Forms — the open-source form builder for marketers",
     description:
       "Every form builder reports completion rate. Completion rate counts bots and buyers identically.",
   },
