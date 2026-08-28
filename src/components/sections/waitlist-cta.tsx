@@ -1,4 +1,6 @@
 import { Container } from "@/components/container";
+import { TextLink } from "@/components/text-link";
+import { ARGUMENT_PATH } from "@/lib/site";
 import { WaitlistForm } from "@/components/waitlist-form";
 
 export function WaitlistCta() {
@@ -16,6 +18,13 @@ export function WaitlistCta() {
             traffic hits.
           </p>
           <WaitlistForm className="mt-9" />
+          <p className="mt-6 max-w-[56ch] text-sm text-muted-foreground">
+            Not convinced yet? Read{" "}
+            <TextLink href={ARGUMENT_PATH}>
+              the argument this product is built on
+            </TextLink>{" "}
+            first. It includes the three strongest objections to it.
+          </p>
         </div>
 
         <aside className="self-start border border-border bg-card p-6">
@@ -30,6 +39,9 @@ export function WaitlistCta() {
           <p className="mt-4 text-base text-muted-foreground">
             This is for people running paid acquisition who get judged on what sales does with
             the leads. Come to us when someone starts asking which leads were worth money.
+          </p>
+          <p className="mt-5 text-sm text-muted-foreground">
+            <TextLink href="/about">Who is building this, and who it isn&rsquo;t for</TextLink>
           </p>
         </aside>
       </Container>

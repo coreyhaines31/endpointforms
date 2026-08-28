@@ -1,4 +1,5 @@
 import { Container } from "@/components/container";
+import { TextLink } from "@/components/text-link";
 
 const facts = [
   { label: "License", value: "AGPL-3.0" },
@@ -34,6 +35,11 @@ export function OpenSource() {
             managed version&rdquo; is the consensus in our research. That specific gap is the
             one we intend to beat Formbricks and OpnForm on. Most people should still use the
             hosted version, which is what pays for the open one.
+          </p>
+          <p className="mt-5 text-base">
+            <TextLink href="/open-source" className="text-foreground">
+              What the AGPL commitment actually covers
+            </TextLink>
           </p>
         </div>
 

@@ -1,4 +1,6 @@
 import { Container } from "@/components/container";
+import { TextLink } from "@/components/text-link";
+import { ARGUMENT_PATH } from "@/lib/site";
 
 export function PullQuote() {
   return (
@@ -15,6 +17,14 @@ export function PullQuote() {
           <figcaption className="mt-6 font-mono text-sm text-muted-foreground">
             u/kjdscott &middot; agency developer &middot; r/Entrepreneur, Sep 2025
           </figcaption>
+          <p className="mt-8 max-w-[52ch] text-base text-muted-foreground">
+            That quote is the sharpest version of the whole problem, and it belongs to a
+            customer rather than to us.{" "}
+            <TextLink href={ARGUMENT_PATH} className="text-foreground">
+              The full argument, with the receipts and the best case against it
+            </TextLink>
+            .
+          </p>
         </figure>
       </Container>
     </section>

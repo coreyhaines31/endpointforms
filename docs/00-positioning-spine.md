@@ -62,8 +62,8 @@ more interesting idea, but anger converts better than insight.
 
 ## The two capabilities
 
-**1. Provenance on every submission.** Each submission is stamped human, identified agent,
-or suspected bot — because one form definition publishes both a human UI and a
+**1. Provenance on every submission.** Each submission is stamped **Human**, **Agent**, or
+**Unverified** — because one form definition publishes both a human UI and a
 machine-callable tool surface (MCP / WebMCP), we know which one was used. The mechanism
 that lets legitimate agents through is the same one that keeps fakes out.
 
@@ -71,6 +71,22 @@ that lets legitimate agents through is the same one that keeps fakes out.
 disqualified / value) from CRM sync or an outcome webhook. Variants rank on
 quality-adjusted conversion rate. **The form learns from the outcome** — which variant,
 which question, which field.
+
+## Terminology — settled 2026-08-28
+
+The three Origin states are **Human · Agent · Unverified**. Not "suspected bot."
+
+Both `10-email-sequences.md` and `11-social-content.md` independently flagged this as an
+unresolved conflict between this spine and `02-messaging.md`, and resolved it in opposite
+directions. Adjudicated here so it stops diverging.
+
+**"Unverified" wins**, for the reason `02-messaging.md` §2 gives: we report what we know, not
+what we assume. It is a statement about our confidence, not an accusation about the visitor.
+That is also the exact reasoning `03-brand.md` uses to colour the third state amber rather than
+red — a suspicion is not a failure — so "suspected bot" was inconsistent with our own palette
+logic. It reads better in a chip, too.
+
+Prose may still describe the mechanism as catching bots. The *label* is Unverified.
 
 ## Hard constraint — what we do NOT claim
 
