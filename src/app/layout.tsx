@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { GITHUB_URL, SITE_URL } from "@/lib/site";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 import { SiteHeader } from "@/components/site-header";
@@ -19,7 +20,6 @@ const plexMono = IBM_Plex_Mono({
   display: "swap",
 });
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://endpointforms.com";
 
 export const metadata: Metadata = {
   // Without metadataBase, Next emits relative OG image URLs and every share
@@ -56,6 +56,40 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <ThemeScript />
       </head>
       <body className="min-h-full flex flex-col">
+        {/*
+          Organization + WebSite, site-wide. 24 hand-written pages had no
+          structured data at all; the generated glossary and spam pages carry
+          their own richer types on top of this.
+        */}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@graph": [
+                {
+                  "@type": "Organization",
+                  "@id": `${SITE_URL}/#organization`,
+                  name: "Endpoint Forms",
+                  url: SITE_URL,
+                  logo: `${SITE_URL}/logo.svg`,
+                  sameAs: [GITHUB_URL],
+                  founder: { "@type": "Person", name: "Corey Haines" },
+                },
+                {
+                  "@type": "WebSite",
+                  "@id": `${SITE_URL}/#website`,
+                  url: SITE_URL,
+                  name: "Endpoint Forms",
+                  description:
+                    "The open-source form builder for marketers. High-converting website forms that pipe your data wherever you need it.",
+                  publisher: { "@id": `${SITE_URL}/#organization` },
+                  inLanguage: "en",
+                },
+              ],
+            }),
+          }}
+        />
         <SiteHeader />
         <div className="flex flex-1 flex-col">{children}</div>
         <SiteFooter />
