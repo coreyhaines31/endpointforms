@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" role="img" aria-label="Endpoint Forms">
+  <path d="M1.6 2.4H13.2V5.6H4.8V10.4H16.4V13.6H4.8V18.4H13.2V21.6H1.6Z" fill="currentColor"/>
+  <circle cx="19.4" cy="12" r="3.4" fill="var(--logo-node, currentColor)"/>
+</svg>

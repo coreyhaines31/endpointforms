@@ -4,23 +4,52 @@
 
 An open-source form builder that optimizes for **revenue, not submissions**. Positioning line: *"Your form isn't the endpoint. The closed deal is."*
 
-Two differentiators, in priority order:
+**Read `docs/00-positioning-spine.md` before writing any copy or marketing doc.** It holds
+the settled decisions — category, ICP, enemy, reframe, anti-positioning, vocabulary. Treat it
+as binding.
 
-1. **Outcome-weighted split testing** — every submission carries a downstream outcome (won/lost/disqualified + value) from CRM sync or an outcome webhook. Variants rank on quality-adjusted conversion rate, not completion rate. Won-deal values push back to ad platforms so bidding optimizes on revenue.
-2. **Agent-native capture** — one form definition publishes both a human UI and a machine-callable MCP/WebMCP tool surface. Every submission is stamped with provenance (human / identified agent / suspected bot). This doubles as the anti-fake-lead mechanism.
+Two capabilities, in message order:
 
-Substance is #1. Hook is #2. Don't let the hook eat the substance in copy.
+1. **Provenance on every submission** — one form definition publishes both a human UI and a
+   machine-callable MCP/WebMCP tool surface, so we know which was used. Each submission is
+   stamped human / identified agent / suspected bot. This leads the messaging because
+   spam and junk leads is the angriest complaint in the category and this is the thing our
+   architecture uniquely solves.
+2. **Outcome-weighted optimization** — submissions carry a downstream outcome (won/lost/
+   disqualified + value) from CRM sync or an outcome webhook. Variants rank on
+   quality-adjusted conversion rate. The form learns from the outcome.
+
+**Hard constraint:** do NOT lead with "close the loop with your ad platform." Research
+falsified it as a wedge — competent PPC practitioners already do this via offline conversion
+import, and claiming it puts us against HubSpot/WhatConverts/CallRail. The unclaimed half is
+that those loops teach the ad platform and teach the *form* nothing. That's the only half we
+claim.
 
 ## Current phase — MARKETING ONLY
 
 **Do not build product features yet.** This repo is currently the marketing site and waitlist. Phase order:
 
 1. Repo + scaffold ✅
-2. Positioning, brand, site copy — via the marketing skills
-3. Marketing site + waitlist
-4. Product (separate phase, explicitly gated)
+2. Positioning, messaging, brand ✅ — see `docs/`
+3. Keyword research, site architecture, copy
+4. Marketing site + waitlist
+5. Product (separate phase, explicitly gated)
+
+Tracked as GitHub issues; `ROADMAP.md` mirrors them (`npm run roadmap` to resync).
 
 If asked to build a form builder feature, confirm the phase has changed first.
+
+## Delivering work for review
+
+Anything Corey reviews — positioning, brand, keyword research, site architecture,
+competitive analysis, strategy docs — ships as an **HTML Artifact**, not as terminal
+markdown. He demos this project on camera and terminal scrollback reads badly.
+
+Write the durable markdown into `docs/` as the source of truth **and** publish an Artifact
+as the review surface. Both, not either. Load the `artifact-design` skill first, and
+screenshot-verify the page before handing over the link.
+
+Terminal text is still right for status updates, short answers, and questions.
 
 ## Stack
 

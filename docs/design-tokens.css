@@ -1,9 +1,19 @@
-@import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+/* ---------------------------------------------------------------------------
+   Endpoint Forms — design tokens
+   Tailwind v4. Merge into src/app/globals.css.
 
-@custom-variant dark (&:is(.dark *));
+   Rationale, usage rules and verified contrast ratios: docs/03-brand.md
 
+   Merge notes for whoever integrates this:
+   - The `@theme inline` block below is a superset of the one already in
+     globals.css. Replace that block wholesale rather than merging by hand.
+   - `:root` and `.dark` below replace the shadcn defaults currently there.
+   - Fonts are wired through next/font variables (`--font-plex-sans`,
+     `--font-plex-mono`) declared in layout.tsx. Every stack has a real
+     fallback so the page is legible before the webfont lands.
+   - Radii drop from 0.625rem to 0.375rem. This is deliberate: see
+     "Visual direction" in 03-brand.md.
+--------------------------------------------------------------------------- */
 
 @theme inline {
   /* type ------------------------------------------------------------------ */
