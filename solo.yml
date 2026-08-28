@@ -1,0 +1,6 @@
+name: endpointforms
+processes:
+  Next.js:
+    command: npm run dev -- -p 3040
+    auto_start: true
+    auto_restart: true
