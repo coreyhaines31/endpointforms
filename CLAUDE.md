@@ -53,10 +53,17 @@ Terminal text is still right for status updates, short answers, and questions.
 
 ## Carry into Part 2
 
-**Dogfood the marketing site** (issue #24). Ten form placements are already built and live —
-the waitlist in two spots, plus 8 calculators whose inputs were deliberately typed and
-centralised so they could be swapped. Replacing them with real Endpoint forms makes the
-marketing site the demo, and gives Origin its first real data.
+**Endpoint collects its own waitlist** (issue #24). This is the plan, not a later
+nice-to-have. We are **not** wiring a third-party ESP — the waitlist form on the live site
+becomes the first form the product ever handles.
+
+Ten placements are already built and waiting: the waitlist in two spots, plus 8 calculators
+whose inputs were deliberately typed and centralised so they could be swapped. `saveSubscriber()`
+in `src/lib/waitlist-store.ts` is the single sink; swapping it is one function.
+
+Until then the live site's waitlist refuses honestly rather than claiming a success it can't
+deliver. That is the intended interim state, and it is lossy — every day the app doesn't exist
+is signups not captured. That's the argument for building the submission path early.
 
 That last part matters more than the demo: **Risk 1 in `docs/01-positioning.md` — that
 provenance may not actually distinguish a bot from a human — is the highest-severity risk in
