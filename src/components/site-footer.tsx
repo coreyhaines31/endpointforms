@@ -1,10 +1,51 @@
+import Link from "next/link";
 import { Container } from "@/components/container";
 import { LogoMark } from "@/components/logo";
+import {
+  ARGUMENT_PATH,
+  GITHUB_ISSUES_URL,
+  GITHUB_LICENSE_URL,
+  GITHUB_URL,
+} from "@/lib/site";
+
+type FooterLink = { href: string; label: string; external?: boolean };
+
+// Three short columns, per docs/05 §8.2. Everything in Tier 0 is reachable
+// from here; /thanks is the one deliberate exception.
+const columns: { heading: string; links: FooterLink[] }[] = [
+  {
+    heading: "Product",
+    links: [
+      { href: ARGUMENT_PATH, label: "The argument" },
+      { href: "/open-source", label: "Open source" },
+      { href: "/#waitlist", label: "Join the waitlist" },
+    ],
+  },
+  {
+    heading: "Company",
+    links: [
+      { href: "/about", label: "About" },
+      { href: GITHUB_URL, label: "GitHub", external: true },
+      { href: GITHUB_ISSUES_URL, label: "Roadmap", external: true },
+    ],
+  },
+  {
+    heading: "Legal",
+    links: [
+      { href: "/privacy", label: "Privacy" },
+      { href: "/terms", label: "Terms" },
+      { href: GITHUB_LICENSE_URL, label: "License (AGPL-3.0)", external: true },
+    ],
+  },
+];
+
+const linkClass =
+  "rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 export function SiteFooter() {
   return (
     <footer className="border-t border-border">
-      <Container className="flex flex-col gap-8 py-12 sm:flex-row sm:items-end sm:justify-between">
+      <Container className="flex flex-col gap-12 py-12 lg:flex-row lg:justify-between lg:gap-16">
         <div className="max-w-sm">
           <LogoMark className="h-6 w-6 text-foreground" />
           <p className="mt-4 text-sm text-muted-foreground">
@@ -12,35 +53,43 @@ export function SiteFooter() {
             form on what closed.
           </p>
           <p className="mt-4 font-mono text-label uppercase text-muted-foreground">
-            Pre-launch · AGPL-3.0
+            AGPL-3.0 · Self-hostable · Your data is yours
           </p>
         </div>
 
-        <nav aria-label="Footer" className="flex flex-col gap-2 text-sm sm:text-right">
-          <a
-            href="#proof"
-            className="rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            The demo
-          </a>
-          <a
-            href="#provenance"
-            className="rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            Provenance
-          </a>
-          <a
-            href="#open-source"
-            className="rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            Open source
-          </a>
-          <a
-            href="#waitlist"
-            className="rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            Join the waitlist
-          </a>
+        <nav
+          aria-label="Footer"
+          className="grid grid-cols-2 gap-8 sm:grid-cols-3 lg:gap-16"
+        >
+          {columns.map((column) => (
+            <div key={column.heading}>
+              <h2 className="font-mono text-label uppercase text-muted-foreground">
+                {column.heading}
+              </h2>
+              <ul className="mt-4 flex flex-col gap-2.5 text-sm">
+                {column.links.map((link) => (
+                  <li key={link.label}>
+                    {link.external ? (
+                      <a
+                        href={link.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={linkClass}
+                      >
+                        {link.label}
+                        <span aria-hidden="true"> ↗</span>
+                        <span className="sr-only"> (opens in a new tab)</span>
+                      </a>
+                    ) : (
+                      <Link href={link.href} className={linkClass}>
+                        {link.label}
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </nav>
       </Container>
     </footer>
