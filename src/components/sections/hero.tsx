@@ -1,4 +1,5 @@
 import { Container } from "@/components/container";
+import { RecordJourney } from "@/components/mockup/record-journey";
 import { WaitlistForm } from "@/components/waitlist-form";
 
 const figures = [
@@ -38,6 +39,10 @@ export function Hero() {
         </p>
 
         <WaitlistForm className="mt-10" note="Waitlist" />
+      </Container>
+
+      <Container className="mt-[clamp(3rem,6vw,4.5rem)]">
+        <RecordJourney />
       </Container>
 
       <Container className="mt-[clamp(3.5rem,7vw,5.5rem)]">

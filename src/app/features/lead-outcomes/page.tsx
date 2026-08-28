@@ -4,11 +4,12 @@ import {
   FeatureDetail,
   featureMetadata,
 } from "@/app/features/_components/feature-detail";
+import { VerdictLanes } from "@/components/mockup/verdict-lanes";
 
 const feature = getFeature("lead-outcomes");
 
 export const metadata: Metadata = featureMetadata(feature);
 
 export default function VerdictPage() {
-  return <FeatureDetail feature={feature} />;
+  return <FeatureDetail feature={feature} mockup={<VerdictLanes />} />;
 }
