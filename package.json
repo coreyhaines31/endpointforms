@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "roadmap": "bash scripts/sync-roadmap.sh",
-    "test": "node --experimental-strip-types tests/waitlist-validate.test.mjs && node --experimental-strip-types tests/tools.test.mjs && node --experimental-strip-types tests/content-links.test.mjs"
+    "test": "node --experimental-strip-types tests/waitlist-validate.test.mjs && node --experimental-strip-types tests/tools.test.mjs && node --experimental-strip-types tests/content-links.test.mjs && node --experimental-strip-types tests/tools-ungated.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
