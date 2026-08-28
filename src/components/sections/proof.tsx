@@ -82,7 +82,7 @@ export function Proof() {
             <div
               role="group"
               aria-label="Rank variants by"
-              className="inline-flex self-start rounded-md border border-border-strong p-0.5 sm:self-auto"
+              className="inline-flex self-start rounded-md border border-border-control p-0.5 sm:self-auto"
             >
               {(Object.keys(metricCopy) as Metric[]).map((key) => (
                 <button
@@ -165,7 +165,11 @@ export function Proof() {
             })}
           </div>
 
-          <p className="border-t border-border px-5 py-4 text-sm text-muted-foreground sm:px-6">
+          <p
+            role="status"
+            aria-live="polite"
+            className="border-t border-border px-5 py-4 text-sm text-muted-foreground sm:px-6"
+          >
             {active.caption}
           </p>
         </div>

@@ -35,7 +35,7 @@ export function SiteHeader() {
           <ThemeToggle />
           <a
             href="#waitlist"
-            className="inline-flex h-9 items-center rounded-md border border-border-strong px-3 text-sm font-medium text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            className="inline-flex h-9 items-center rounded-md border border-border-control px-3 text-sm font-medium text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             Join the waitlist
           </a>

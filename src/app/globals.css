@@ -76,6 +76,7 @@
   --color-subtle-foreground: var(--subtle-foreground);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
+  --color-border-control: var(--border-control);
   --color-input: var(--input);
   --color-ring: var(--ring);
 
@@ -149,6 +150,9 @@
   --subtle-foreground: #8c8a7f;
   --border: #e4e2da;
   --border-strong: #cfcdc3;
+  /* interactive boundaries. Must clear 3:1 against the surface, which
+     --border-strong (1.55:1) does not. See 03-brand.md non-text contrast. */
+  --border-control: #8c8a7f;
   --input: #cfcdc3;
   --ring: #15140f;
 
@@ -207,6 +211,7 @@
   --subtle-foreground: #75736a;
   --border: #2a2a25;
   --border-strong: #3d3c36;
+  --border-control: #6a685e;
   --input: #3d3c36;
   --ring: #c7f23c;
 

@@ -17,9 +17,16 @@ export function OpenSource() {
             The core is AGPL. Self-hosting is one command.
           </h2>
           <p className="mt-6 max-w-[58ch] text-lead text-muted-foreground">
-            You can read the code that decides whether a submission is stamped human, agent
-            or unverified. That&rsquo;s more than any hosted competitor offers, and it&rsquo;s
-            the reason to trust a stamp at all.
+            You can{" "}
+            <a
+              href="https://github.com/coreyhaines31/endpointforms"
+              className="underline underline-offset-4 decoration-border-control hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              read the code
+            </a>{" "}
+            that decides whether a submission is stamped human, agent or unverified.
+            That&rsquo;s more than any hosted competitor offers, and it&rsquo;s the reason to
+            trust a stamp at all.
           </p>
           <p className="mt-5 max-w-[58ch] text-base text-muted-foreground">
             The honest version: open-source form builders have historically been miserable to

@@ -19,7 +19,13 @@ const plexMono = IBM_Plex_Mono({
   display: "swap",
 });
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://endpointforms.com";
+
 export const metadata: Metadata = {
+  // Without metadataBase, Next emits relative OG image URLs and every share
+  // renders as a bare text card. The homepage is the only distribution surface
+  // a pre-launch waitlist has, so this is load-bearing.
+  metadataBase: new URL(SITE_URL),
   title:
     "Endpoint Forms — your form can't tell a buyer from a bot",
   description:
@@ -30,6 +36,13 @@ export const metadata: Metadata = {
       "Every form builder reports completion rate. Completion rate counts bots and buyers identically. Endpoint Forms stamps every submission with its origin and grades every form on what closed.",
     siteName: "Endpoint Forms",
     type: "website",
+    url: "/",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Endpoint Forms — your form can't tell a buyer from a bot",
+    description:
+      "Every form builder reports completion rate. Completion rate counts bots and buyers identically.",
   },
 };
 

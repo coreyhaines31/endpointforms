@@ -11,7 +11,7 @@ export function SiteFooter() {
             A form builder that stamps every submission with its origin and grades every
             form on what closed.
           </p>
-          <p className="mt-4 font-mono text-label uppercase text-subtle-foreground">
+          <p className="mt-4 font-mono text-label uppercase text-muted-foreground">
             Pre-launch · AGPL-3.0
           </p>
         </div>

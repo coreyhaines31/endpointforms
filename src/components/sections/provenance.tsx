@@ -37,7 +37,7 @@ export function Provenance() {
           </p>
 
           <dl className="mt-12">
-            <div className="hidden grid-cols-[13rem_1fr_1fr] gap-8 border-b border-border pb-3 md:grid">
+            <div aria-hidden="true" className="hidden grid-cols-[13rem_1fr_1fr] gap-8 border-b border-border pb-3 md:grid">
               <span className="font-mono text-label uppercase text-muted-foreground">
                 Origin
               </span>

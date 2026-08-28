@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "roadmap": "bash scripts/sync-roadmap.sh"
+    "roadmap": "bash scripts/sync-roadmap.sh",
+    "test": "node --experimental-strip-types tests/waitlist-validate.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -29,6 +30,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
+    "server-only": "^0.0.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

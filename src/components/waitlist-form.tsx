@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useId, useState } from "react";
+import { useActionState, useEffect, useId, useRef, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import { joinWaitlist } from "@/actions/waitlist";
 import { initialWaitlistState } from "@/actions/waitlist-state";
@@ -19,11 +19,26 @@ export function WaitlistForm({ className, note }: WaitlistFormProps) {
   // Controlled so a rejected address survives the round trip instead of being
   // wiped by the form action's reset.
   const [email, setEmail] = useState("");
+  const succeeded = state.status === "success";
   const failed = state.status === "error";
+  const successRef = useRef<HTMLDivElement>(null);
 
-  if (state.status === "success") {
+  // Success replaces the form, which removes the focused submit button from the
+  // DOM. Without this, focus falls back to <body> and a screen reader announces
+  // nothing at all — the one moment the page most needs to confirm.
+  useEffect(() => {
+    if (succeeded) successRef.current?.focus();
+  }, [succeeded]);
+
+  if (succeeded) {
     return (
-      <div className={cn("max-w-xl", className)}>
+      <div
+        ref={successRef}
+        tabIndex={-1}
+        role="status"
+        aria-live="polite"
+        className={cn("max-w-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring", className)}
+      >
         <p className="font-mono text-label uppercase text-signal-ink">On the list</p>
         <p className="mt-3 text-base text-foreground">{state.message}</p>
       </div>
@@ -33,7 +48,7 @@ export function WaitlistForm({ className, note }: WaitlistFormProps) {
   return (
     <form action={formAction} className={cn("max-w-xl", className)} noValidate>
       {note ? (
-        <p className="mb-3 font-mono text-label uppercase text-subtle-foreground">{note}</p>
+        <p className="mb-3 font-mono text-label uppercase text-muted-foreground">{note}</p>
       ) : null}
 
       <label htmlFor={emailId} className="sr-only">
@@ -53,12 +68,14 @@ export function WaitlistForm({ className, note }: WaitlistFormProps) {
           aria-invalid={failed || undefined}
           aria-describedby={state.message ? messageId : undefined}
           className={cn(
-            "h-11 min-w-0 flex-1 rounded-md border bg-card px-3 text-base text-foreground placeholder:text-subtle-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-            failed ? "border-destructive" : "border-border-strong",
+            "h-11 min-w-0 flex-1 rounded-md border bg-card px-3 text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+            failed ? "border-destructive" : "border-border-control",
           )}
         />
 
-        {/* Honeypot: off-screen, never announced, never tabbable. */}
+        {/* Honeypot: off-screen, never announced, never tabbable. A filled value
+            is discarded server-side — it is never a validation error, so an
+            over-eager autofill can't lock a real person out. */}
         <input
           type="text"
           name="company"
