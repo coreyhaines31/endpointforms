@@ -51,6 +51,32 @@ screenshot-verify the page before handing over the link.
 
 Terminal text is still right for status updates, short answers, and questions.
 
+## Carry into Part 2
+
+**Endpoint collects its own waitlist** (issue #24). This is the plan, not a later
+nice-to-have. We are **not** wiring a third-party ESP — the waitlist form on the live site
+becomes the first form the product ever handles.
+
+Ten placements are already built and waiting: the waitlist in two spots, plus 8 calculators
+whose inputs were deliberately typed and centralised so they could be swapped. `saveSubscriber()`
+in `src/lib/waitlist-store.ts` is the single sink; swapping it is one function.
+
+Until then the live site's waitlist refuses honestly rather than claiming a success it can't
+deliver. That is the intended interim state, and it is lossy — every day the app doesn't exist
+is signups not captured. That's the argument for building the submission path early.
+
+That last part matters more than the demo: **Risk 1 in `docs/01-positioning.md` — that
+provenance may not actually distinguish a bot from a human — is the highest-severity risk in
+the whole position, and it is currently unfalsified.** A public site with an argument essay on
+it will attract humans, agents and bots. Better to find out on our own form than a customer's.
+
+Also carried forward:
+- `saveSubscriber()` in `src/lib/waitlist-store.ts` is the single sink for waitlist signups —
+  swapping Kit for Endpoint is one function.
+- Forms must render on their own registrable domain, not a subdomain of the marketing site.
+  `docs/05` §4 has the reasoning: our marketing site carries ad pixels, and customer form
+  traffic must never share a cookie domain with our analytics vendor.
+
 ## Stack
 
 - Next.js 16 App Router, React 19, TypeScript
