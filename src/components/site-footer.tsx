@@ -16,16 +16,29 @@ const columns: { heading: string; links: FooterLink[] }[] = [
   {
     heading: "Product",
     links: [
-      { href: ARGUMENT_PATH, label: "The argument" },
+      { href: "/features", label: "Features" },
+      { href: "/solutions/agencies", label: "For agencies" },
+      { href: "/solutions/in-house-ppc", label: "For in-house PPC" },
       { href: "/open-source", label: "Open source" },
       { href: "/#waitlist", label: "Join the waitlist" },
     ],
   },
   {
-    heading: "Company",
+    heading: "Free tools",
     links: [
+      { href: "/tools", label: "All calculators" },
+      { href: "/tools/form-spam-cost-calculator", label: "Form spam cost" },
+      { href: "/tools/cost-per-closed-deal-calculator", label: "Cost per closed deal" },
+      { href: "/tools/form-drop-off-calculator", label: "Form drop-off" },
+    ],
+  },
+  {
+    heading: "Learn",
+    links: [
+      { href: ARGUMENT_PATH, label: "The argument" },
+      { href: "/spam", label: "Stopping form spam" },
+      { href: "/glossary", label: "Glossary" },
       { href: "/about", label: "About" },
-      { href: GITHUB_URL, label: "GitHub", external: true },
       { href: GITHUB_ISSUES_URL, label: "Roadmap", external: true },
     ],
   },
@@ -34,6 +47,7 @@ const columns: { heading: string; links: FooterLink[] }[] = [
     links: [
       { href: "/privacy", label: "Privacy" },
       { href: "/terms", label: "Terms" },
+      { href: GITHUB_URL, label: "GitHub", external: true },
       { href: GITHUB_LICENSE_URL, label: "License (AGPL-3.0)", external: true },
     ],
   },
@@ -49,8 +63,8 @@ export function SiteFooter() {
         <div className="max-w-sm">
           <LogoMark className="h-6 w-6 text-foreground" />
           <p className="mt-4 text-sm text-muted-foreground">
-            A form builder that stamps every submission with its origin and grades every
-            form on what closed.
+            The open-source form builder for marketers. High-converting website forms
+            that pipe your data wherever you need it.
           </p>
           <p className="mt-4 font-mono text-label uppercase text-muted-foreground">
             AGPL-3.0 · Self-hostable · Your data is yours
@@ -59,7 +73,7 @@ export function SiteFooter() {
 
         <nav
           aria-label="Footer"
-          className="grid grid-cols-2 gap-8 sm:grid-cols-3 lg:gap-16"
+          className="grid grid-cols-2 gap-8 sm:grid-cols-4 lg:gap-12"
         >
           {columns.map((column) => (
             <div key={column.heading}>
