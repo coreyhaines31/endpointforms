@@ -248,6 +248,42 @@ Plus non-page infrastructure reserved from day one: `robots.txt`, `sitemap.xml` 
 | `/alternatives/*` | Comparison pages against a product that doesn't ship yet are unfalsifiable claims. This is exactly the behavior of the AI-slop vendors we're differentiating from. |
 | `/templates` | We conceded template breadth to Jotform (`01 §8`). Shipping a thin library invites the comparison we already declined. |
 
+### Tier 0.5 — Authority (pre-product) — added 2026-08-28
+
+**Reconciles #15.** This tier did not exist when this doc was written. It resolves a conflict
+with `09-pseo-opportunities.md`: this doc assumed `/integrations/{tool}` was the pSEO set and
+designed the URL scheme around it, while the pSEO doc independently concluded integrations are
+**blocked on the product existing** and ranked three different sets as build-first. The sitemap
+had no path for any of them.
+
+Both were right about different things. The pSEO doc's sequencing argument wins on the facts:
+we are DR 0, so the first page set has to *earn links*, because authority is the precondition
+for every other set. A set that only pays off if it ranks is a set we can't afford to build
+first — and integrations can't be built at all until there's a product to integrate.
+
+So the three link-earning sets ship **between launch and v1**, not at v1:
+
+```
+/tools                                  ← hub, indexed, in nav
+└── (/tools/{slug})                     ← 8 calculators. The build-first set.
+                                          Each is itself an Endpoint form (dogfooding).
+/glossary
+└── (/glossary/{term})                  ← 25 concept pages, capped at 40.
+                                          Internal-linking backbone. No page ships that
+                                          merely defines the term.
+/spam                                   ← hub
+└── (/spam/{method})                    ← 12 anti-spam method teardowns.
+                                          Highest intent-to-ICP match on the list.
+```
+
+**Rule:** a page in this tier ships only if it is useful when it does not rank. That is the
+whole point of the tier — a working calculator is still the thing you drop into a reply.
+
+`/integrations/{tool}` is **demoted** from "the pSEO set" to "the pSEO set once the product
+ships." It stays in Tier 1 with the URL pattern below unchanged.
+
+---
+
 ### Tier 1 — v1 (product launch)
 
 ```
@@ -265,7 +301,7 @@ Homepage (/)
 │   └── (/docs/self-hosting/…)
 ├── Integrations (/integrations)                ← pSEO hub
 │   ├── (/integrations/categories/{slug})       ← facet, ≥5 members only
-│   └── (/integrations/{tool})                  ← THE pSEO SET (issue #9)
+│   └── (/integrations/{tool})                  ← pSEO set #2, gated on the product (§Tier 0.5)
 ├── Alternatives (/alternatives)                ← comparison hub — 2/9 sites have one
 │   └── (/alternatives/{competitor})            ← hand-written, ~6–10, NOT pSEO
 ├── The argument essay (/{pov-slug})
