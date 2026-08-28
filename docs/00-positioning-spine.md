@@ -52,41 +52,47 @@ Anchor quote (r/PPC, Oct 2025):
 | **Before** | A form is measured by how many people complete it. |
 | **After** | A form is measured by what those completions turned out to be worth — and it should change based on the answer. |
 
-## Primary message
+## Primary message — reset 2026-08-28
 
-**Your form can't tell a buyer from a bot — and it's reporting both as conversions.**
+**An open-source form builder for website forms, built for marketers who want
+high-converting forms that pipe data wherever they need it.**
 
-This leads because spam/junk leads is the angriest bucket in the research (~22 independent
-sources) *and* it is the thing our architecture uniquely solves. The learning loop is the
-more interesting idea, but anger converts better than insight.
+This replaces the earlier "your form can't tell a buyer from a bot" framing as the *headline*.
+That line is good and stays available as a hook, but it was leading with a narrow wedge and
+pulling the whole site into a competitor argument the buyer hasn't asked to have. Corey's call,
+and the research supports it: the loudest complaints in the corpus are price, spam, broken
+conditional logic and unreliable integrations — not measurement philosophy.
 
-## The two capabilities
+## The three pillars
 
-**1. Provenance on every submission.** Each submission is stamped **Human**, **Agent**, or
-**Unverified** — because one form definition publishes both a human UI and a
-machine-callable tool surface (MCP / WebMCP), we know which one was used. The mechanism
-that lets legitimate agents through is the same one that keeps fakes out.
+**1. Built to convert, not to survey.**
+These are forms that live on a marketing site and carry paid traffic: multi-step, mobile-first,
+fast, on-brand without custom CSS. Not a survey tool with a lead-gen mode bolted on.
 
-**2. Outcome-weighted optimization.** Submissions carry a downstream outcome (won / lost /
-disqualified / value) from CRM sync or an outcome webhook. Variants rank on
-quality-adjusted conversion rate. **The form learns from the outcome** — which variant,
-which question, which field.
+**2. Your data goes wherever you need it — and says so when it doesn't.**
+The best "what would you pay for" quote in the entire research corpus:
 
-## Terminology — settled 2026-08-28
+> "For me, the paid feature is dependable integrations, not prettier form fields. If a form
+> maps cleanly into an ERP or CRM, handles conditional logic without weird workarounds, and
+> **fails loudly when a sync breaks**, that's worth paying for."
 
-The three Origin states are **Human · Agent · Unverified**. Not "suspected bot."
+"Fails loudly" is the product requirement hiding in that sentence. A sync that breaks silently
+is the same sin we accuse the category of.
 
-Both `10-email-sequences.md` and `11-social-content.md` independently flagged this as an
-unresolved conflict between this spine and `02-messaging.md`, and resolved it in opposite
-directions. Adjudicated here so it stops diverging.
+**3. Open source. Your forms, your data, your server.**
+AGPL core, genuinely one-command self-host, exports never paywalled, no per-response tax.
+Research is clear that open source does not *acquire* marketers — but it earns trust, and the
+one thing we can beat Formbricks and OpnForm on is that self-hosting them is miserable.
 
-**"Unverified" wins**, for the reason `02-messaging.md` §2 gives: we report what we know, not
-what we assume. It is a statement about our confidence, not an accusation about the visitor.
-That is also the exact reasoning `03-brand.md` uses to colour the third state amber rather than
-red — a suspicion is not a failure — so "suspected bot" was inconsistent with our own palette
-logic. It reads better in a chip, too.
+## The differentiators, correctly ranked
 
-Prose may still describe the mechanism as catching bots. The *label* is Unverified.
+These are what make it *better*, not what it *is*. They belong on feature pages and in the
+argument essay — not in the first sentence a stranger reads.
+
+- **Origin** — every submission stamped Human, Agent, or Unverified, because one form
+  definition publishes both a human UI and a machine-callable tool surface.
+- **Verdict + Yield** — submissions carry a downstream outcome, and split tests rank on what
+  closed rather than what completed.
 
 ## Hard constraint — what we do NOT claim
 
