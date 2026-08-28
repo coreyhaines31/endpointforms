@@ -2,7 +2,7 @@ import { Container } from "@/components/container";
 
 const pillars = [
   {
-    capability: "Handshake + Origin",
+    capability: "Manifest + Origin",
     claim: "Know who actually filled it out.",
     body: "Every submission arrives stamped human, agent, or unverified. Not guessed from mouse movement — known, because a legitimate agent submits through a tool surface the form publishes on purpose, and anything stuffing the human form while claiming to be software has told on itself.",
     aside:

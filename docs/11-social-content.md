@@ -107,7 +107,7 @@ once well. The conditions to spend it:
 1. There is a repo someone can run in one command. The corpus is unanimous that OSS form
    builders are painful to deploy; shipping an unrunnable repo to HN converts our best
    credibility asset into our worst first impression.
-2. The Handshake / agent tool-surface spec is published and readable, because that — not the
+2. The Manifest / agent tool-surface spec is published and readable, because that — not the
    form builder — is the part HN will actually argue about.
 3. We are ready for the top comment to be *"this is a form builder with extra steps."* The
    answer is in `02-messaging.md` §4 and it needs to be one paragraph, not a blog post.
@@ -616,7 +616,7 @@ Attributed quotes stay attributed, inside the post copy, every time.
 **Platform:** LinkedIn · **Pillar:** P4 · **Link:** none
 
 > Five names I had to get right before any product code gets written: Verdict, Origin, Yield,
-> Hindsight, Handshake.
+> Hindsight, Manifest.
 >
 > The standard was strict on purpose. One plain English word. A real noun a person already
 > knows. Sayable out loud in a sales call without a footnote. No AI-era jargon. And slightly
@@ -955,7 +955,7 @@ won't do, and any version of "the last form builder you'll ever need."
    this doc uses "Unverified"** and post 29 is built entirely on that choice. If the brand doc
    wins, post 29 needs rewriting and the argument gets weaker, not stronger. Needs adjudication
    before Day 15.
-2. **The five feature names are unscreened.** Verdict, Origin, Yield, Hindsight, Handshake have
+2. **The five feature names are unscreened.** Verdict, Origin, Yield, Hindsight, Manifest have
    had no USPTO or domain screening. Posts 28 and 34 put them in public. Post 28 says so out
    loud, which is the honest mitigation, but a screen before Day 21 is cheap insurance.
 3. **Two competitive facts remain unverified** and are flagged in `04-keyword-research.md` §9 —

@@ -39,7 +39,7 @@ Every pillar is: a claim, the capability that makes it true, and the proof behin
 
 #### Pillar 1 — **Know who actually filled it out.**
 
-*Capability: Handshake + Origin*
+*Capability: Manifest + Origin*
 
 Every submission arrives stamped **Human**, **Agent**, or **Unverified**. Not guessed from
 mouse movement — known, because a legitimate agent submits through a tool surface the form
@@ -148,11 +148,11 @@ phone. We wait for the phone call."*
 
 | Candidate | Case for | Case against |
 |---|---|---|
-| **Handshake** ⭐ | One word that carries both halves of the mechanism at once: the agent identifies itself, and *that identification is the filter*. Sayable and verb-able ("did it come through the handshake?"). Warm and human for a machine feature, which is the tonal correction this category needs. Works as anti-spam messaging without ever saying "AI." | Slight collision with the crypto/dev sense of "handshake protocol" — actually a plus with the developer audience. Doesn't self-explain the agent half without one sentence of setup. |
+| **Manifest** ⭐ | One word that carries both halves of the mechanism at once: the agent identifies itself, and *that identification is the filter*. Sayable and verb-able ("did it come through the handshake?"). Warm and human for a machine feature, which is the tonal correction this category needs. Works as anti-spam messaging without ever saying "AI." | Slight collision with the crypto/dev sense of "handshake protocol" — actually a plus with the developer audience. Doesn't self-explain the agent half without one sentence of setup. |
 | **Front Door** | Wonderful copy metaphor: agents ring the doorbell, bots pick the lock. Immediately understood by a non-technical marketer. | Two words, poor UI label, hard to make a countable noun. Better used as a copy line than a product name. |
 | **Agent Mode** | Maximum clarity, zero explanation required, matches how buyers will search in 2027. | Every tool on earth will ship an "Agent Mode" in the next twelve months. Unownable, and it makes the feature sound like a toggle rather than an architecture. |
 
-**Recommendation: Handshake.** Capitalized as the capability ("Handshake"), lowercase as the
+**Recommendation: Manifest.** Capitalized as the capability ("Manifest"), lowercase as the
 per-form artifact ("every form publishes a handshake — a tool definition agents can call
 directly"). It communicates *trust established between two parties*, which is precisely what
 we sell, and it lets us describe an anti-fraud feature without the defensive, arms-race tone
@@ -174,7 +174,7 @@ dashboard columns, webhook payloads, and API docs — and once shipped they're u
 | The quality-adjusted metric | **Yield** | Net conversion rate, Earned rate, Real conversion rate | Already means "quality-adjusted output" in finance and agriculture, so it needs no teaching. Sayable in a stand-up: *"Completion rate is 41%. Yield is 4%."* Shipped in two views: **Yield rate** (% of submissions that reached a good verdict) and **Yield value** (revenue per 100 submissions). |
 | The agent tool surface | **the form's handshake** | Agent endpoint, Tool surface, Machine surface | Deliberately *not* called "the endpoint." The product is named Endpoint Forms and the tagline is "your form isn't the endpoint" — a second meaning of the word inside the product would be a self-inflicted wound. **[judgment call]** |
 
-**Why the family works:** Verdict, Origin, Yield, Hindsight, Handshake. Five plain English
+**Why the family works:** Verdict, Origin, Yield, Hindsight, Manifest. Five plain English
 nouns, none of them AI jargon, none of them invented, all of them slightly forensic. They
 sound like a product built by someone who wants to know what actually happened — which is the
 entire position, encoded in the vocabulary. Buyers will repeat these words back to us; that
@@ -194,7 +194,7 @@ is unambiguous that failing them kills us regardless of how good the wedge is.
 
 | Feature | Benefit (what they get) | Proof |
 |---|---|---|
-| **Handshake** — one form definition publishes a human UI and a machine-callable tool surface (MCP / WebMCP) | Agents acting for real buyers can submit cleanly; anything faking the human form is visible as such | WebMCP announced at Google I/O 2026, Chrome Canary preview Feb 2026; only Tally/Jotform/Typeform have MCP servers and all three are *build-a-form* MCPs for authors, not *fill-a-form* surfaces for a buyer's agent |
+| **Manifest** — one form definition publishes a human UI and a machine-callable tool surface (MCP / WebMCP) | Agents acting for real buyers can submit cleanly; anything faking the human form is visible as such | WebMCP announced at Google I/O 2026, Chrome Canary preview Feb 2026; only Tally/Jotform/Typeform have MCP servers and all three are *build-a-form* MCPs for authors, not *fill-a-form* surfaces for a buyer's agent |
 | **Origin** — every submission stamped Human / Agent / Unverified | You can finally segment your lead list by whether a person was involved | Automated requests are ~57.5% of HTML traffic; "bots are responsible for most of the internet's leads" (u/polygraph-net, r/marketing) |
 | **Unverified quarantine** — suspect submissions land in a separate bucket, not your CRM and not your conversion count | Ad platforms stop being trained on garbage; sales stops receiving it | "All those bot submissions were training Google's/your ad network's machine learning algorithm to send you more bot-like traffic." — u/polygraph-net |
 | **Verdict** — outcome webhook + CRM sync writes won/lost/disqualified/value back onto the submission | The form finally learns what happened to the lead | "If the form sends data to a CRM, you can even fire the conversion only when a lead is marked as 'qualified.'" — u/Equal_Bag_1368, r/PPC — people are already doing this by hand, one layer up |
@@ -440,7 +440,7 @@ drop-off per question · "the loss wasn't on the page, it was inside the form" �
 view → start → completion · which field is costing you
 
 **Our own terms (defined, never assumed):**
-Verdict · Origin · Yield · Hindsight · Handshake · Awaiting verdict · Unverified
+Verdict · Origin · Yield · Hindsight · Manifest · Awaiting verdict · Unverified
 
 ### Words we never use
 
@@ -506,7 +506,7 @@ without smug, specific over clever, sounds like a person with receipts.
 
 ## 9. Downstream notes
 
-- **Naming is unscreened.** Verdict, Origin, Yield, Hindsight, Handshake need USPTO and
+- **Naming is unscreened.** Verdict, Origin, Yield, Hindsight, Manifest need USPTO and
   domain/social screening before they appear publicly. **[judgment call]**
 - **The 41% demo number is illustrative.** It appears in the wedge research as a hypothetical.
   Until we have a real split test with real verdicts behind it, frame it as an example
