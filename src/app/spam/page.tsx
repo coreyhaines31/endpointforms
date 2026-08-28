@@ -10,14 +10,14 @@ import {
 } from "@/components/spam-scorecard";
 import { GLOSSARY_HUB_PATH } from "@/lib/glossary";
 import { SPAM_HUB_PATH, SPAM_METHODS, spamPath } from "@/lib/spam-methods";
-import { ARGUMENT_PATH, SITE_URL } from "@/lib/site";
+import { ARGUMENT_PATH, SITE_URL, pageTitle } from "@/lib/site";
 
 const title = "How to stop form spam";
 const description =
   "Twelve anti-spam defenses, each taken apart: how it works, what it genuinely stops, and exactly how it is defeated — with the practitioners who watched it fail quoted by name. One of them works, and it isn’t ours.";
 
 export const metadata: Metadata = {
-  title: `${title} — twelve defenses, honestly assessed — Endpoint Forms`,
+  title: pageTitle(`${title}: 12 defenses assessed`),
   description,
   alternates: { canonical: SPAM_HUB_PATH },
   openGraph: {

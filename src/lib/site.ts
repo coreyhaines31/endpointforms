@@ -57,3 +57,14 @@ export const MARKETING_ROUTES = [
   "/privacy",
   "/terms",
 ] as const;
+
+/**
+ * Appends the brand to a page title only when the result still fits the ~60
+ * characters Google renders. Blindly suffixing "— Endpoint Forms" pushed 15
+ * titles past the cut, which spends the truncation on our own name instead of
+ * the words someone searched for.
+ */
+export function pageTitle(subject: string, brand = "Endpoint Forms"): string {
+  const withBrand = `${subject} — ${brand}`;
+  return withBrand.length <= 60 ? withBrand : subject;
+}

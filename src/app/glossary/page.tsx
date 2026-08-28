@@ -11,7 +11,7 @@ import {
   termsInGroup,
 } from "@/lib/glossary";
 import { SPAM_HUB_PATH } from "@/lib/spam-methods";
-import { ARGUMENT_PATH, SITE_URL } from "@/lib/site";
+import { ARGUMENT_PATH, SITE_URL, pageTitle } from "@/lib/site";
 
 const ours = GLOSSARY.filter((term) => term.ours);
 
@@ -20,7 +20,7 @@ const description =
   "Twenty-five concepts in form conversion, lead quality and conversion plumbing — each with a definition, why it matters, how it is actually measured, and the mistake people make. Five of them are words we coined, and they are marked as ours.";
 
 export const metadata: Metadata = {
-  title: `${title} — form conversion, lead quality and tracking — Endpoint Forms`,
+  title: pageTitle(`${title}: form conversion and lead quality`),
   description,
   alternates: { canonical: GLOSSARY_HUB_PATH },
   openGraph: {

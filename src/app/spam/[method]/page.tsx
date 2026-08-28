@@ -13,7 +13,7 @@ import {
   getSpamMethod,
   spamPath,
 } from "@/lib/spam-methods";
-import { ARGUMENT_PATH, SITE_URL } from "@/lib/site";
+import { ARGUMENT_PATH, SITE_URL, pageTitle } from "@/lib/site";
 
 type PageProps = { params: Promise<{ method: string }> };
 
@@ -26,15 +26,15 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const method = getSpamMethod(slug);
   if (!method) return {};
 
-  const title = `${method.name} — what it stops and how it’s defeated`;
+  const title = `Does ${method.name} stop form spam?`;
   const url = spamPath(method.slug);
 
   return {
-    title: `${title} — Endpoint Forms`,
+    title: pageTitle(title),
     description: method.description,
     alternates: { canonical: url },
     openGraph: {
-      title: `${title} — Endpoint Forms`,
+      title: pageTitle(title),
       description: method.description,
       type: "article",
       url,
@@ -44,7 +44,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     twitter: {
       card: "summary_large_image",
       images: ["/opengraph-image"],
-      title: `${title} — Endpoint Forms`,
+      title: pageTitle(title),
       description: method.description,
     },
   };

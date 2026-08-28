@@ -11,7 +11,7 @@ import {
   glossaryPath,
 } from "@/lib/glossary";
 import { SPAM_HUB_PATH, getSpamMethod, spamPath } from "@/lib/spam-methods";
-import { SITE_URL } from "@/lib/site";
+import { SITE_URL, pageTitle } from "@/lib/site";
 
 type PageProps = { params: Promise<{ term: string }> };
 
@@ -27,11 +27,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const url = glossaryPath(entry.slug);
 
   return {
-    title: `${entry.term} — Endpoint Forms glossary`,
+    title: pageTitle(entry.term, "Endpoint Forms glossary"),
     description: entry.description,
     alternates: { canonical: url },
     openGraph: {
-      title: `${entry.term} — Endpoint Forms glossary`,
+      title: pageTitle(entry.term, "Endpoint Forms glossary"),
       description: entry.description,
       type: "article",
       url,
@@ -41,7 +41,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     twitter: {
       card: "summary_large_image",
       images: ["/opengraph-image"],
-      title: `${entry.term} — Endpoint Forms glossary`,
+      title: pageTitle(entry.term, "Endpoint Forms glossary"),
       description: entry.description,
     },
   };
