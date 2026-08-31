@@ -299,8 +299,20 @@ invalidates its key**.
 from the current secret and verified against current-then-previous, with a constant-time
 comparison.
 
-> **Two honest limits.** Rotation is fleet-wide: changing the secret invalidates every
-> workspace's key at once. And there is no per-workspace revocation and no per-key audit trail.
+> **Three honest limits, worth knowing before you build on this.**
+>
+> 1. **Rotation is fleet-wide, not per-tenant.** Changing `VERDICT_API_KEY_SECRET` invalidates
+>    every workspace's key at once. Set the old value as `VERDICT_API_KEY_SECRET_PREVIOUS` so
+>    live integrations keep working while you reissue.
+> 2. **Renaming a workspace invalidates its key.** Intended, not a bug: the slug is the render
+>    subdomain and is effectively permanent, and a key that silently followed a rename would be
+>    a key nobody could reason about.
+> 3. **No per-key audit trail.** Every caller holding a workspace's key is indistinguishable
+>    from every other. `verdict_source` records that an outcome arrived by webhook, not who
+>    sent it.
+>
+> A stored key with its own `revoked_at` is the real answer to all three, and it needs a column
+> the data model deliberately does not have yet.
 
 ### 401
 

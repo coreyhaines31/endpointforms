@@ -107,7 +107,8 @@ if [ -f "$ENV_FILE" ]; then
 else
   cat > "$ENV_FILE" <<EOF
 # Written by scripts/setup.sh on $(date -u '+%Y-%m-%dT%H:%M:%SZ').
-# Gitignored. See .env.example for every variable the code reads and why.
+# Gitignored. docs/24-self-hosting.md §3 lists every variable the code reads,
+# what it does, and what happens if you leave it out.
 
 # The local Docker Postgres from docker-compose.yml.
 # \`endpoint\` is an ordinary role, NOT the \`postgres\` superuser: a superuser
