@@ -7,6 +7,8 @@ import { CopyButton } from "@/components/app/copy";
 import { ProvenanceChip } from "@/components/provenance-chip";
 import { Absent, DataTable, Fact, Td, Th } from "@/components/app/table";
 import { AbsoluteTime, RelativeTime } from "@/components/app/time";
+import { SpamChip } from "@/components/app/spam-chip";
+import { SpamPanel } from "@/components/app/spam-panel";
 import { VerdictChip } from "@/components/app/verdict-chip";
 import {
   formatMoney,
@@ -71,6 +73,7 @@ export default async function SubmissionDetailPage({
         </h1>
         <ProvenanceChip origin={submission.origin} />
         <VerdictChip verdict={submission.verdict} />
+        <SpamChip state={submission.spamState} score={submission.spamScore} />
       </div>
 
       <p className="mt-3 text-sm text-muted-foreground">
@@ -114,6 +117,14 @@ export default async function SubmissionDetailPage({
       </Panel>
 
       <OriginPanel origin={submission.origin} reasons={submission.originReasons} />
+
+      <SpamPanel
+        slug={workspace.slug}
+        publicId={submission.publicId}
+        state={submission.spamState}
+        score={submission.spamScore}
+        reasons={submission.spamReasons}
+      />
 
       <Panel className="mt-6">
         <PanelHeader

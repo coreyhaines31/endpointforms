@@ -5,6 +5,7 @@ import { newId, newSubmissionPublicId } from "../../db/ids.ts";
 import { withWorkspace } from "../../db/scoped.ts";
 import { endpoints, formSchemas, submissions } from "../../db/schema.ts";
 import type { OriginReason, OriginState } from "../origin/types.ts";
+import type { SpamReason } from "../spam/types.ts";
 import { readStoredDocument, type FormSchemaDocument } from "../schema/format.ts";
 import type { JsonValue } from "./body.ts";
 import { IngestError } from "./errors.ts";
@@ -126,6 +127,18 @@ export type SubmissionRecord = {
   origin: OriginState;
   /** The signals behind the stamp. "Why is this Unverified?" is read from here. */
   originReasons: OriginReason[];
+  /**
+   * Spam scoring (#31). A third axis, kept apart from both `origin` and
+   * `verdict` — see `src/lib/spam/types.ts` for why neither could carry it.
+   *
+   * `spamState` is only ever `clear` or `flagged` here. The other two states in
+   * the column, `not_spam` and `confirmed_spam`, are human decisions and are
+   * written by `src/actions/spam.ts`, never by ingest.
+   */
+  spamState: "clear" | "flagged";
+  spamScore: number;
+  /** Every signal consulted, including the ones that scored nothing. */
+  spamReasons: SpamReason[];
 };
 
 export type StoredSubmission = {
@@ -188,6 +201,11 @@ export async function storeSubmission(
         idempotencyKey: record.idempotencyKey,
         origin: record.origin,
         originReasons: record.originReasons,
+        // Written down, never acted on. Nothing downstream of this insert reads
+        // spam_state to decide whether to keep, deliver or count the row.
+        spamState: record.spamState,
+        spamScore: record.spamScore,
+        spamReasons: record.spamReasons,
       })
       .onConflictDoNothing({
         target: [submissions.endpointId, submissions.idempotencyKey],

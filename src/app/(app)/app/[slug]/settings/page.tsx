@@ -1,6 +1,8 @@
 import { Container } from "@/components/container";
 import { Panel, PanelBody, PanelHeader } from "@/components/app/panel";
 import { RenameWorkspaceForm } from "@/components/app/forms";
+import { SpamListsForm } from "@/components/app/spam-lists";
+import { listSpamEntries } from "@/lib/spam/review";
 import { requireWorkspace } from "@/lib/workspaces/server";
 import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 
@@ -11,6 +13,7 @@ export default async function WorkspaceSettingsPage({
 }) {
   const { slug } = await params;
   const { workspace, role } = await requireWorkspace(slug);
+  const spamEntries = await listSpamEntries(workspace.id);
 
   return (
     <Container className="max-w-[44rem] pt-10">
@@ -46,6 +49,20 @@ export default async function WorkspaceSettingsPage({
             Forms render on their own registrable domain, not on a subdomain of
             our marketing site. Our site carries ad pixels; the people filling in
             your forms should never meet them.
+          </p>
+        </PanelBody>
+      </Panel>
+      <Panel className="mt-6">
+        <PanelHeader
+          title="Spam lists"
+          description="The one control here that is not a heuristic. “Never flag” ends scoring outright for anything that matches — nothing else is even consulted. “Always flag” marks a submission; it never deletes, hides or withholds one."
+        />
+        <SpamListsForm slug={workspace.slug} entries={spamEntries} />
+        <PanelBody className="border-t border-border">
+          <p className="max-w-[60ch] text-sm text-muted-foreground">
+            Changes take up to 30 seconds to reach every server. We cache these
+            on the submission path so reading them does not cost your visitors a
+            database round trip.
           </p>
         </PanelBody>
       </Panel>
