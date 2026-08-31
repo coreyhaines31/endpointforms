@@ -28,7 +28,8 @@
     "test:render": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/form-render.test.mts",
     "test:schema:db": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/schema-ingest.test.mts",
     "test:auth": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/auth-password.test.mts",
-    "test:db:neon": "DB_TARGET=neon npm run test:db"
+    "test:db:neon": "DB_TARGET=neon npm run test:db",
+    "verify": "bash scripts/verify.sh"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

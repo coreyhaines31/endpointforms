@@ -1,0 +1,68 @@
+# Runs the same checks a developer runs, on every push and PR.
+#
+# This exists because Vercel's check only proves the app builds *with Vercel's
+# environment variables set*. A build that needs DATABASE_URL to compile passes
+# there and fails on a clean checkout — which is exactly what happened, and sat
+# on main unnoticed. This job has no secrets and no app env beyond a throwaway
+# database, so if it passes, a stranger cloning the repo can build it too.
+name: verify
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: endpointforms
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Deliberately NOT set for the build step below. The build must not need
+      # a database — see the lazy connection in src/db/client.ts.
+      - name: Build with no DATABASE_URL
+        run: npm run build
+
+      - run: npm run lint
+      - run: npx tsc --noEmit
+
+      - name: Create the non-superuser app role
+        env:
+          PGPASSWORD: postgres
+        run: |
+          # A superuser silently bypasses FORCE ROW LEVEL SECURITY, which makes
+          # every tenant-isolation assertion pass for the wrong reason.
+          psql -h localhost -p 5433 -U postgres -d endpointforms \
+            -c "CREATE ROLE endpoint LOGIN PASSWORD 'endpoint';" \
+            -c "GRANT ALL ON DATABASE endpointforms TO endpoint;" \
+            -c "ALTER DATABASE endpointforms OWNER TO endpoint;"
+
+      - name: Migrate and test
+        env:
+          DATABASE_URL: postgres://endpoint:endpoint@localhost:5433/endpointforms
+          AUTH_SECRET: ci-not-a-real-secret-value-for-tests-only
+          SUBMISSION_IP_SALT: ci-not-a-real-salt-value-for-tests-only
+        run: |
+          npm run db:migrate
+          npm test

@@ -77,6 +77,28 @@ Also carried forward:
   `docs/05` §4 has the reasoning: our marketing site carries ad pixels, and customer form
   traffic must never share a cookie domain with our analytics vendor.
 
+## Verifying work — do not skip this
+
+**Run `npm run verify` before claiming anything passes.** It runs lint, typecheck, build and
+tests, checks each by **exit code**, and prints a summary that cannot be misread.
+
+Never confirm a build by grepping its output. `next build` prints **"Compiled successfully"
+before it type checks and before it collects page data**, so that string appears on builds that
+then fail. A broken build sat on `main` for hours because of exactly that — the app needed
+`DATABASE_URL` to compile, which passed on Vercel where the var is set and failed everywhere
+else. Same trap with `$?` after a pipe: it reports the last command in the pipeline, not the
+one you care about.
+
+Two independent guards now exist so this cannot recur silently:
+- `npm run verify` — one command, honest exit code
+- `.github/workflows/verify.yml` — runs on every push and PR, **with no secrets and no
+  `DATABASE_URL` during the build step**, so it proves a stranger can clone and build the repo.
+  Vercel's check only proves it builds with Vercel's env vars set.
+
+For **frontend-only changes**, passing checks are not enough: open it in `agent-browser`,
+screenshot it, and look at the image in both themes before reporting it done. A computed style
+confirms the code does what you wrote, not what was asked.
+
 ## Stack
 
 - Next.js 16 App Router, React 19, TypeScript
