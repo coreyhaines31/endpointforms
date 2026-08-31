@@ -67,12 +67,25 @@ is signups not captured. That's the argument for building the submission path ea
 
 That last part matters more than the demo: **Risk 1 in `docs/01-positioning.md` — that
 provenance may not actually distinguish a bot from a human — is the highest-severity risk in
-the whole position, and it is currently unfalsified.** A public site with an argument essay on
-it will attract humans, agents and bots. Better to find out on our own form than a customer's.
+the whole position, and it is CONFIRMED, not hypothetical.** Plain `curl` carrying copied
+Chrome headers gets stamped `human`; see `docs/23-origin-findings.md`. Four copy claims were
+narrowed as a result.
+
+The two halves of the claim are not symmetric, and any copy that treats them as equal is wrong:
+- **Agent** is structural. An agent calling the MCP surface (#32) *declares itself by which
+  surface it called*. That holds up, and was demonstrated end to end.
+- **Human** is heuristic, and forgeable by anyone who can copy headers. Never write copy that
+  promises we detect bots.
+
+A public site with an argument essay on it will attract humans, agents and bots. Better to keep
+finding out on our own form than on a customer's — which is what #24/#33 is for.
 
 Also carried forward:
-- `saveSubscriber()` in `src/lib/waitlist-store.ts` is the single sink for waitlist signups —
-  swapping Kit for Endpoint is one function.
+- `saveSubscriber()` in `src/lib/waitlist-store.ts` is the single sink for waitlist signups.
+  **Endpoint is the only sink.** There is no third-party ESP in this path and none is to be
+  added — not as a fallback, not "if configured", not behind an env var. When the Endpoint path
+  fails, the form refuses honestly, which is what it already does in production today. Kit was
+  removed for this reason; do not reintroduce it or any replacement.
 - Forms must render on their own registrable domain, not a subdomain of the marketing site.
   `docs/05` §4 has the reasoning: our marketing site carries ad pixels, and customer form
   traffic must never share a cookie domain with our analytics vendor.
