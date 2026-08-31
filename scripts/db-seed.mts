@@ -329,7 +329,7 @@ async function main() {
    * A seeded delivery body, in the real payload shape.
    *
    * Built with `buildPayload` rather than hand-written JSON so the seed cannot
-   * drift from the contract in `docs/24-destinations.md`. A delivery log full
+   * drift from the contract in `docs/28-destinations.md`. A delivery log full
    * of a shape we no longer send is a debugging aid that misleads.
    */
   const seededBody = (
