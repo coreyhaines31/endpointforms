@@ -34,7 +34,11 @@ export function CreateEndpointForm({ slug }: { slug: string }) {
     <form action={action} noValidate>
       <input type="hidden" name="slug" value={slug} />
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+      {/* items-end would align the button to the bottom of the whole stack —
+          label, input AND hint — which parks it below the input it belongs to.
+          Aligning to the top and offsetting by the label's own height puts the
+          button on the input's row, where it reads as part of the same control. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
         <div className="flex-1">
           <Field
             label="Endpoint name"
@@ -46,7 +50,11 @@ export function CreateEndpointForm({ slug }: { slug: string }) {
             hint="Just for you — it’s what you’ll pick out in the inbox. You can change it later."
           />
         </div>
-        <SubmitButton pendingLabel="Creating…">Create endpoint</SubmitButton>
+        {/* 31px = the label's 20px line + the input's 8px margin + 3px to
+            centre a 44px button against the input's 46px bordered box. */}
+        <div className="sm:mt-[31px]">
+          <SubmitButton pendingLabel="Creating…">Create endpoint</SubmitButton>
+        </div>
       </div>
 
       <FormMessage state={state} />
