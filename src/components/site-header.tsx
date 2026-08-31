@@ -47,14 +47,17 @@ export function SiteHeader() {
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2">
-          <ThemeToggle />
-          <GithubLink compact />
+          {/* Sign in leads the cluster as a plain link. Sitting between two
+              bordered controls it read as debris; ahead of them it reads as
+              the quiet option next to the loud one, which is what it is. */}
           <Link
             href="/login"
-            className="hidden shrink-0 rounded-sm px-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:inline-flex sm:items-center"
+            className="hidden shrink-0 rounded-sm px-2 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:inline-flex sm:items-center"
           >
             Sign in
           </Link>
+          <ThemeToggle />
+          <GithubLink compact />
           <Link
             href="/#waitlist"
             className="inline-flex h-9 shrink-0 items-center rounded-md border border-border-control px-3 text-sm font-medium text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"

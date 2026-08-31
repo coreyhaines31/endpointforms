@@ -422,7 +422,7 @@ export function InviteForm({ slug }: { slug: string }) {
             id="invite-role"
             name="role"
             defaultValue="member"
-            className="mt-2 h-11 rounded-md border border-border-control bg-card px-3 text-base text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            className="mt-2 h-11 rounded-md border border-border-control bg-card pl-3 pr-9 text-base text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             <option value="member">Member</option>
             <option value="owner">Owner</option>

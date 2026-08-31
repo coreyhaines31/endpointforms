@@ -64,7 +64,7 @@ export function SubmissionFilterBar({
           <select
             name="endpoint"
             defaultValue={filters.endpointPublicId ?? ""}
-            className="mt-2 h-10 w-full rounded-md border border-border-control bg-card px-3 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            className="mt-2 h-10 w-full rounded-md border border-border-control bg-card pl-3 pr-9 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             <option value="">All endpoints</option>
             {endpoints.map((endpoint) => (
