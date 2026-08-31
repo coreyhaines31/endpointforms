@@ -19,6 +19,7 @@ import { eq } from "drizzle-orm";
 import { sqlClient, unsafeDb } from "../src/db/client.ts";
 import { describeDatabase } from "../src/db/env.ts";
 import { newEndpointPublicId, newId, newSubmissionPublicId } from "../src/db/ids.ts";
+import { hashPassword } from "../src/lib/auth/password.ts";
 import { buildPayload, serialisePayload } from "../src/lib/destinations/payload.ts";
 import { deliveryIdFor } from "../src/lib/destinations/signature.ts";
 import {
@@ -56,6 +57,8 @@ function spamFor(f: { name: string; email: string; company: string; note: string
 
 const WORKSPACE_SLUG = "northwind";
 const USER_EMAIL = "avery@northwind.example";
+/** Development only. Long enough to satisfy MIN_PASSWORD_LENGTH. */
+const SEED_PASSWORD = "northwind-demo-2026";
 
 const DAY = 24 * 60 * 60 * 1000;
 const now = Date.now();
@@ -146,11 +149,20 @@ async function main() {
     name: "Northwind Fabrication",
   });
 
+  // A password, so the demo data is reachable. Without one this user exists but
+  // cannot sign in, and the only way into the app is to sign up fresh — which
+  // lands you in an empty workspace while all 21 submissions, the verdicts, the
+  // spam examples and the destinations sit in this one, invisible.
+  //
+  // Development only. `db-seed.mts` refuses to run against anything but a local
+  // database, and the credential is printed rather than hidden because a seed
+  // password nobody can find is the same as no seed password.
   await unsafeDb.insert(users).values({
     id: userId,
     email: USER_EMAIL,
     name: "Avery Nash",
     emailVerified: daysAgo(60),
+    passwordHash: await hashPassword(SEED_PASSWORD),
   });
 
   await unsafeDb.insert(memberships).values({
@@ -478,6 +490,7 @@ async function main() {
   }, {});
 
   console.log(`seeded workspace ${WORKSPACE_SLUG} (${workspaceId})`);
+  console.log(`  sign in at /login as ${USER_EMAIL} / ${SEED_PASSWORD}`);
   console.log(`  1 endpoint, 1 schema version, ${submissionRows.length} submissions`);
   console.log(`  origin  ${JSON.stringify(byOrigin)}`);
   console.log(`  verdict ${JSON.stringify(byVerdict)}`);
