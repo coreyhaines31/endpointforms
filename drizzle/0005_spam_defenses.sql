@@ -8,7 +8,34 @@
 --
 -- Everything here is additive. No column is dropped, no default changes, and
 -- every new column has a default, so applying this to a live database cannot
--- fail a running submission.
+-- fail a running submission, and no table is rewritten.
+--
+-- ## Rolling this back
+--
+-- drizzle-kit does not emit down migrations and this repo has none, so
+-- reversibility here means two things, both deliberate:
+--
+-- 1. **Rolling back the application alone needs no database change.** Every
+--    object below is additive; an older build ignores the new columns and the
+--    two new tables, and submissions keep being written.
+-- 2. **Undoing the schema is five statements**, in this order, if it is ever
+--    actually wanted. Note this destroys the spam scores and the workspace
+--    lists — it is not a no-op:
+--
+--      DROP TABLE "endpoint_spam_policies";
+--      DROP TABLE "spam_list_entries";
+--      ALTER TABLE "submissions"
+--        DROP COLUMN "spam_state", DROP COLUMN "spam_score",
+--        DROP COLUMN "spam_reasons", DROP COLUMN "spam_reviewed_at",
+--        DROP COLUMN "spam_reviewed_by_user_id";
+--      DROP TYPE "public"."submission_spam_state";
+--      DROP TYPE "public"."spam_list_kind";
+--      DROP TYPE "public"."spam_list_effect";
+--
+-- Verified against an empty database, not only against the developer machine
+-- this was written on: `0000`–`0005` applied to a fresh `ef_freshcheck`
+-- database and all nine workspace-scoped tables came out
+-- `enabled=true forced=true policies=1`.
 --
 -- ## Why spam is its own axis
 --
