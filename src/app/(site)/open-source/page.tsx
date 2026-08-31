@@ -13,7 +13,7 @@ import {
 
 const title = "Open source";
 const description =
-  "The core of Endpoint Forms is AGPL-3.0. Exports are never paywalled, the issues are the roadmap, and one-command self-hosting is the thing we intend to get right — honestly, it isn’t shipped yet.";
+  "The core of Endpoint Forms is AGPL-3.0. Exports are never paywalled, the issues are the roadmap, and self-hosting is one clone and one command — including the non-superuser check that keeps row-level security real.";
 
 export const metadata: Metadata = {
   title: `${title} — Endpoint Forms`,
@@ -142,10 +142,31 @@ export default function OpenSourcePage() {
           </p>
           <p>
             One-command self-host is the single thing we think we can beat Formbricks and
-            OpnForm on, and it is the reason this page exists at all. It is also not shippable
-            today. There is no install command here because there is nothing to install yet.
-            When there is, it will get its own page, with the honest list of what it does and
-            does not set up for you.
+            OpnForm on, and it is the reason this page exists at all. It ships now:
+          </p>
+          <pre>
+            <code>
+              git clone https://github.com/coreyhaines31/endpointforms.git{"\n"}cd
+              endpointforms{"\n"}bash scripts/setup.sh
+            </code>
+          </pre>
+          <p>
+            That installs dependencies, generates every secret, starts Postgres, applies the
+            migrations, and seeds a workspace with realistic data. Then{" "}
+            <code>npm run dev</code>. You need Docker and Node 22 already installed, and it is
+            two commands rather than one because a setup script that leaves a server running in
+            the foreground is not a setup script. That is the honest count.
+          </p>
+          <p>
+            It refuses to continue unless the database role it will use is a genuine
+            non-superuser. Tenant isolation here is row-level security, and Postgres lets a
+            superuser silently ignore it — so an instance running as <code>postgres</code> would
+            have no isolation at all while every test still passed. Checking costs nothing; that
+            failure is invisible.
+          </p>
+          <p>
+            What it does not do is written down rather than glossed: email destinations go
+            through Resend’s HTTP API, so a host with only SMTP has a real gap today.
           </p>
           <p>
             And the part most open-source companies leave out: most people should use the
