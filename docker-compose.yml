@@ -1,0 +1,49 @@
+# Endpoint Forms — local Postgres.
+#
+# This is the same Postgres a self-hoster gets (#46), not a dev-only convenience.
+# `docker compose up -d` then `npm run db:migrate` is the whole story.
+#
+# Pinned to 18 to match the hosted Neon dev database. A migration that applies
+# on one major version and fails on the other is exactly the kind of thing that
+# only surfaces at deploy time, so local and hosted stay on the same major.
+#
+# Port 5433, not 5432, so this never collides with a Postgres already running
+# on the host.
+
+name: endpointforms
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      # The bootstrap superuser. Deliberately NOT what the app connects as —
+      # a superuser bypasses row level security, which would silently switch
+      # off tenant isolation. docker/postgres/init.sql creates the ordinary
+      # `endpoint` role that owns the application database.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      # Deterministic collation so index ordering matches across machines.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5433:5432"
+    volumes:
+      # Postgres 18 images put PGDATA at /var/lib/postgresql/18/docker and
+      # declare the volume one level up, so the mount point moved from where a
+      # Postgres 16 compose file would have put it.
+      - endpointforms_pgdata:/var/lib/postgresql
+      # Runs once, on an empty volume.
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      # `pg_isready` alone reports ready during initdb's temporary startup, so
+      # migrations can fire at a database that is about to be torn down and
+      # recreated. An actual query does not lie.
+      test: ["CMD-SHELL", "psql -U endpoint -d endpointforms -c 'select 1' || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+volumes:
+  endpointforms_pgdata:
