@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import Link from "next/link";
 
 import type { EndpointListItem, SubmissionFilters } from "@/lib/workspaces/types";
@@ -61,10 +62,13 @@ export function SubmissionFilterBar({
 
         <label className="flex flex-col text-sm font-medium text-foreground">
           Endpoint
+          {/* Same reasoning as the role select in forms.tsx: the native arrow
+              is pinned to the border, so we draw our own to give it room. */}
+          <div className="relative mt-2">
           <select
             name="endpoint"
             defaultValue={filters.endpointPublicId ?? ""}
-            className="mt-2 h-10 w-full rounded-md border border-border-control bg-card pl-3 pr-9 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            className="h-10 w-full appearance-none rounded-md border border-border-control bg-card pl-3 pr-10 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             <option value="">All endpoints</option>
             {endpoints.map((endpoint) => (
@@ -74,6 +78,11 @@ export function SubmissionFilterBar({
               </option>
             ))}
           </select>
+          <ChevronDown
+            aria-hidden="true"
+            className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          </div>
         </label>
 
         <label className="flex flex-col text-sm font-medium text-foreground">
