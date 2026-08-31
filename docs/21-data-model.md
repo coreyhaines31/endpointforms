@@ -311,5 +311,10 @@ without anyone knowing.
   #41's problem; putting a half-designed key-management scheme here would be
   worse than the gap.
 - **Rate-limit counters, spam scores.** #29 and #31.
-- **Auth session tables.** #34 chooses the Auth.js adapter; `users` is shaped to
-  accept one.
+- ~~**Auth session tables.**~~ Built in #34 — `auth_accounts`, `auth_sessions`,
+  `auth_verification_tokens` and `invitations`, in `0002`/`0003`. See
+  `docs/22-auth-and-workspaces.md`. `invitations` is workspace-scoped and has the
+  same policy as every other scoped table; the three `auth_*` tables carry no
+  `workspace_id`, because a session belongs to a person rather than a tenant.
+  Two property names on `users` were renamed to what `@auth/drizzle-adapter`
+  expects (`emailVerified`, `image`); **the SQL columns are unchanged.**
