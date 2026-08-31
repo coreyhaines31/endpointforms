@@ -4,7 +4,7 @@ import { ProvenanceChip, type Origin } from "@/components/provenance-chip";
 const states: { origin: Origin; means: string; then: string }[] = [
   {
     origin: "human",
-    means: "A person filled out the page.",
+    means: "Came through the human page, behaving like a browser session.",
     then: "Goes to your CRM and counts as a conversion.",
   },
   {
@@ -34,6 +34,13 @@ export function Provenance() {
           <p className="mt-6 max-w-[62ch] text-lead text-muted-foreground">
             Real agents shake hands. Bots pick the lock. One form definition publishes both a
             human page and a machine-callable tool surface, so we know which one was used.
+          </p>
+
+          <p className="mt-5 max-w-[62ch] text-base text-muted-foreground">
+            The honest limit: software that goes to the trouble of impersonating a browser is
+            stamped Human too. Origin tells you the composition of your submissions and shows
+            its reasons for every one. It is not an identity check, and we won&rsquo;t sell it
+            as one.
           </p>
 
           <dl className="mt-12">

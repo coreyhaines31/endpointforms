@@ -12,7 +12,7 @@ Two capabilities, in message order:
 
 1. **Provenance on every submission** — one form definition publishes both a human UI and a
    machine-callable MCP/WebMCP tool surface, so we know which was used. Each submission is
-   stamped human / identified agent / suspected bot. This leads the messaging because
+   stamped Human / Agent / Unverified. This leads the messaging because
    spam and junk leads is the angriest complaint in the category and this is the thing our
    architecture uniquely solves.
 2. **Outcome-weighted optimization** — submissions carry a downstream outcome (won/lost/
