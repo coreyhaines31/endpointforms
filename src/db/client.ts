@@ -1,8 +1,84 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import { databaseUrl, dbTarget } from "./env.ts";
+import { LOCAL_DATABASE_URL, databaseUrl, dbTarget, hasDatabaseUrl } from "./env.ts";
 import * as schema from "./schema.ts";
+
+type Sql = ReturnType<typeof postgres>;
+
+/**
+ * The connection, opened on first use rather than at import.
+ *
+ * `databaseUrl()` throws in production when DATABASE_URL is unset — a good
+ * runtime guard and a bad import-time one. Next evaluates module scope while
+ * collecting page data during `next build`, which runs as production, so any
+ * route importing this module made a database URL a *build* requirement. That
+ * broke `npm run build` on a clean checkout and would have broken the
+ * one-command self-host story in #46.
+ *
+ * Only the client is deferred. Neither `postgres()` nor `drizzle()` opens a
+ * socket, so the wrapper below can be built eagerly — and it must be: the
+ * Auth.js Drizzle adapter walks the prototype chain of whatever it is handed to
+ * choose its Postgres implementation, at import time. Handing it a lazy proxy
+ * failed with "Unsupported database type (object)", because a proxy over a bare
+ * object has no PgDatabase anywhere in its chain.
+ */
+let cached: Sql | null = null;
+
+function connect(): Sql {
+  if (cached) return cached;
+
+  const url = databaseUrl();
+
+  // Neon's pooled endpoint is PgBouncer in transaction mode, which cannot hold
+  // prepared statements across a pooled connection. The direct endpoint can.
+  // Detected rather than hard-coded so either endpoint works.
+  const usesTransactionPooler = url.includes("-pooler.");
+
+  cached = postgres(url, {
+    // A transaction is the unit of workspace scoping, so connections must not
+    // be shared mid-transaction. postgres.js handles this, but keep the pool
+    // modest: serverless functions each hold their own.
+    max: Number(process.env.DATABASE_POOL_MAX ?? 10),
+    // Neon terminates TLS at the edge and refuses plaintext.
+    ssl: dbTarget() === "neon" ? "require" : undefined,
+    prepare: !usesTransactionPooler,
+  });
+  return cached;
+}
+
+/**
+ * The one thing `drizzle()` reads from the client while being constructed.
+ *
+ * It keeps a reference to `client.options.parsers` and `.serializers` — the
+ * Postgres type coders. postgres.js derives those from its `types` option,
+ * which we never set, so they are identical for every connection string: the
+ * placeholder below yields exactly the same coders the real client would, not
+ * an approximation of them. It is only ever reached on a checkout with no
+ * DATABASE_URL, which in practice means `next build` in CI.
+ */
+let parserDonor: Sql | null = null;
+
+function clientOptions(): Sql["options"] {
+  if (hasDatabaseUrl()) return connect().options;
+  parserDonor ??= postgres(LOCAL_DATABASE_URL);
+  return parserDonor.options;
+}
+
+/**
+ * The raw postgres.js client, for migrations and for `set_config`.
+ *
+ * Callable, because postgres.js is used as a tagged template. Every access
+ * other than `options` opens the connection, so a missing DATABASE_URL still
+ * fails loudly in production — just at the first query rather than the first
+ * import.
+ */
+export const sqlClient = new Proxy((() => {}) as unknown as Sql, {
+  get: (_t, prop) =>
+    prop === "options" ? clientOptions() : Reflect.get(connect() as object, prop),
+  apply: (_t, thisArg, args) =>
+    Reflect.apply(connect() as unknown as CallableFunction, thisArg, args),
+});
 
 /**
  * The unscoped database handle.
@@ -25,63 +101,8 @@ import * as schema from "./schema.ts";
  * a second connection implementation behind the same schema is how two targets
  * quietly drift apart.
  */
-/**
- * Created on first use, not at import.
- *
- * `databaseUrl()` throws in production when DATABASE_URL is unset — a good
- * runtime guard, and a bad import-time one. Next evaluates module scope while
- * collecting page data during `next build`, which runs as production, so any
- * route that imported this module made a database URL a *build* requirement.
- * That broke `npm run build` on a clean checkout and would have broken the
- * one-command self-host story in #46. Deferring the connection keeps the guard
- * where it belongs: the first query, not the first import.
- */
-let cached: { client: Sql; db: DrizzleDb } | null = null;
+export const unsafeDb = drizzle(sqlClient, { schema, casing: "snake_case" });
 
-function connect() {
-  if (cached) return cached;
-
-  const url = databaseUrl();
-
-  // Neon's pooled endpoint is PgBouncer in transaction mode, which cannot hold
-  // prepared statements across a pooled connection. The direct endpoint can.
-  // Detected rather than hard-coded so either endpoint works.
-  const usesTransactionPooler = url.includes("-pooler.");
-
-  const client = postgres(url, {
-    // A transaction is the unit of workspace scoping, so connections must not
-    // be shared mid-transaction. postgres.js handles this, but keep the pool
-    // modest: serverless functions each hold their own.
-    max: Number(process.env.DATABASE_POOL_MAX ?? 10),
-    // Neon terminates TLS at the edge and refuses plaintext.
-    ssl: dbTarget() === "neon" ? "require" : undefined,
-    prepare: !usesTransactionPooler,
-  });
-
-  cached = { client, db: drizzle(client, { schema, casing: "snake_case" }) };
-  return cached;
-}
-
-type Sql = ReturnType<typeof postgres>;
-type DrizzleDb = ReturnType<typeof drizzle<typeof schema>>;
-
-/**
- * A proxy so `unsafeDb.query...` and `sqlClient\`...\`` keep working unchanged
- * at every call site while the connection itself stays lazy.
- */
-export const unsafeDb = new Proxy({} as DrizzleDb, {
-  get: (_t, prop) => Reflect.get(connect().db as object, prop),
-  apply: (_t, thisArg, args) =>
-    Reflect.apply(connect().db as unknown as CallableFunction, thisArg, args),
-});
-
-export type Database = DrizzleDb;
-
-/** The raw postgres.js client, for migrations and for `set_config`. */
-export const sqlClient = new Proxy((() => {}) as unknown as Sql, {
-  get: (_t, prop) => Reflect.get(connect().client as object, prop),
-  apply: (_t, thisArg, args) =>
-    Reflect.apply(connect().client as unknown as CallableFunction, thisArg, args),
-});
+export type Database = typeof unsafeDb;
 
 export { schema };
