@@ -36,6 +36,15 @@ export {
 export { buildPayload, sampleSource, serialisePayload } from "./payload.ts";
 
 export {
+  handleSweep,
+  isAuthorisedSweep,
+  runSweep,
+  SWEEP_RETRIES_PER_WORKSPACE,
+  SWEEP_WORKSPACE_LIMIT,
+  type SweepSummary,
+} from "./sweep.ts";
+
+export {
   backoffMs,
   classifyStatus,
   classifyTransportError,
@@ -65,6 +74,8 @@ export {
   getDestination,
   isUuid,
   listDeliveryAttempts,
+  reapStaleAttempts,
+  STALE_ATTEMPT_MS,
   listDestinations,
   rawConfig,
   updateDestination,

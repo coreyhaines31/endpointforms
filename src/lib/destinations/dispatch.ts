@@ -7,9 +7,7 @@ import {
   claimDueRetries,
   lastAttemptNumber,
   loadDeliveryJob,
-  reapStaleAttempts,
   settleAttempt,
-  workspacesWithDeliveryWork,
   type Deliverable,
   type DeliveryJob,
 } from "./store.ts";

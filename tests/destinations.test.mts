@@ -41,6 +41,8 @@ import {
   transportDetail,
   verifySignature,
   ADAPTER_OPTIONS,
+  handleSweep,
+  isAuthorisedSweep,
   isAvailableKind,
 } from "../src/lib/destinations/index.ts";
 import { deliverWebhook } from "../src/lib/destinations/adapters/webhook.ts";
@@ -870,6 +872,96 @@ console.log("\nemail adapter");
 
   if (previousKey === undefined) delete process.env.RESEND_API_KEY;
   else process.env.RESEND_API_KEY = previousKey;
+}
+
+// ---------------------------------------------------------------------------
+// The sweep guard (#42)
+// ---------------------------------------------------------------------------
+
+console.log("\nsweep authorisation");
+{
+  const previous = process.env.CRON_SECRET;
+  const ask = (headers: Record<string, string> = {}, method = "GET") =>
+    new Request("https://endpointforms.test/api/v1/deliveries/sweep", { method, headers });
+
+  // The failure mode of a misconfiguration has to be "nothing runs", never
+  // "anyone can run it". An unguarded sweep is a free way for a stranger to
+  // make our server issue outbound requests.
+  delete process.env.CRON_SECRET;
+  ok(
+    "with no CRON_SECRET set, nothing is authorised — it does not fall open",
+    !isAuthorisedSweep(ask({ authorization: "Bearer anything" })),
+  );
+  ok(
+    "not even an empty bearer",
+    !isAuthorisedSweep(ask({ authorization: "Bearer " })),
+  );
+
+  process.env.CRON_SECRET = "cron-secret-value";
+  ok("the right secret is authorised", isAuthorisedSweep(ask({ authorization: "Bearer cron-secret-value" })));
+  ok("the wrong secret is not", !isAuthorisedSweep(ask({ authorization: "Bearer nope" })));
+  ok("no header at all is not", !isAuthorisedSweep(ask()));
+  ok(
+    "the secret without the Bearer prefix is not",
+    !isAuthorisedSweep(ask({ authorization: "cron-secret-value" })),
+  );
+  ok(
+    "a prefix of the secret is not — length is checked before the compare",
+    !isAuthorisedSweep(ask({ authorization: "Bearer cron-secret-valu" })),
+  );
+  ok(
+    "and neither is the secret with something appended",
+    !isAuthorisedSweep(ask({ authorization: "Bearer cron-secret-valuex" })),
+  );
+
+  // Whitespace around the env var is a copy-paste artefact, not a different
+  // secret. A deployment whose cron silently 401s because someone pasted a
+  // trailing newline is a very quiet outage.
+  process.env.CRON_SECRET = "  cron-secret-value  ";
+  ok(
+    "a secret pasted with surrounding whitespace still matches",
+    isAuthorisedSweep(ask({ authorization: "Bearer cron-secret-value" })),
+  );
+
+  if (previous === undefined) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = previous;
+}
+
+console.log("\nsweep responses");
+{
+  const previous = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = "cron-secret-value";
+  const url = "https://endpointforms.test/api/v1/deliveries/sweep";
+
+  const unauthorised = await handleSweep(new Request(url, { method: "GET" }));
+  t("an unauthenticated sweep is a 401", unauthorised.status, 401);
+  ok(
+    "and challenges rather than 404ing",
+    (unauthorised.headers.get("www-authenticate") ?? "").startsWith("Bearer"),
+  );
+  const body = (await unauthorised.json()) as { message: string };
+  ok(
+    "and does not reveal whether a secret is configured",
+    !/CRON_SECRET is|not configured|no secret/i.test(body.message),
+    body.message,
+  );
+
+  const wrongMethod = await handleSweep(
+    new Request(url, { method: "PUT", headers: { authorization: "Bearer cron-secret-value" } }),
+  );
+  t("an unsupported verb is a 405", wrongMethod.status, 405);
+  t("and says which verbs work", wrongMethod.headers.get("allow"), "GET, POST");
+
+  // Vercel Cron issues GET. Refusing it would mean the schedule 405s forever
+  // and the retry sweep silently never runs — the exact failure this route
+  // exists to prevent, one layer up.
+  ok(
+    "GET is accepted, because that is what Vercel Cron sends",
+    (await handleSweep(new Request(url, { method: "GET", headers: { authorization: "Bearer wrong" } }))).status === 401,
+  );
+
+  if (previous === undefined) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = previous;
 }
 
 // ---------------------------------------------------------------------------

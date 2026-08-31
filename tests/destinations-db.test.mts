@@ -45,9 +45,11 @@ import {
   deliverSubmission,
   drainDispatch,
   getDestination,
+  handleSweep,
   listDeliveryAttempts,
   listDestinations,
   newDestinationSecret,
+  reapStaleAttempts,
   sendTestDelivery,
   sweepDueRetries,
   updateDestination,
@@ -198,6 +200,7 @@ async function main() {
     await health(fixture, receiver);
     await crud(fixture);
     await testDelivery(fixture, receiver);
+    await pendingRowsAndTheSweep(fixture, receiver);
   } finally {
     await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
   }
@@ -698,6 +701,159 @@ async function testDelivery(fixture: Fixture, receiver: Receiver) {
   );
   ok("testing a kind we have not built refuses honestly", !unavailable.ok);
   ok("and says why", /not available yet/.test(unavailable.error ?? ""), unavailable.error);
+}
+
+// ---------------------------------------------------------------------------
+// The attempt row's lifecycle, and the scheduled sweep (#42)
+// ---------------------------------------------------------------------------
+
+/**
+ * The row exists before the request does.
+ *
+ * This is the property that stops the delivery log developing silent holes. A
+ * delivery whose process is torn down mid-flight — a serverless function frozen
+ * once the response is flushed, a connection dropped under load — must still
+ * leave a trace, or a destination that has been failing for three weeks reads
+ * as "no failures recorded", which is the dashboard this product is named
+ * against.
+ */
+async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
+  console.log("\npending rows and the sweep");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Sweep target",
+    config: { url: `${receiver.url}/sweep`, secret: SECRET },
+  });
+  if (!created) return;
+
+  // A receiver that never answers, so the attempt is observably in flight while
+  // we look at the row. `delayMs` outlives the adapter timeout we pass below.
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+  receiver.reply.delayMs = 3_000;
+
+  const response = await submit(fixture.endpointPublicId, { email: "pending@test.example" });
+  const ack = (await response.json()) as { id: string };
+
+  // Deliberately not drained yet: the point is what is on disk *during* the
+  // request, not after it.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const inFlight = await attemptsFor(created.id);
+  t("a row exists before the request has come back", inFlight.length, 1);
+  t("and it is pending", inFlight[0]?.status, "pending");
+  ok("with a start time", inFlight[0]?.startedAt !== null);
+  ok("and no completion time yet", inFlight[0]?.completedAt === null);
+  ok(
+    "and the bytes it is sending, so a torn-down delivery still says what it tried",
+    (inFlight[0]?.requestBody ?? "").includes("pending@test.example"),
+  );
+
+  await drainDispatch();
+  receiver.reply.delayMs = 0;
+
+  const settled = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  t("the same row settles rather than a second one appearing", settled.length, 1);
+  t("as succeeded", settled[0].status, "succeeded");
+  ok("with a completion time", settled[0].completedAt !== null);
+
+  // --- The reaper.
+  //
+  // A pending row nobody will ever finish. Written by hand because the only
+  // honest way to produce one is to kill the process that owned it.
+  const abandonedId = newId();
+  await unsafeDb.insert(deliveryAttempts).values({
+    id: abandonedId,
+    workspaceId: fixture.workspaceId,
+    destinationId: created.id,
+    submissionId: (
+      await unsafeDb
+        .select({ id: submissions.id })
+        .from(submissions)
+        .where(eq(submissions.publicId, ack.id))
+    )[0].id,
+    attempt: 2,
+    status: "pending",
+    requestBody: "{}",
+    // Older than STALE_ATTEMPT_MS, i.e. the process that opened it is long gone.
+    startedAt: new Date(Date.now() - 30 * 60_000),
+    createdAt: new Date(Date.now() - 30 * 60_000),
+  });
+
+  let health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("an abandoned pending row does not count as a failure on its own", health?.health.consecutiveFailures, 0);
+
+  const reaped = await reapStaleAttempts(fixture.workspaceId);
+  t("the reaper finds it", reaped, 1);
+
+  const afterReap = (await listDeliveryAttempts(fixture.workspaceId, created.id)).find(
+    (row) => row.id === abandonedId,
+  );
+  t("and calls it a failure rather than leaving it pending", afterReap?.status, "failed");
+  ok(
+    "with a sentence saying what actually happened",
+    /started and never finished/i.test(afterReap?.error ?? ""),
+    afterReap?.error,
+  );
+  ok("and a retry scheduled, so the lead still gets its chances", afterReap?.nextRetryAt !== null);
+
+  health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  // It does NOT bump `consecutiveFailures`, and that is right rather than a
+  // gap: this row is older than the last successful delivery, and the count is
+  // deliberately "failures since the last success". Nor is it dead-lettered —
+  // a retry is scheduled, so the lead is in flight, not lost. What changed is
+  // that it is now visible in the log as a failure with a reason on it instead
+  // of sitting `pending` forever, looking like nothing happened.
+  t("it does not count against a destination that has succeeded since", health?.health.consecutiveFailures, 0);
+  t("and it is not dead-lettered, because a retry is scheduled", health?.health.deadLetterCount, 0);
+  t("but it is no longer pending", health?.health.pendingCount, 0);
+
+  // --- The sweep, end to end through the HTTP handler.
+  const previousSecret = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = "sweep-test-secret";
+  const url = "https://endpointforms.test/api/v1/deliveries/sweep";
+
+  const refused = await handleSweep(new Request(url, { method: "GET" }));
+  t("an unauthenticated sweep does no work", refused.status, 401);
+
+  const swept = await handleSweep(
+    new Request(url, {
+      method: "GET",
+      headers: { authorization: "Bearer sweep-test-secret" },
+    }),
+    // Far enough forward that the reaped row's backoff has elapsed.
+    { now: new Date(Date.now() + 2 * 3_600_000), timeoutMs: 3_000 },
+  );
+  t("an authorised sweep runs", swept.status, 200);
+  const summary = (await swept.json()) as {
+    ok: boolean;
+    workspaces: number;
+    delivered: number;
+  };
+  ok("and reports what it did", summary.ok === true && summary.workspaces >= 1, summary);
+  ok("including delivering the retry the reaper scheduled", summary.delivered >= 1, summary);
+
+  const finalLog = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  const delivered = finalLog.filter((row) => row.status === "succeeded");
+  ok("so the abandoned delivery did eventually arrive", delivered.length >= 2, finalLog.length);
+
+  // Idempotent: the first sweep cleared `next_retry_at` on everything it took,
+  // so a second one — a cron whose previous run overran — finds nothing.
+  const again = await handleSweep(
+    new Request(url, {
+      method: "GET",
+      headers: { authorization: "Bearer sweep-test-secret" },
+    }),
+    { now: new Date(Date.now() + 4 * 3_600_000), timeoutMs: 3_000 },
+  );
+  const secondSummary = (await again.json()) as { delivered: number };
+  t("sweeping again delivers nothing — it is safe to run twice", secondSummary.delivered, 0);
+
+  if (previousSecret === undefined) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = previousSecret;
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
 }
 
 // ---------------------------------------------------------------------------

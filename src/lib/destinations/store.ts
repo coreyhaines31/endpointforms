@@ -61,11 +61,18 @@ function healthState(
   enabled: boolean,
   consecutiveFailures: number,
   lastAttemptAt: Date | null,
+  lastSuccessAt: Date | null,
 ): DestinationHealth["state"] {
   if (!enabled) return "paused";
   if (lastAttemptAt === null) return "untested";
   if (consecutiveFailures >= FAILING_AT) return "failing";
   if (consecutiveFailures >= DEGRADED_AT) return "degraded";
+  // A destination whose only attempts are still `pending` has no failures and no
+  // success. "Healthy" would be a claim that the last delivery arrived, which is
+  // not known — so it stays `untested` until something actually lands. This is
+  // the same rule as everywhere else on this screen: say what happened, not what
+  // probably happened.
+  if (lastSuccessAt === null) return "untested";
   return "healthy";
 }
 
@@ -821,6 +828,7 @@ type HealthRow = {
 
 function toListItem(row: HealthRow): DestinationListItem {
   const lastAttemptAt = toDate(row.lastAttemptAt);
+  const lastSuccessAt = toDate(row.lastSuccessAt);
   return {
     id: row.id,
     kind: row.kind,
@@ -829,9 +837,9 @@ function toListItem(row: HealthRow): DestinationListItem {
     createdAt: row.createdAt,
     config: redactConfig(row.kind, row.config),
     health: {
-      state: healthState(row.enabled, row.consecutiveFailures, lastAttemptAt),
+      state: healthState(row.enabled, row.consecutiveFailures, lastAttemptAt, lastSuccessAt),
       consecutiveFailures: row.consecutiveFailures,
-      lastSuccessAt: toDate(row.lastSuccessAt),
+      lastSuccessAt,
       lastFailureAt: toDate(row.lastFailureAt),
       lastAttemptAt,
       pendingCount: row.pendingCount,

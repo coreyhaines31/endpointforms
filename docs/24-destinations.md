@@ -159,21 +159,52 @@ A delivery that exhausts its attempts stops with `next_retry_at` null. That is t
 queue — it is a query, not a second table — and **nothing is thrown away**: the submission is
 still in the inbox and "Send again" in the delivery log replays it, with the same delivery id.
 
-### The honest part: there is no queue
+### How a retry actually gets run
 
-This stack has no job runner, and pretending otherwise would be exactly the dishonesty #42 is
-about. What actually happens:
+There is no job queue in this stack, so the triggers are named rather than implied:
 
 - The **first attempt** runs in `after()` — Next's post-response hook — outside the response
   but inside the same invocation.
-- A **retry** is scheduled by writing `next_retry_at` and then waits to be picked up. Two
-  things pick it up: the next submission to the same endpoint sweeps a few due retries, and
-  the "Send again" button runs one immediately.
-- **An endpoint that takes one lead a week and then breaks will not retry on schedule** — its
-  retry waits for the next lead. That is a real limitation, not a rounding error.
+- A **retry** is scheduled by writing `next_retry_at`, then picked up by any of three things:
+  1. the next submission to the same endpoint, which sweeps a few due retries;
+  2. the **"Send again"** button in the delivery log, immediately;
+  3. **`GET /api/v1/deliveries/sweep`**, a scheduled sweep across all workspaces.
 
-The fix is a cron calling `sweepDueRetries` every minute. The retry *policy* is complete and
-tested either way.
+The third is what makes the other two sufficient. Without it, an endpoint that takes one lead
+a week and then breaks would not retry for a week — the customers least able to notice on
+their own would be the ones least likely to be told.
+
+### The sweep endpoint
+
+```
+GET  /api/v1/deliveries/sweep       (what Vercel Cron sends)
+POST /api/v1/deliveries/sweep       (by hand)
+Authorization: Bearer $CRON_SECRET
+```
+
+**With no `CRON_SECRET` set the route refuses everything.** It does not fall open. An
+unguarded sweep is a free way for a stranger to make this server issue outbound requests, so
+the failure mode of a misconfiguration is "nothing runs", never "anyone can run it". The
+comparison is constant-time and the 401 does not reveal whether a secret is configured.
+
+Bounded per invocation (100 workspaces, 25 retries and 50 stale rows each) and safe to run
+twice: a sweep clears `next_retry_at` on every row it claims, inside the transaction that
+reads it, so a second sweep — or a cron whose previous run overran — finds nothing to take.
+`more: true` in the response says a cap was hit and another pass has work.
+
+### Attempt rows are written before the request, not after
+
+An attempt row is opened `pending` with `started_at` set **before** the outbound request, and
+settled to `succeeded`/`failed` when it returns. This is not bookkeeping — it is what stops the
+delivery log developing silent holes. A delivery whose process is torn down mid-flight (a
+serverless function frozen once the response is flushed, a connection dropped under load) has
+already left its row on disk.
+
+A `pending` row older than five minutes means the process that opened it went away. The sweep
+**reaps** it: marks it failed with a sentence saying exactly that, and schedules a retry under
+the normal policy. Left alone it would be worse than a missing row, because
+`consecutiveFailures` does not count a pending row — the destination would read as healthy
+while a lead sat undelivered.
 
 ## What we will not do
 
@@ -208,6 +239,16 @@ An incoming webhook, not an OAuth app: nothing to refresh, no scopes, no install
 customer creates it in a minute. The trade is that **the URL is the credential**, so it is
 masked in the UI, never rendered back into the edit form, never written into the delivery log,
 and constrained to `hooks.slack.com` at save time.
+
+## Environment
+
+| Variable | What it does |
+|---|---|
+| `CRON_SECRET` | Bearer token for the sweep endpoint. **Unset means the sweep refuses everything.** Vercel Cron sets and sends this automatically. |
+| `RESEND_API_KEY` | Mail transport for the email destination. Unset means an email destination fails with a `configuration` error naming this variable — it does not queue and does not report success. |
+| `MAIL_FROM` | Sender address for notifications. Defaults to `Endpoint Forms <notifications@endpointforms.com>`. |
+| `ALLOW_INSECURE_DESTINATIONS=1` | Permits `http://` destinations. For a self-hoster delivering inside their own network. Off everywhere else. |
+| `ALLOW_PRIVATE_DESTINATIONS=1` | Permits loopback and private addresses. **Set only by the test suite.** Never in a deployment. |
 
 ## Health
 
