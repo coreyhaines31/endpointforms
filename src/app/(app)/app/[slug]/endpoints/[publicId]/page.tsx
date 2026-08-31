@@ -9,11 +9,15 @@ import { ProvenanceChip } from "@/components/provenance-chip";
 import { DataTable, Td, Th } from "@/components/app/table";
 import { RelativeTime } from "@/components/app/time";
 import { VerdictChip } from "@/components/app/verdict-chip";
+import { YieldPanel } from "@/components/app/yield-panel";
+import { DeliveryAlert, HealthChip } from "@/components/app/destinations-health";
+import { listDestinations } from "@/lib/destinations/store";
 import { getEndpointByPublicId } from "@/lib/workspaces/endpoints";
 import { requireWorkspace } from "@/lib/workspaces/server";
 import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 import { listSubmissions, parseSubmissionFilters } from "@/lib/workspaces/submissions";
 import { summariseValues } from "@/lib/submission-values";
+import { readYield } from "@/lib/yield/query";
 
 /**
  * One endpoint.
@@ -39,6 +43,12 @@ export default async function EndpointDetailPage({
     parseSubmissionFilters({ endpoint: endpoint.publicId }),
   );
   const rows = recent.rows.slice(0, 8);
+  const destinationRows = await listDestinations(workspace.id, endpoint.publicId);
+
+  // Yield for this endpoint (#44). Read here rather than in the component:
+  // `src/lib/yield/query.ts` opens a database connection, and the eslint rule
+  // in `eslint.config.mjs` exists to keep that out of `src/components`.
+  const yieldReport = await readYield(workspace.id, { endpointPublicId: endpoint.publicId });
 
   return (
     <Container className="max-w-[60rem] pt-10">
@@ -70,6 +80,31 @@ export default async function EndpointDetailPage({
           />
         </PanelBody>
       </Panel>
+
+      {/* The schema, and the way in to the builder (#35). Second on the page and
+          not first: the snippet above is what makes the endpoint work, and this
+          is the optional upgrade on top of it. The description says so in both
+          states rather than implying a missing schema is a missing step. */}
+      <Panel className="mt-6">
+        <PanelHeader
+          title="Form"
+          description={
+            endpoint.hasSchema
+              ? "A schema is declared, so this endpoint renders its own form, publishes an agent-callable tool, and checks what arrives against a definition."
+              : "No schema declared. The endpoint works exactly as it is — declaring one is what adds a form we host, an agent-callable tool and server-side validation."
+          }
+          action={
+            <Link
+              href={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/builder`}
+              className="shrink-0 rounded-md border border-border-control px-2.5 py-1.5 text-sm font-medium text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              {endpoint.hasSchema ? "Edit the form" : "Build a form"}
+            </Link>
+          }
+        />
+      </Panel>
+
+      <YieldPanel className="mt-6" report={yieldReport} />
 
       <Panel className="mt-6">
         <PanelHeader
@@ -136,6 +171,51 @@ export default async function EndpointDetailPage({
           </DataTable>
         )}
       </Panel>
+
+      {/* Destinations (#41), and their health (#42). The alert above the panel
+          is absent when nothing is wrong — the point of it is that it appears
+          here, on the page someone opened for another reason, rather than only
+          on the destinations screen that they would have to already suspect a
+          problem to visit. */}
+      <div className="mt-6 grid gap-6">
+        <DeliveryAlert
+          failing={destinationRows.filter((row) => row.health.state === "failing")}
+          degraded={destinationRows.filter((row) => row.health.state === "degraded")}
+          href={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/destinations`}
+        />
+        <Panel>
+          <PanelHeader
+            title="Destinations"
+            description={
+              destinationRows.length > 0
+                ? // "delivering" counts the ones that are actually working, not
+                  // the ones that are switched on. Calling a failing destination
+                  // "delivering" because `enabled` is true is the dashboard this
+                  // product is named against, in miniature.
+                  `${destinationRows.length} ${destinationRows.length === 1 ? "destination" : "destinations"}, ${destinationRows.filter((row) => row.health.state === "healthy").length} delivering. Every submission is stored first and delivered second, so a destination that breaks costs a delivery and never a lead.`
+                : "Nothing leaves this endpoint yet. Submissions are still being stored, and they will still be here whenever you add somewhere for them to go."
+            }
+            action={
+              <Link
+                href={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/destinations`}
+                className="shrink-0 rounded-md border border-border-control px-2.5 py-1.5 text-sm font-medium text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              >
+                {destinationRows.length > 0 ? "Manage destinations" : "Add a destination"}
+              </Link>
+            }
+          />
+          {destinationRows.length > 0 ? (
+            <PanelBody className="flex flex-wrap gap-2">
+              {destinationRows.map((row) => (
+                <span key={row.id} className="inline-flex items-center gap-2">
+                  <HealthChip state={row.health.state} />
+                  <span className="text-sm text-muted-foreground">{row.name}</span>
+                </span>
+              ))}
+            </PanelBody>
+          ) : null}
+        </Panel>
+      </div>
 
       <Panel className="mt-6">
         <PanelHeader
