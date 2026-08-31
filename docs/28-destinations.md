@@ -227,7 +227,12 @@ while a lead sat undelivered.
 
 The email destination sends over an HTTP mail API rather than SMTP: `RESEND_API_KEY` (and
 `MAIL_FROM` for the sender address). Without it the destination **fails with a configuration
-error naming the variable** — it does not queue, does not pretend, and does not report success.
+error** — it does not queue, does not pretend, and does not report success.
+
+The failure message is written for two readers. A self-hoster is told which variables to set;
+a customer of the hosted product, who cannot set an environment variable on our deployment, is
+told that email delivery is not switched on and — the part that matters to both — that **the
+submission is still here** and can be redelivered from the log once it is.
 
 Adding an unverified hand-rolled SMTP client would have failed in production, quietly, on the
 one feature whose entire pitch is that it fails loudly. **A self-hoster who only has SMTP has a

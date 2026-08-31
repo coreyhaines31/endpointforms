@@ -26,7 +26,7 @@ export type DeliveryStatus = "pending" | "succeeded" | "failed";
 /**
  * What a destination receives. **This is a public contract.** Someone else's
  * integration parses it, so fields are added and never renamed or removed;
- * `docs/24-destinations.md` is the copy of this that customers read.
+ * `docs/28-destinations.md` is the copy of this that customers read.
  *
  * `origin` and `verdict` are the two fields that make this payload ours rather
  * than every other form builder's webhook: the receiving system gets to know
