@@ -8,6 +8,7 @@ import {
   nativeConstraints,
 } from "@/lib/render/controls";
 import { summaryTitle, visitorMessage } from "@/lib/render/messages";
+import { endpointHoneypotFields, honeypotInputProps } from "@/lib/spam/honeypot";
 import { DEFAULT_FONT_STACK, type FormTheme } from "@/lib/render/theme";
 
 /**
@@ -128,6 +129,11 @@ export function FormView({
     error: errorByKey.get(field.key),
   }));
 
+  // Any decoy whose name collides with a field this form really collects is
+  // dropped rather than rendered: a trap that eats a customer's own data is
+  // worse than no trap.
+  const decoys = endpointHoneypotFields(document.fields.map((field) => field.key));
+
   const listed = rendered.filter((entry) => entry.error && entry.field.type !== "hidden");
 
   return (
@@ -135,7 +141,11 @@ export function FormView({
       style={style}
       className="mx-auto flex w-full max-w-[34rem] flex-1 flex-col bg-[var(--form-page)] px-5 py-[clamp(2.5rem,7vw,4.5rem)] text-[var(--form-fg)]"
     >
-      <h1 className="text-h2 text-balance">{title}</h1>
+      {/* `break-words` because the title is somebody else's string and can be a
+          single unbroken token — an imported form is often named after the URL
+          it came from. Without it a long one runs off the side of a phone,
+          taking the page's horizontal scroll with it. */}
+      <h1 className="text-h2 break-words text-balance">{title}</h1>
 
       {listed.length > 0 ? <ErrorSummary entries={listed} /> : null}
 
@@ -152,6 +162,21 @@ export function FormView({
             than relying on the fallback is what keeps a customer's hosted form
             off the marketing site's thank-you page. */}
         <input type="hidden" name="_redirect" value={redirectTo} />
+
+        {/* The spam decoys (#31). Rendered here rather than in `src/lib/spam`
+            because this is the only place that knows which field names the
+            customer's own schema already uses — a decoy named `company_website`
+            on a form that genuinely collects one would eat real data, so
+            `endpointHoneypotFields` drops any that collide.
+
+            Not `display:none`, not `type=hidden`, not `sr-only`. Any filler
+            worth the name skips all three, and hiding it from a screen reader
+            is how a real customer fills it in and is silently rejected. It is a
+            laid-out element, off-canvas, out of the tab order, labelled with an
+            instruction to leave it alone. See `src/lib/spam/honeypot.ts`. */}
+        {decoys.map((name) => (
+          <input key={name} {...honeypotInputProps(name)} />
+        ))}
 
         <div className="grid gap-7">
           {rendered.map((entry) =>
@@ -418,6 +443,7 @@ function Control({
           {...shared}
           {...constraints}
           rows={5}
+          placeholder={field.placeholder}
           defaultValue={first(values[field.key]) ?? ""}
           className={`${CONTROL_CLASS} resize-y`}
         />
@@ -489,6 +515,7 @@ function Control({
           type={inputType(field)}
           inputMode={inputMode(field)}
           autoComplete={autoCompleteFor(field)}
+          placeholder={field.placeholder}
           defaultValue={first(values[field.key]) ?? ""}
           className={`${CONTROL_CLASS} h-11`}
         />

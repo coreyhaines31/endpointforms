@@ -117,6 +117,16 @@ const baseFieldSchema = z.strictObject({
   type: z.enum(FIELD_TYPES),
   required: z.boolean().default(false),
   help: z.string().max(MAX_HELP_CHARS).optional(),
+  /**
+   * The greyed-out hint inside the control. Distinct from `help`, which is a
+   * sentence that stays readable once the field is filled in — a placeholder
+   * disappears the moment somebody types, so anything a person needs to *keep*
+   * reading belongs in `help` instead.
+   *
+   * Optional and additive: a document that predates this property reads exactly
+   * as it always did, and a hosted form simply renders no placeholder.
+   */
+  placeholder: z.string().max(MAX_LABEL_CHARS).optional(),
   options: z.array(optionSchema).max(MAX_OPTIONS).optional(),
   validation: validationSchema.optional(),
 });
@@ -343,7 +353,16 @@ export function readStoredDocument(stored: unknown): FormSchemaDocument | null {
 /** The properties this build knows about, and only those. */
 function stripUnknown(raw: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const key of ["key", "label", "type", "required", "help", "options", "validation"]) {
+  for (const key of [
+    "key",
+    "label",
+    "type",
+    "required",
+    "help",
+    "placeholder",
+    "options",
+    "validation",
+  ]) {
     if (raw[key] !== undefined) out[key] = raw[key];
   }
   if (Array.isArray(raw.options)) {
@@ -372,6 +391,7 @@ export function serializeSchemaDocument(document: FormSchemaDocument): FormSchem
       type: field.type,
       required: field.required,
       ...(field.help === undefined ? {} : { help: field.help }),
+      ...(field.placeholder === undefined ? {} : { placeholder: field.placeholder }),
       ...(field.options === undefined ? {} : { options: field.options }),
       ...(field.validation === undefined ? {} : { validation: field.validation }),
     })),
