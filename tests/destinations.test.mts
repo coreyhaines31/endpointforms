@@ -828,7 +828,24 @@ console.log("\nemail adapter");
   });
   ok("says so when there is no mail transport rather than reporting success", !unconfigured.ok);
   t("and calls it a configuration failure", unconfigured.failure, "configuration");
-  ok("and names the variable to set", /RESEND_API_KEY/.test(unconfigured.error ?? ""), unconfigured.error);
+  // Two readers, one string. A hosted customer cannot set an env var on our
+  // deployment, so the sentence they read first must not order them to — while
+  // a self-hoster still needs the variable named.
+  ok(
+    "leads with something true for a customer who cannot change the config",
+    /not switched on for this deployment/.test(unconfigured.error ?? ""),
+    unconfigured.error,
+  );
+  ok(
+    "and still names the variable, for whoever can set it",
+    /RESEND_API_KEY/.test(unconfigured.error ?? ""),
+    unconfigured.error,
+  );
+  ok(
+    "but does not open by telling a customer to set it",
+    !/^Set RESEND_API_KEY/.test(unconfigured.error ?? ""),
+    unconfigured.error,
+  );
   ok(
     "and says the submission is still here",
     /still here/.test(unconfigured.error ?? ""),

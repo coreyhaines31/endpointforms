@@ -54,9 +54,22 @@ export function isMailConfigured(): boolean {
   return (process.env.RESEND_API_KEY ?? "").trim() !== "";
 }
 
-/** What to tell someone whose email destination cannot send. Names the fix. */
+/**
+ * What to tell someone whose email destination cannot send.
+ *
+ * **Written for two readers, and it used to be written for only one.** The
+ * first draft said "Set RESEND_API_KEY (and MAIL_FROM…)", which is exactly
+ * right for a self-hoster and useless-to-alarming for a customer of the hosted
+ * product: they cannot set an environment variable on our deployment, and being
+ * told to reads as our internals leaking through a support surface.
+ *
+ * So the first sentence states the fact and the consequence in terms that are
+ * true for anyone, and the self-hosting instruction is parenthetical — present
+ * for whoever it applies to, ignorable by everyone else. The line that matters
+ * most to both is the same one: **the submission is still here.**
+ */
 export const MAIL_NOT_CONFIGURED =
-  "No mail transport is configured, so nothing was sent. Set RESEND_API_KEY (and MAIL_FROM for the sender address) and redeliver — the submission is still here.";
+  "Email delivery is not switched on for this deployment, so nothing was sent. The submission is still here — turn it on and redeliver from the log and nothing is lost. (Self-hosting? Set RESEND_API_KEY, and MAIL_FROM for the sender address.)";
 
 export async function sendMail(
   message: MailMessage,
