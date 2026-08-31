@@ -1,8 +1,10 @@
 import { Container } from "@/components/container";
 import { Panel, PanelBody, PanelHeader } from "@/components/app/panel";
+import { CopyBlock } from "@/components/app/copy";
 import { RenameWorkspaceForm } from "@/components/app/forms";
 import { SpamListsForm } from "@/components/app/spam-lists";
 import { listSpamEntries } from "@/lib/spam/review";
+import { mintVerdictApiKey } from "@/lib/verdict/keys";
 import { requireWorkspace } from "@/lib/workspaces/server";
 import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 
@@ -14,6 +16,7 @@ export default async function WorkspaceSettingsPage({
   const { slug } = await params;
   const { workspace, role } = await requireWorkspace(slug);
   const spamEntries = await listSpamEntries(workspace.id);
+  const apiKey = mintVerdictApiKey(workspace);
 
   return (
     <Container className="max-w-[44rem] pt-10">
@@ -52,6 +55,34 @@ export default async function WorkspaceSettingsPage({
           </p>
         </PanelBody>
       </Panel>
+      <Panel className="mt-6">
+        <PanelHeader
+          title="Outcome API key"
+          description="Authenticates the outcome webhook — how a closed deal gets back to the form that produced it."
+        />
+        <PanelBody>
+          {apiKey ? (
+            <>
+              <CopyBlock label="Bearer token" code={apiKey} />
+              <p className="mt-3 max-w-[60ch] text-sm text-muted-foreground">
+                Send it as an <code className="font-mono">Authorization: Bearer</code> header to{" "}
+                <code className="font-mono">/api/v1/verdict</code>. It is derived from this
+                workspace rather than stored, so there is no key table to leak — and equally, no
+                way to revoke one workspace&rsquo;s key without rotating every workspace&rsquo;s.
+                Renaming this workspace invalidates it.
+              </p>
+            </>
+          ) : (
+            <p className="max-w-[60ch] text-sm text-muted-foreground">
+              No key, because <code className="font-mono">VERDICT_API_KEY_SECRET</code> is not set
+              on this deployment. The outcome webhook refuses every request until it is: a
+              forgeable key would be a write into another workspace&rsquo;s data, so it fails
+              closed rather than falling back to a built-in secret.
+            </p>
+          )}
+        </PanelBody>
+      </Panel>
+
       <Panel className="mt-6">
         <PanelHeader
           title="Spam lists"
