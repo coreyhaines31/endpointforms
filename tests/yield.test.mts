@@ -24,6 +24,7 @@ import {
   computeYield,
   emptyTallies,
   MIN_RESOLVED,
+  MIN_SUBMISSIONS_FOR_PER_HUNDRED,
   wilsonInterval,
 } from "../src/lib/yield/compute.ts";
 import {
@@ -329,7 +330,11 @@ section("Yield value");
   const [value] = money.value;
   t("total is exact cents", value.totalCents, 7_005_000n);
   t("per submission divides by every submission, open ones included", value.perSubmissionCents, 350_250n);
-  t("per hundred submissions is the finance version", value.perHundredSubmissionsCents, 35_025_000n);
+  t(
+    `per hundred is withheld below ${MIN_SUBMISSIONS_FOR_PER_HUNDRED} submissions`,
+    value.perHundredSubmissionsCents,
+    null,
+  );
   t("average deal size divides by the deals that had one", value.averageWonCents, 1_401_000n);
   t("per visitor is null when nobody counted visitors", value.perVisitorCents, null);
   t("concentration is the largest deal's share", value.concentration, 0.4497);
@@ -408,6 +413,87 @@ section("Yield value");
     "the report says why",
     mixed.caveats.some((line) => line.includes("never added together")),
     mixed.caveats,
+  );
+}
+
+section("per 100 submissions is a report, not a projection");
+
+{
+  // 21 submissions and $70,050 would print "$333,571 per 100" — real money
+  // multiplied by 4.8. The figure is absent rather than caveated, because a
+  // caption does not travel with a screenshot.
+  const small = report(
+    "window below a hundred",
+    tallies({ submissions: 21, won: 6, awaiting: 9, lost: 3, disqualified: 3, money: [usd(7_005_000n, 5, 3_150_000n)] }),
+  );
+  t("no extrapolated figure", small.value[0].perHundredSubmissionsCents, null);
+  t("but value per submission is still real", small.value[0].perSubmissionCents, 333_571n);
+
+  const exactly = computeYield(
+    tallies({ submissions: 100, won: 6, awaiting: 94, money: [usd(7_005_000n, 5)] }),
+  );
+  t(
+    `at exactly ${MIN_SUBMISSIONS_FOR_PER_HUNDRED} it is reported`,
+    exactly.value[0].perHundredSubmissionsCents,
+    7_005_000n,
+  );
+  t("and equals the total, because the window is a hundred", exactly.value[0].totalCents, 7_005_000n);
+
+  const large = computeYield(
+    tallies({ submissions: 400, won: 6, awaiting: 394, money: [usd(7_005_000n, 5)] }),
+  );
+  t("above a hundred it scales down rather than up", large.value[0].perHundredSubmissionsCents, 1_751_250n);
+}
+
+section("exclusions are counted, so deletion cannot be silent");
+
+{
+  const clean = report(
+    "nothing excluded",
+    tallies({ submissions: 50, won: 5, lost: 20, disqualified: 25 }),
+  );
+  t("a measured zero is carried through", clean.inputs.excluded, { deleted: 0, outsideWindow: 0 });
+  ok(
+    "and no exclusion caveat is raised",
+    !clean.caveats.some((line) => line.includes("deleted")),
+    clean.caveats,
+  );
+
+  // The gaming case: 40 junk submissions deleted. The rate is genuinely higher
+  // and stays higher — what must not happen is it moving without explanation.
+  const trimmed = report(
+    "junk deleted",
+    tallies({
+      submissions: 60,
+      won: 5,
+      lost: 20,
+      disqualified: 35,
+      excluded: { deleted: 40, outsideWindow: 0 },
+    }),
+  );
+  t("the arithmetic is unchanged", trimmed.rate.floor, 5 / 60);
+  ok(
+    "but the deleted count is stated",
+    trimmed.caveats.some((line) => line.includes("40 deleted submissions are not counted here")),
+    trimmed.caveats,
+  );
+  ok(
+    "and says which way it moves the number",
+    trimmed.caveats.some((line) => line.includes("raises the Yield rate")),
+    trimmed.caveats,
+  );
+}
+
+{
+  const unmeasured = report(
+    "a slice, where exclusions were never counted",
+    tallies({ submissions: 30, won: 3, awaiting: 27, excluded: null }),
+  );
+  t("null is carried through rather than becoming zero", unmeasured.inputs.excluded, null);
+  ok(
+    "and no claim about exclusions is made",
+    !unmeasured.caveats.some((line) => line.includes("deleted")),
+    unmeasured.caveats,
   );
 }
 

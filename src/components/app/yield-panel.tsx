@@ -218,11 +218,21 @@ function ValueStats({ report }: { report: YieldReport }) {
               tone="good"
               note={`Recorded on ${count(value.wonWithValue)} won ${value.wonWithValue === 1 ? "deal" : "deals"}. A floor, not a forecast.`}
             />
-            <Stat
-              label="Per 100 submissions"
-              value={formatCents(value.perHundredSubmissionsCents, value.currency, { decimals: 0 })}
-              note={`A rate, not money received: the total spread across all ${count(report.submissions)} submissions in this window and scaled to 100. Open submissions are in that denominator, so it can only rise.`}
-            />
+            {value.perHundredSubmissionsCents !== null ? (
+              <Stat
+                label="Per 100 submissions"
+                value={formatCents(value.perHundredSubmissionsCents, value.currency, {
+                  decimals: 0,
+                })}
+                note={`A rate, not money received: the total spread across all ${count(report.submissions)} submissions in this window. Open submissions are in that denominator, so it can only rise.`}
+              />
+            ) : (
+              <Stat
+                label="Per submission"
+                value={formatCents(value.perSubmissionCents, value.currency)}
+                note={`Across all ${count(report.submissions)} submissions, open ones included. Per-100 is not shown below 100 submissions — it would be this number multiplied up rather than anything this window measured.`}
+              />
+            )}
             <Stat
               label="Average won deal"
               value={formatCents(value.averageWonCents, value.currency, { decimals: 0 })}
@@ -283,12 +293,18 @@ function Inputs({ report }: { report: YieldReport }) {
     ["Slowest tenth take", days(inputs.timing.p90DaysToVerdict)],
     ["Open and already older than that median", count(inputs.timing.awaitingOlderThanMedian)],
     ["Window", describeWindow(report)],
+    ["Deleted submissions, not counted", exclusion(inputs.excluded?.deleted)],
+    ["Submissions outside this window", exclusion(inputs.excluded?.outsideWindow)],
   ];
 
   for (const value of report.value) {
     rows.push([
       `Value recorded (${currencyLabel(value.currency)})`,
       `${formatCents(value.totalCents, value.currency)} across ${count(value.wonWithValue)} ${value.wonWithValue === 1 ? "deal" : "deals"}`,
+    ]);
+    rows.push([
+      `Value per submission (${currencyLabel(value.currency)})`,
+      formatCents(value.perSubmissionCents, value.currency),
     ]);
   }
 
@@ -300,7 +316,9 @@ function Inputs({ report }: { report: YieldReport }) {
       <p className="mt-3 max-w-[68ch] text-sm text-muted-foreground">
         Every input, so the number can be checked rather than believed. An
         unresolved submission is counted as not-yet-won in the rate and is never
-        counted as a loss.
+        counted as a loss, and anything the denominator leaves out is counted at
+        the bottom — deleting submissions raises this rate, so it should not be
+        possible to do it quietly.
       </p>
       <dl className="mt-4 grid grid-cols-1 gap-x-8 sm:grid-cols-2">
         {rows.map(([label, value]) => (
@@ -425,6 +443,16 @@ function clampShare(value: number | null): number {
 
 function count(value: number): string {
   return value.toLocaleString("en-US");
+}
+
+/**
+ * An exclusion count.
+ *
+ * `undefined` means the read did not measure it, which is not the same as none
+ * and must not print as "0" — a zero here is a claim that nothing was left out.
+ */
+function exclusion(value: number | undefined): string {
+  return value === undefined ? "not measured for this view" : count(value);
 }
 
 function days(value: number | null): string {

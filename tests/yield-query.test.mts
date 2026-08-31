@@ -169,6 +169,16 @@ async function main() {
   t("the deleted deal's money is gone with it", report.value[0].wonWithValue, 3);
   t("the largest deal is found", report.value[0].largestCents, 3_150_034n);
   t("and the won deal with no value is reported", report.inputs.wonWithoutValue, 1);
+  t(
+    "the soft-deleted submission is counted as an exclusion, not forgotten",
+    report.inputs.excluded,
+    { deleted: 1, outsideWindow: 0 },
+  );
+  ok(
+    "and named in a caveat, because deleting submissions raises the rate",
+    report.caveats.some((line) => line.includes("1 deleted submission is not counted here")),
+    report.caveats,
+  );
   ok(
     "which is stated as a caveat rather than left to be discovered",
     report.caveats.some((line) => line.includes("no value recorded")),
@@ -194,6 +204,11 @@ async function main() {
     endpointPublicId: space.endpointPublicId,
   });
   t("only that endpoint's submissions", scoped.submissions, 12);
+  t(
+    "and the deleted one is attributed to the endpoint it belonged to",
+    scoped.inputs.excluded,
+    { deleted: 1, outsideWindow: 0 },
+  );
   t("and the scope names it", scoped.scope.endpointName, "Contact");
 
   const other = await readYield(space.workspaceId, {
@@ -230,6 +245,15 @@ async function main() {
 
   // Days 44, 42, 40, 38, 36, 34 and 32 — the 31-day bound excludes nothing
   // newer only because it is exclusive at the boundary.
+  // The deleted submission is 20 days old, so it is outside this window and
+  // belongs in neither bucket: it was never in this denominator to be removed
+  // from. Deletions are counted where they could actually move the number.
+  t(
+    "narrowing the window is an exclusion too, and is counted",
+    recent.inputs.excluded,
+    { deleted: 0, outsideWindow: 9 },
+  );
+
   const bounded = await readYield(space.workspaceId, { from: daysAgo(45), to: daysAgo(31) });
   t("an upper bound is exclusive, like the inbox filter", bounded.submissions, 7);
   t("and the endpoint outside the window contributes nothing", bounded.open, 1);
@@ -279,6 +303,12 @@ async function main() {
   const unverified = byOrigin.find((group) => group.key === "unverified");
   t("the unverified submissions are all disqualified", unverified?.report.disqualified, 2);
   t("and produced nothing", unverified?.report.rate.ceiling, 0);
+
+  ok(
+    "a slice says exclusions were not measured rather than claiming none",
+    bySource.every((group) => group.report.inputs.excluded === null),
+    bySource.map((group) => [group.label, group.report.inputs.excluded]),
+  );
 
   const byVariant = await readYieldByDimension(space.workspaceId, "variant");
   t("no variants yet is one group, not a crash", byVariant.length, 1);

@@ -11,6 +11,7 @@ import { centsFromNumeric } from "./money.ts";
 import type {
   CurrencyTotal,
   YieldDimension,
+  YieldExclusions,
   YieldGroup,
   YieldReport,
   YieldScope,
@@ -144,11 +145,15 @@ export async function readYieldByDimensionIn(
 
   const groups = countRows.map((row) => {
     const money = moneyRows.filter((entry) => entry.key === row.key);
-    const tallies = talliesFrom(row, money, query.visitors ?? null, {
-      medianDaysToVerdict: null,
-      p90DaysToVerdict: null,
-      awaitingOlderThanMedian: 0,
-    });
+    const tallies = talliesFrom(
+      row,
+      money,
+      query.visitors ?? null,
+      { medianDaysToVerdict: null, p90DaysToVerdict: null, awaitingOlderThanMedian: 0 },
+      // Not measured per slice: a zero here would claim nothing was excluded
+      // from this group, which this query never checked.
+      null,
+    );
     return {
       key: row.key,
       label: groupLabel(dimension, row.key, row.label),
@@ -240,6 +245,8 @@ async function readTallies(
     awaitingOlderThanMedian = row?.count ?? 0;
   }
 
+  const excluded = await readExclusions(ws, query);
+
   return talliesFrom(
     {
       submissions: counts?.submissions ?? 0,
@@ -258,7 +265,45 @@ async function readTallies(
       p90DaysToVerdict: p90Days,
       awaitingOlderThanMedian,
     },
+    excluded,
   );
+}
+
+/**
+ * What the denominator leaves out, in the same scope.
+ *
+ * Two things move a Yield rate without a single lead changing: a submission
+ * being deleted, and the date window being narrowed. Both are legitimate; both
+ * are invisible unless counted. This is the query that makes them visible, and
+ * it deliberately reports zeros rather than omitting the rows — "0 deleted" is
+ * a claim that the number is complete, which is worth being able to make.
+ */
+async function readExclusions(
+  ws: WorkspaceScope,
+  query: YieldQuery,
+): Promise<YieldExclusions> {
+  const scopeOnly: (SQL | undefined)[] = query.endpointPublicId
+    ? [eq(endpoints.publicId, query.endpointPublicId)]
+    : [];
+
+  const inWindow: SQL[] = [];
+  if (query.from) inWindow.push(gte(submissions.submittedAt, query.from));
+  if (query.to) inWindow.push(lt(submissions.submittedAt, query.to));
+  // `and()` of nothing is undefined, and "no date filter" means every row is in
+  // the window — so the fallback has to be true, not false.
+  const insideWindow: SQL = inWindow.length > 0 ? (and(...inWindow) as SQL) : sql`true`;
+
+  const [row] = await ws.tx
+    .select({
+      deleted: sql<number>`(count(*) filter (where ${submissions.deletedAt} is not null and ${insideWindow}))::int`,
+      outsideWindow: sql<number>`(count(*) filter (where ${submissions.deletedAt} is null and not ${insideWindow}))::int`,
+    })
+    .from(submissions)
+    .innerJoin(endpoints, endpointJoin(ws))
+    // Includes soft-deleted rows on purpose: they are the thing being counted.
+    .where(ws.whereIncludingDeleted(submissions, ...scopeOnly));
+
+  return { deleted: row?.deleted ?? 0, outsideWindow: row?.outsideWindow ?? 0 };
 }
 
 /** A submission with a real outcome and a usable timestamp for it. */
@@ -287,6 +332,8 @@ function talliesFrom(
   money: MoneyRow[],
   visitors: number | null,
   timing: YieldTallies["timing"],
+  /** Null for a grouped read, which does not measure exclusions per slice. */
+  excluded: YieldExclusions | null,
 ): YieldTallies {
   const totals: CurrencyTotal[] = [];
   let unreadable = false;
@@ -325,6 +372,7 @@ function talliesFrom(
     firstSubmissionAt: toDate(counts.first ?? null),
     lastSubmissionAt: toDate(counts.last ?? null),
     timing,
+    excluded,
   };
 }
 

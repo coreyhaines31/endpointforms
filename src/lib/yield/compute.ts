@@ -86,6 +86,14 @@ import type {
  * - **Currencies are never mixed.** Totals are kept per currency and there is
  *   no FX table in this product. Adding €5,000 to $5,000 produces a number that
  *   is wrong in every currency.
+ * - **Exclusions are counted and shown.** The denominator is every submission
+ *   in the window, so deleting submissions raises the rate. Deletion stays
+ *   allowed; what it cannot be is silent. See `YieldExclusions` in `./types.ts`
+ *   for why that matters more here than in a dashboard people only show
+ *   themselves.
+ * - **"Per 100 submissions" is withheld below a hundred submissions**, because
+ *   under that it is the total multiplied up rather than a figure the window
+ *   supports. Value per submission is shown instead.
  * - **`NaN` and `Infinity` never leave this module.** Rates go through
  *   `ratio()` from `src/lib/tools/engine.ts` — the same guard the public
  *   calculators use — which returns `null` for an undefined division; money is
@@ -105,6 +113,16 @@ export const MIN_RESOLVED = 8;
 
 /** Open share above which the bracket is wide enough to say so before the number. */
 const OPEN_SHARE_WARN = 0.35;
+
+/**
+ * Submissions needed before "per 100 submissions" is a report rather than a
+ * projection.
+ *
+ * A hundred, because that is the population the figure claims to describe.
+ * Below it the number is the total multiplied up — real money scaled past the
+ * evidence — and the panel shows value per submission instead.
+ */
+export const MIN_SUBMISSIONS_FOR_PER_HUNDRED = 100;
 
 /**
  * One deal above this share of the total value is a concentration worth naming.
@@ -159,6 +177,7 @@ export function emptyTallies(): YieldTallies {
     firstSubmissionAt: null,
     lastSubmissionAt: null,
     timing: { medianDaysToVerdict: null, p90DaysToVerdict: null, awaitingOlderThanMedian: 0 },
+    excluded: { deleted: 0, outsideWindow: 0 },
   };
 }
 
@@ -237,7 +256,16 @@ function computeValue(
     totalCents: total.totalCents,
     wonWithValue: total.wonWithValue,
     perSubmissionCents: divideCents(total.totalCents, denominator),
-    perHundredSubmissionsCents: divideCents(total.totalCents * 100n, denominator),
+    // Null below a hundred submissions. "Per 100 submissions" on a window of 21
+    // is a 4.8x extrapolation, and it is the most screenshot-able number on the
+    // panel precisely because it is the least defensible one — a caption does
+    // not travel with a screenshot, so the figure is absent rather than
+    // caveated. `perSubmissionCents` is the honest substitute: an average over
+    // data that exists rather than a projection past it.
+    perHundredSubmissionsCents:
+      submissions >= MIN_SUBMISSIONS_FOR_PER_HUNDRED
+        ? divideCents(total.totalCents * 100n, denominator)
+        : null,
     perVisitorCents:
       visitors !== null && Number.isFinite(visitors) && visitors > 0
         ? divideCents(total.totalCents, BigInt(Math.trunc(visitors)))
@@ -399,6 +427,12 @@ function caveatsFor(report: YieldReport): string[] {
         `One deal is ${formatPercent(entry.concentration, 0)} of the ${currencyLabel(entry.currency)} total (${formatCents(entry.largestCents, entry.currency, { decimals: 0 })} of ${formatCents(entry.totalCents, entry.currency, { decimals: 0 })}). Yield value here is a statement about that deal more than about this form.`,
       );
     }
+  }
+
+  if (inputs.excluded && inputs.excluded.deleted > 0) {
+    caveats.push(
+      `${count(inputs.excluded.deleted)} deleted ${plural(inputs.excluded.deleted, "submission is", "submissions are")} not counted here. Deleting submissions raises the Yield rate, because the rate is wins over everything that arrived — so the count is shown rather than left to be inferred from a number that moved.`,
+    );
   }
 
   if (inputs.moneyUnreadable) {

@@ -35,6 +35,31 @@ export type CurrencyTotal = {
   largestCents: bigint;
 };
 
+/**
+ * What this number does not count, inside the same scope.
+ *
+ * Yield's denominator is every submission in the window, so anything that
+ * removes a submission raises the rate. That is a lever, and a lever nobody can
+ * see is the dishonest dashboard we position against — our ICP is agencies
+ * showing these numbers to the client paying them, so a silently gameable
+ * denominator is not a customer fooling themselves, it is a tool for presenting
+ * a better number to someone else with our name on it.
+ *
+ * Deletion stays allowed and the arithmetic is unchanged. It just cannot happen
+ * quietly: if 40 junk submissions are deleted and the rate jumps, the panel says
+ * 40 were excluded.
+ *
+ * Null means "not measured for this slice" rather than zero — see
+ * `readYieldByDimension`, which does not count exclusions per group. Reporting
+ * a zero we did not measure would be the same lie in the other direction.
+ */
+export type YieldExclusions = {
+  /** Soft-deleted submissions that would otherwise be in this window. */
+  deleted: number;
+  /** Live submissions in the same scope but outside the date window. */
+  outsideWindow: number;
+};
+
 /** How long outcomes take here, and how much of this window is still open. */
 export type YieldTiming = {
   /** Days from submission to verdict, for the ones that have a verdict. */
@@ -81,6 +106,8 @@ export type YieldTallies = {
   firstSubmissionAt: Date | null;
   lastSubmissionAt: Date | null;
   timing: YieldTiming;
+  /** Rows the denominator leaves out. Null when this scope did not measure them. */
+  excluded: YieldExclusions | null;
 };
 
 /** Yield value, per currency. */
