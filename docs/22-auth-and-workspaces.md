@@ -12,6 +12,10 @@ this is built on; this covers everything above it.
 | Auth.js (NextAuth v5) config | `src/auth.ts` |
 | Its endpoints | `src/app/api/auth/[...nextauth]/route.ts` |
 | Session helpers | `src/lib/auth/session.ts` |
+| Password hashing | `src/lib/auth/password.ts` |
+| What may be a password | `src/lib/auth/password-policy.ts` (imports nothing, safe for a Client Component) |
+| Sign-in / sign-up against the database | `src/lib/auth/account.ts` |
+| Sign-in throttling | `src/lib/auth/rate-limit.ts` |
 | Slug rules and reserved words | `src/lib/workspaces/slug.ts` |
 | Workspace and membership queries | `src/lib/workspaces/queries.ts` |
 | Invitations | `src/lib/workspaces/invitations.ts` |
@@ -24,10 +28,11 @@ this is built on; this covers everything above it.
 ### URLs
 
 ```
-/login                      sign in — magic link, and Google when configured
+/login                      sign in — email + password, Google when configured,
+                            magic link behind a disclosure (development only)
 /login/check-email          "we sent you a link"
 /login/error                Auth.js error codes, rendered as sentences
-/signup                     308 → /login  (there is no separate signup)
+/signup                     create an account with an email and a password
 /app                        resolves the default workspace
 /app/new                    create a workspace
 /app/{slug}                 overview
@@ -49,11 +54,55 @@ inbox survives the round trip through `/login` instead of being lost.
 
 ## The decisions
 
-### No passwords
+### Email and password is the primary way in
 
-`docs/20-product-plan.md` rules them out and this implements that. Magic link and
-Google. Both prove control of an email address; neither creates a credential we
+**Reversed 2026-08-31.** This document and `docs/20-product-plan.md` used to rule
+passwords out: magic link and Google, neither of which creates a credential we
 have to store, rotate, reset, rate-limit or disclose a breach of.
+
+What overturned it is that the magic link **cannot be delivered in production**
+until a mail transport exists (#41), so the only auth method that works
+everywhere had to be one that needs no mail. A sign-in method that works only in
+development is not a sign-in method, and a product that is demoed live cannot
+have a round trip through an inbox on every sign-in.
+
+Every liability the original decision named is real. Each one has an answer, and
+each answer is written out where it lives:
+
+| Liability | Where it is answered |
+|---|---|
+| The hashing decision | `src/lib/auth/password.ts` — argon2id, m=19456 KiB, t=2, p=1 (OWASP), parameters written out rather than defaulted |
+| Credential stuffing | `src/lib/auth/rate-limit.ts` — 10 per email and 50 per IP per 15 minutes, reusing the ingest limiter in its own keyspace |
+| User enumeration | `src/lib/auth/account.ts` — "no such user", "no password on the account" and "wrong password" return the same value **after the same work**, by verifying against a decoy hash when there is no row |
+| Weak passwords | `src/lib/auth/password-policy.ts` — 12 characters minimum, no composition rules, a small list of obvious ones refused |
+| Reset flow | **Still owed.** Blocked on the same mail transport (#41). `setPassword()` in `account.ts` carries the `TODO`, including the part people forget: a reset must delete the account's `auth_sessions` rows, or a stolen session survives the reset that was meant to end it. The sign-in page does not offer a "forgot password" link, because there is nothing behind one. |
+
+Magic link is kept and demoted below the password form: it costs nothing, it is
+already built, and until reset exists it is the only way back into an account
+whose password has been forgotten. It is hidden in production, where it throws
+rather than delivering.
+
+### Credentials and database sessions do not compose in Auth.js
+
+Worth knowing before editing `src/auth.ts`, because it looks like a hack until
+you know why it is there.
+
+Auth.js's credentials branch is the one sign-in path **not** guarded by
+`if (useJwtSession)`. Whatever `session.strategy` says, it calls `jwt.encode()`
+and puts the result in the session cookie — which, under `strategy: "database"`,
+is then handed to `adapter.getSessionAndUser()`, finds no row, and signs the
+person straight back out. `assert.js` only raises `UnsupportedStrategy` when the
+providers are credentials-*only*, so with Google and magic link registered
+alongside there is no warning at all.
+
+The two ways out were to switch to JWT sessions, or to make `encode` return
+something the database strategy understands. The first trades away revocation
+(see below), so `jwt.encode` mints a real session row through the same adapter
+every other provider uses and returns its opaque token. Under
+`strategy: "database"` every other `jwt.encode` and every `jwt.decode` call site
+in `@auth/core` is behind a JWT-strategy check, which is what makes this a
+targeted override rather than a global one — and a marker set in `callbacks.jwt`
+makes `encode` throw if it is ever reached from anywhere else.
 
 ### Sessions live in the database
 
@@ -83,7 +132,7 @@ No `Domain` attribute on any of the three cookies.
 
 ### Google linking, and why the "dangerous" flag is safe here
 
-Someone who signed in with a magic link and later clicks "Continue with Google"
+Someone who signed in with a password and later clicks "Continue with Google"
 is the same person, and Auth.js's default — `OAuthAccountNotLinked` — strands
 them with no way forward. `allowDangerousEmailAccountLinking` fixes that, and it
 is named "dangerous" because linking on an address a provider never verified lets

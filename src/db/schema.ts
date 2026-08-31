@@ -132,12 +132,44 @@ export const users = pgTable(
     email: text("email").notNull(),
     name: text("name"),
     image: text("image_url"),
-    /** Magic link and Google only (#34). There is deliberately no password column. */
+    /**
+     * When we last saw proof that this person controls this address — set by a
+     * magic link or by Google. Password sign-up does not set it: choosing a
+     * password proves nothing about the inbox, and pretending otherwise is how
+     * an account gets created on someone else's address.
+     */
     emailVerified: timestamp("email_verified_at", { withTimezone: true, mode: "date" }),
+    /**
+     * argon2id, parameters and salt encoded in the string. See
+     * `src/lib/auth/password.ts`.
+     *
+     * **Nullable, permanently.** A Google user has no password and never will;
+     * neither does anyone who signed up by magic link before this column
+     * existed. Null means "this person does not sign in with a password", which
+     * is a valid, ordinary account — not a broken row to be backfilled.
+     *
+     * Never selected into anything that leaves the server. The only query that
+     * reads it is the one in `src/lib/auth/credentials.ts` that verifies against
+     * it and then drops it.
+     */
+    passwordHash: text("password_hash"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("users_email_key").on(t.email)],
+  (t) => [
+    uniqueIndex("users_email_key").on(t.email),
+    /**
+     * One account per address, whatever case it was typed in.
+     *
+     * `@auth/drizzle-adapter` looks users up with an exact match, so the plain
+     * index above is the one it uses and stays. This one exists because password
+     * sign-up normalises the address before storing it: without it, someone
+     * whose row was written as `Alice@…` by an earlier magic link could sign up
+     * again as `alice@…` and end up with two accounts and half their data in
+     * each. It also backs the case-insensitive lookup in `src/lib/auth/account.ts`.
+     */
+    uniqueIndex("users_email_lower_key").on(sql`lower(${t.email})`),
+  ],
 );
 
 // ---------------------------------------------------------------------------

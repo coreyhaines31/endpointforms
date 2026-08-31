@@ -88,3 +88,13 @@ export function rateLimitConfig(): RateLimitConfig {
     endpointIp: positiveInt("INGEST_RATE_LIMIT_ENDPOINT_IP_PER_MINUTE", 20),
   };
 }
+
+/**
+ * Field names a caller can use to supply its own idempotency key. Stripped from
+ * `values` and kept in `raw_body`, so a schema should not describe them either.
+ */
+export const IDEMPOTENCY_FIELD_KEYS = [
+  "_idempotency_key",
+  "_idempotency",
+  "_submission_key",
+] as const;

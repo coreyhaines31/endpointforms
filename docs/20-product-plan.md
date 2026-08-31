@@ -158,6 +158,13 @@ after it is built on a pipeline that has carried a real lead.
 - **A template library.** We conceded breadth to Jotform in `docs/01` §8.
 - **AI form generation.** `docs/00` rules out the "AI-powered" lane as crowded, thin and low-trust.
 - **A permissions matrix.** Owner and member is enough until someone asks.
-- **Password auth.** A liability we don't need for a B2B tool.
+- ~~**Password auth.** A liability we don't need for a B2B tool.~~ **Reversed 2026-08-31.**
+  Email and password is now the primary way in. The liabilities the original entry named are
+  real and each one is answered in `src/lib/auth/`: argon2id for the hashing decision, a
+  per-email and per-IP throttle for credential stuffing, and an enumeration-free sign-in.
+  What overturned it: there is no mail transport until #41, so the magic link cannot be
+  delivered in production at all, and a sign-in method that only works in development is not
+  a sign-in method. Password **reset** is still owed and is blocked on the same issue —
+  `docs/22` names where it goes.
 - **Programmatic alternatives pages.** `docs/09` argued against them and `#17` proved why —
   we had a competitive claim that was simply false.

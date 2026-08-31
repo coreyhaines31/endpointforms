@@ -34,9 +34,24 @@ const serverOnlyLibPattern = {
     "**/lib/workspaces/invitations",
     "**/lib/workspaces/invitations.ts",
     "@/lib/workspaces/invitations",
+    "**/lib/auth/account",
+    "**/lib/auth/account.ts",
+    "@/lib/auth/account",
   ],
   message:
     "These modules open database connections. Read the data in a Server Component and pass it down, or import the type from '@/lib/workspaces/types'.",
+};
+
+/**
+ * argon2's native binary has no business in a browser bundle, and a Client
+ * Component importing `@/lib/auth/password` for a constant would put it there.
+ * The rules about what may be a password live in `@/lib/auth/password-policy`,
+ * which imports nothing and is the one a component should reach for.
+ */
+const passwordHashingPattern = {
+  group: ["**/lib/auth/password", "**/lib/auth/password.ts", "@/lib/auth/password"],
+  message:
+    "Import from '@/lib/auth/password-policy' instead. '@/lib/auth/password' pulls argon2's native binary in, which cannot run in the browser.",
 };
 
 const eslintConfig = defineConfig([
@@ -65,7 +80,7 @@ const eslintConfig = defineConfig([
     rules: {
       "no-restricted-imports": [
         "error",
-        { patterns: [unsafeDbPattern, serverOnlyLibPattern] },
+        { patterns: [unsafeDbPattern, serverOnlyLibPattern, passwordHashingPattern] },
       ],
     },
   },

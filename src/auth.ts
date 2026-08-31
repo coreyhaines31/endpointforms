@@ -1,26 +1,39 @@
 import "server-only";
 
+import { randomBytes } from "node:crypto";
+
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
-import NextAuth, { type DefaultSession } from "next-auth";
+import NextAuth, { CredentialsSignin, type DefaultSession } from "next-auth";
 import type { EmailConfig, Provider } from "next-auth/providers";
+import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 
 import { unsafeDb } from "@/db/client";
 import { authAccounts, authSessions, authVerificationTokens, users } from "@/db/schema";
+import { verifyCredentials } from "@/lib/auth/account";
+import { clientIpFromHeaders, hashIpForAuth } from "@/lib/auth/rate-limit";
 
 /**
  * Authentication (#34).
  *
- * Two ways in, both of which prove control of an email address, and neither of
- * which is a password:
+ * **Email and password is the primary way in.** That reverses the decision this
+ * file used to record, and `docs/20-product-plan.md` and `docs/22` used to
+ * state: no passwords, magic link only. The reversal is deliberate and the
+ * reason is development velocity on a product that is demoed live — a magic
+ * link means a round trip through an inbox on every sign-in, and there is no
+ * mail transport yet (#41), so in production the magic link cannot be delivered
+ * at all. An auth method that only works in development is not an auth method.
  *
- * - **Magic link.** Possession of the inbox is the proof.
+ * Three ways in, in the order the sign-in page offers them:
+ *
+ * - **Password.** argon2id, `src/lib/auth/password.ts`. What it costs us is
+ *   spelled out there and in `src/lib/auth/account.ts`: a hashing decision, a
+ *   rate limit, an enumeration surface to keep closed, and a reset flow we still
+ *   owe (#41).
  * - **Google.** Google's own `email_verified` is the proof, and we check it
  *   rather than taking the sign-in at face value (see `signIn` below).
- *
- * `docs/20-product-plan.md` rules password auth out explicitly: it is a
- * liability — breach disclosure, reset flows, credential stuffing, a hashing
- * decision to get wrong — that a v1 B2B tool has no reason to take on.
+ * - **Magic link.** Possession of the inbox is the proof. Kept, demoted, and
+ *   still refusing to run in production until #41 lands.
  *
  * ---
  *
@@ -29,6 +42,11 @@ import { authAccounts, authSessions, authVerificationTokens, users } from "@/db/
  * A JWT cannot be revoked. With a session row, removing someone from a
  * workspace or signing out a stolen laptop takes effect on the next request. The
  * cost is a query per request, which for an authenticated dashboard is nothing.
+ *
+ * Adding passwords did **not** change this, and that took one deliberate piece
+ * of work — see "Credentials and database sessions" below. The easy path was to
+ * switch `strategy` to `"jwt"`, because that is what Auth.js's credentials
+ * provider assumes, and it would have silently traded away revocation.
  *
  * ## Cookies are host-only, and that is load-bearing
  *
@@ -58,8 +76,79 @@ const HOST_ONLY = { httpOnly: true, sameSite: "lax", path: "/", secure: process.
 
 const EMAIL_FROM = process.env.AUTH_EMAIL_FROM ?? "Endpoint Forms <login@endpointforms.com>";
 
+/** The provider id the sign-in form posts to, and the marker the encoder checks for. */
+export const PASSWORD_PROVIDER_ID = "password";
+
+// ---------------------------------------------------------------------------
+// Password
+// ---------------------------------------------------------------------------
+
+/**
+ * Refused because too many attempts have been made, rather than because the
+ * password was wrong.
+ *
+ * `code` ends up in a query string, so it must not hint at anything sensitive.
+ * "rate-limited" does not: the windows in `src/lib/auth/rate-limit.ts` count
+ * attempts, never outcomes, so being throttled says nothing about whether the
+ * address has an account.
+ */
+class RateLimitedSignin extends CredentialsSignin {
+  code = "rate-limited";
+}
+
+/**
+ * Email and password.
+ *
+ * `authorize` returns `null` for every kind of failure — no such user, no
+ * password on the account, wrong password — and `src/lib/auth/account.ts` makes
+ * sure all three take the same time as well as returning the same thing.
+ *
+ * The rate limit lives here rather than in the Server Action so that a script
+ * posting straight at `/api/auth/callback/password` is counted exactly like the
+ * form is. An action-level check would guard the front door and leave the back
+ * one open.
+ *
+ * Nothing in here logs the password, and nothing puts it in an error. The only
+ * thing that ever sees it is argon2.
+ */
+const password = Credentials({
+  id: PASSWORD_PROVIDER_ID,
+  name: "Email and password",
+  credentials: {
+    email: { label: "Email", type: "email" },
+    password: { label: "Password", type: "password" },
+  },
+  async authorize(credentials, request) {
+    const email = typeof credentials?.email === "string" ? credentials.email : "";
+    const secret = typeof credentials?.password === "string" ? credentials.password : "";
+
+    // Shape only. Length and content rules belong to sign-up: applying them at
+    // sign-in would refuse an old password faster than it refuses a new one,
+    // which is a timing oracle wearing a validation costume.
+    if (!email.includes("@") || secret.length === 0) return null;
+
+    const ipHash = hashIpForAuth(clientIpFromHeaders(request.headers));
+    const result = await verifyCredentials(email, secret, ipHash);
+
+    if (!result.ok) {
+      if (result.reason === "rate-limited") throw new RateLimitedSignin();
+      return null;
+    }
+
+    return result.user;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Magic link
+// ---------------------------------------------------------------------------
+
 /**
  * Magic link, with no mail dependency.
+ *
+ * Demoted below the password form but still registered, because it is already
+ * built, it costs nothing to keep, and it is the only way into an account whose
+ * password has been forgotten until password reset exists (#41).
  *
  * Auth.js's built-in email provider is `nodemailer`, which drags in an SMTP
  * client and a provider decision. Destinations (#41) is where email transport
@@ -105,19 +194,20 @@ const magicLink: EmailConfig = {
 };
 
 /**
- * Google is optional in development. Without it the sign-in page shows the magic
- * link only, rather than a button that fails after a redirect — a dead end is a
- * worse first run than a missing option.
+ * Google is optional in development. Without it the sign-in page shows the
+ * password form only, rather than a button that fails after a redirect — a dead
+ * end is a worse first run than a missing option.
  */
 const googleConfigured = Boolean(process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET);
 
 const providers: Provider[] = [
+  password,
   magicLink,
   ...(googleConfigured
     ? [
         Google({
           /**
-           * Someone who signed in with a magic link and later clicks "Continue
+           * Someone who signed in with a password and later clicks "Continue
            * with Google" is the same person, and the default behaviour —
            * `OAuthAccountNotLinked` — strands them with no way forward.
            *
@@ -134,21 +224,109 @@ const providers: Provider[] = [
     : []),
 ];
 
+const adapter = DrizzleAdapter(unsafeDb, {
+  usersTable: users,
+  accountsTable: authAccounts,
+  sessionsTable: authSessions,
+  verificationTokensTable: authVerificationTokens,
+});
+
+/**
+ * The marker `callbacks.jwt` sets and `jwt.encode` demands. Not a security
+ * boundary — it is a tripwire. See below.
+ */
+const FROM_CREDENTIALS = "endpointforms.credentialsSignIn";
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers,
-
-  adapter: DrizzleAdapter(unsafeDb, {
-    usersTable: users,
-    accountsTable: authAccounts,
-    sessionsTable: authSessions,
-    verificationTokensTable: authVerificationTokens,
-  }),
+  adapter,
 
   session: {
     strategy: "database",
     maxAge: THIRTY_DAYS,
     // Only touch the session row once a day rather than on every request.
     updateAge: 24 * 60 * 60,
+  },
+
+  /**
+   * ## Credentials and database sessions
+   *
+   * Auth.js does not support the combination. Its credentials branch
+   * (`@auth/core/lib/actions/callback/index.js`) is the one sign-in path that is
+   * **not** wrapped in `if (useJwtSession)`: whatever the configured strategy,
+   * it calls `jwt.encode()` and puts the result in the session cookie. With
+   * `strategy: "database"` that cookie is then handed to
+   * `adapter.getSessionAndUser()`, which finds no row, deletes the cookie, and
+   * signs the person straight back out. `assert.js` only raises
+   * `UnsupportedStrategy` when the providers are credentials-*only*, so with
+   * Google and magic link alongside it there is no warning at all — it simply
+   * does not work.
+   *
+   * The two ways out were to switch to JWT sessions, or to make `encode`
+   * produce something the database strategy understands. The first trades away
+   * revocation, which is the reason database sessions were chosen and is worth
+   * more than the convenience. So: `encode` mints a real session row through the
+   * same adapter every other provider uses, and returns its opaque token. The
+   * cookie ends up holding exactly what a magic-link sign-in would have put
+   * there, and `auth()`, `signOut()`, expiry and `updateAge` all carry on
+   * knowing nothing about any of this.
+   *
+   * **Why this is safe to do:** under `strategy: "database"` every other call
+   * site of `jwt.encode` and every call site of `jwt.decode` in `@auth/core` is
+   * behind a `sessionStrategy === "jwt"` check. The credentials branch is the
+   * only one that reaches these functions, which is what makes overriding them
+   * a targeted change rather than a global one.
+   *
+   * **And if that stops being true**, the marker below turns a silent, dangerous
+   * regression — a stray `encode` call minting a session for whatever token it
+   * was handed — into a loud one. `callbacks.jwt` stamps `FROM_CREDENTIALS` when
+   * and only when the account being signed in is the password provider's;
+   * `encode` refuses anything without it. A future Auth.js that calls `encode`
+   * from somewhere new throws here instead of issuing a session.
+   */
+  jwt: {
+    async encode({ token }) {
+      if (!token || token[FROM_CREDENTIALS] !== true) {
+        throw new Error(
+          "jwt.encode was reached from something other than the password provider. " +
+            "Sessions are database rows here (session.strategy is 'database'), so a JWT " +
+            "in the session cookie would be rejected on the next request. See src/auth.ts.",
+        );
+      }
+
+      const userId = typeof token.sub === "string" ? token.sub : null;
+      if (!userId) throw new Error("jwt.encode: credentials sign-in produced no user id.");
+
+      // 256 bits. Opaque, and the only thing standing between a stolen cookie
+      // and an account, so it is generated the same way every other secret in
+      // this codebase is rather than from anything derived.
+      const sessionToken = randomBytes(32).toString("hex");
+      const expires = new Date(Date.now() + THIRTY_DAYS * 1000);
+
+      // Not `?.()`. The adapter is constructed above and always has this, but an
+      // optional call that silently did nothing would hand back a token with no
+      // row behind it — a cookie that signs the person straight back out, which
+      // is exactly the failure this whole override exists to avoid.
+      if (!adapter.createSession) {
+        throw new Error("The Drizzle adapter has no createSession. See src/auth.ts.");
+      }
+      await adapter.createSession({ sessionToken, userId, expires });
+
+      return sessionToken;
+    },
+
+    /**
+     * Never called under `strategy: "database"` — every `jwt.decode` call site
+     * in `@auth/core` is behind a JWT-strategy check. It throws rather than
+     * returning null so that "this was reached" is a crash with a stack trace
+     * rather than a mysterious signed-out user.
+     */
+    async decode() {
+      throw new Error(
+        "jwt.decode was called, which cannot happen while session.strategy is 'database'. " +
+          "See src/auth.ts.",
+      );
+    },
   },
 
   /**
@@ -175,6 +353,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return true;
     },
 
+    jwt({ token, account }) {
+      // Reached only on the credentials path under `strategy: "database"`. The
+      // stamp is what `jwt.encode` above requires; see the long note there.
+      if (account?.provider === PASSWORD_PROVIDER_ID) {
+        return { ...token, [FROM_CREDENTIALS]: true };
+      }
+      return token;
+    },
+
     session({ session, user }) {
       // Every workspace query starts from this id, so it has to be on the
       // session object rather than looked up again by email.
@@ -190,3 +377,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
 /** Whether "Continue with Google" should be offered at all. */
 export const googleSignInAvailable = googleConfigured;
+
+/**
+ * Whether the sign-in page should offer the magic link.
+ *
+ * False in production until #41: the provider throws rather than delivering, and
+ * offering a button that always errors is worse than not offering it.
+ */
+export const magicLinkAvailable = process.env.NODE_ENV !== "production";

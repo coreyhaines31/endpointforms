@@ -85,7 +85,7 @@ visible.
 | Table | What it is |
 |---|---|
 | `workspaces` | The tenant boundary. `slug` becomes the render subdomain (#34), so it is public and effectively permanent. |
-| `users` | People. No password column — magic link and Google only (#34). |
+| `users` | People. `password_hash` is argon2id and **nullable** — Google and magic-link accounts have none, and that is a valid account, not a row to backfill (#34). |
 | `memberships` | User ↔ workspace, role `owner` or `member`. No permissions matrix. |
 | `endpoints` | What a customer points a form at (#50). Workspace, public short ID, name. **Works with no schema.** |
 | `form_schemas` | *Optional*, immutable, versioned field definitions (#51). |

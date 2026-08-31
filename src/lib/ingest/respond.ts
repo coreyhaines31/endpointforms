@@ -54,6 +54,16 @@ export type SubmissionAck = {
   submittedAt: string;
   /** True when an existing submission was returned instead of a new one. */
   duplicate: boolean;
+  /**
+   * Ways the payload did not match the endpoint's schema (#51), when it has one
+   * and something did not match. **The submission was still stored** — this is
+   * how a developer finds out their form and their schema have drifted apart
+   * without anything being dropped to tell them.
+   *
+   * Absent entirely when there is no schema or nothing to report, so an
+   * endpoint with no schema answers exactly as it did before #51.
+   */
+  warnings?: { field: string | null; code: string; message: string }[];
 };
 
 export function jsonResponse(

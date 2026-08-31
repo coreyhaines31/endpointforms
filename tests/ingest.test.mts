@@ -29,6 +29,8 @@ import { newEndpointPublicId, newId } from "../src/db/ids.ts";
 import { endpoints, formSchemas, submissions, users, workspaces } from "../src/db/schema.ts";
 import { sanitizeString } from "../src/lib/ingest/body.ts";
 import { handlePreflight, handleSubmission, handleUnsupportedMethod } from "../src/lib/ingest/handler.ts";
+import { mintOriginToken } from "../src/lib/origin/token.ts";
+import type { OriginReason } from "../src/lib/origin/types.ts";
 import { checkRateLimit, resetRateLimits } from "../src/lib/ingest/rate-limit.ts";
 
 let pass = 0;
@@ -223,6 +225,7 @@ async function main() {
   await attribution(f);
   await redirects(f);
   await routing(f);
+  await origin(f);
   rateLimiting();
 
   console.log(`\n${pass} passed, ${fail} failed`);
@@ -900,6 +903,123 @@ async function routing(f: Fixture) {
   t("GET answers 405", get.status, 405);
   t("GET names the allowed methods", get.headers.get("allow"), "POST, OPTIONS");
   ok("GET in a browser explains what this url is", (await get.text()).includes("form endpoint"));
+}
+
+/**
+ * Origin reaches the row (#30). The decision itself is exercised exhaustively in
+ * `tests/origin.test.mts`, which needs no database; what is asserted here is the
+ * wiring — that the stamp and its reasons survive the write, and that two
+ * identical payloads through different doors land differently.
+ */
+async function origin(f: Fixture) {
+  console.log("\norigin — the stamp and its reasons land on the row");
+
+  // A complete Chrome header set, not the abbreviated `BROWSER_HEADERS` the
+  // rest of this file uses. Origin reads headers the other tests do not care
+  // about, and a fixture that omits Accept-Language and Accept-Encoding is not
+  // a browser — no shipping browser has ever left either out.
+  const CHROME: Record<string, string> = {
+    ...BROWSER_HEADERS,
+    "accept-encoding": "gzip, deflate, br, zstd",
+    "accept-language": "en-US,en;q=0.9",
+    origin: "https://acme.example",
+    referer: "https://acme.example/contact",
+    "sec-fetch-dest": "document",
+    "sec-fetch-site": "cross-site",
+  };
+
+  const asHuman = await handleSubmission(
+    urlencoded(f.plain, { email: "origin-human@acme.example" }, { headers: CHROME }),
+    f.plain,
+  );
+  t("a browser post is accepted", asHuman.status, 303);
+
+  const asScript = await handleSubmission(
+    urlencoded(
+      f.plain,
+      { email: "origin-script@acme.example" },
+      { headers: { accept: "*/*", "user-agent": "curl/8.7.1", "x-forwarded-for": "203.0.113.11" } },
+    ),
+    f.plain,
+  );
+  t("a curl post is accepted too — nothing is refused over Origin", asScript.status, 200);
+
+  const rows = await rowsFor(f.plain);
+  const human = rows.find((r) => vals(r).email === "origin-human@acme.example");
+  const script = rows.find((r) => vals(r).email === "origin-script@acme.example");
+
+  t("the browser submission is stamped human", human?.origin, "human");
+  t("the curl submission is stamped unverified", script?.origin, "unverified");
+
+  const scriptReasons = (script?.originReasons ?? []) as OriginReason[];
+  ok("the reasons are stored as a readable array", Array.isArray(scriptReasons) && scriptReasons.length > 0);
+  ok(
+    "and answer 'why is this Unverified?' in words",
+    scriptReasons.some((r) => r.code === "user_agent" && /curl/.test(r.note)),
+    scriptReasons,
+  );
+  ok(
+    "the threshold the score was judged against is in the row",
+    scriptReasons.some((r) => r.code === "threshold"),
+  );
+
+  // The token is a reserved field: it must not show up as one of the customer's
+  // own answers in the inbox.
+  await handleSubmission(
+    urlencoded(
+      f.plain,
+      { email: "origin-token@acme.example", _origin_token: mintOriginToken(f.plain) },
+      { headers: CHROME },
+    ),
+    f.plain,
+  );
+  const tokened = (await rowsFor(f.plain)).find(
+    (r) => vals(r).email === "origin-token@acme.example",
+  );
+  t("a submission carrying a token is human", tokened?.origin, "human");
+  ok("and the token is not left in values", !("_origin_token" in (vals(tokened!) ?? {})));
+  ok(
+    "the token is still recoverable from raw_body",
+    (tokened?.rawBody ?? "").includes("_origin_token"),
+  );
+  ok(
+    "the valid token is recorded as corroboration",
+    ((tokened?.originReasons ?? []) as OriginReason[]).some(
+      (r) => r.code === "client_token" && r.direction === "browser",
+    ),
+  );
+
+  // The same body, the same headers, through the machine surface (#32).
+  const viaManifest = await handleSubmission(
+    urlencoded(
+      f.plain,
+      { email: "origin-manifest@acme.example" },
+      { headers: { ...CHROME, "x-forwarded-for": "203.0.113.12" } },
+    ),
+    f.plain,
+    { surface: "manifest", agentDeclaration: "acme-agent/1.2" },
+  );
+  t("a manifest submission is accepted", viaManifest.status, 303);
+  const agent = (await rowsFor(f.plain)).find(
+    (r) => vals(r).email === "origin-manifest@acme.example",
+  );
+  t("identical headers through the manifest surface are stamped agent", agent?.origin, "agent");
+  ok(
+    "and the declaration is recorded verbatim",
+    ((agent?.originReasons ?? []) as OriginReason[]).some(
+      (r) => r.code === "declared_agent" && r.observed === "acme-agent/1.2",
+    ),
+  );
+
+  // The stamp must never leak back to the caller: telling a forger whether the
+  // forgery worked is a free tuning loop.
+  const ack = await body(
+    await handleSubmission(
+      json(f.plain, { email: "origin-ack@acme.example" }, { headers: { ...FETCH_HEADERS, "x-forwarded-for": "203.0.113.13" } }),
+      f.plain,
+    ),
+  );
+  ok("the acknowledgement does not report the stamp", !("origin" in ack), ack);
 }
 
 function rateLimiting() {

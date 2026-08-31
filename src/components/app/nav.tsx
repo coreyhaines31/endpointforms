@@ -92,13 +92,15 @@ export function WorkspaceSwitcher({ workspaces }: { workspaces: WorkspaceSummary
   );
 }
 
-/** The three destinations inside a workspace. */
+/** The destinations inside a workspace. */
 export function WorkspaceTabs({ slug }: { slug: string }) {
   const pathname = usePathname();
   const base = `/app/${slug}`;
 
   const tabs = [
     { href: base, label: "Overview" },
+    { href: `${base}/submissions`, label: "Submissions" },
+    { href: `${base}/endpoints`, label: "Endpoints" },
     { href: `${base}/members`, label: "Members" },
     { href: `${base}/settings`, label: "Settings" },
   ];
@@ -107,7 +109,11 @@ export function WorkspaceTabs({ slug }: { slug: string }) {
     <nav aria-label="Workspace" className="border-b border-border">
       <ul className="flex items-center gap-6 overflow-x-auto px-[5%]">
         {tabs.map((tab) => {
-          const active = pathname === tab.href;
+          // A detail page keeps its section's tab lit. `pathname === href` alone
+          // would leave the whole bar unlit while reading one submission, which
+          // reads as "you have navigated out of the app".
+          const active =
+            tab.href === base ? pathname === base : pathname.startsWith(tab.href);
           return (
             <li key={tab.href}>
               <Link

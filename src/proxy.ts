@@ -32,12 +32,6 @@ const SESSION_COOKIES = ["authjs.session-token", "__Secure-authjs.session-token"
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  // Vanity paths from the apex (docs/05 §4.4). There is no separate signup:
-  // the first magic link both creates the account and signs it in.
-  if (pathname === "/signup") {
-    return NextResponse.redirect(new URL("/login", request.url));
-  }
-
   const signedIn = SESSION_COOKIES.some((name) => request.cookies.has(name));
   if (signedIn) return NextResponse.next();
 
@@ -46,6 +40,13 @@ export function proxy(request: NextRequest) {
   return NextResponse.redirect(login);
 }
 
+/**
+ * `/app` only. `/signup` used to be matched here so it could 308 to `/login` —
+ * there was no separate sign-up when the first magic link both created the
+ * account and signed it in. It is a real page now (`src/app/(auth)/signup`), and
+ * it has to be reachable without a session, which is the one thing this file
+ * exists to prevent.
+ */
 export const config = {
-  matcher: ["/app/:path*", "/signup"],
+  matcher: ["/app/:path*"],
 };

@@ -16,6 +16,7 @@ export type IngestErrorCode =
   | "field_name_too_long"
   | "unsupported_media_type"
   | "malformed_body"
+  | "schema_validation_failed"
   | "rate_limited"
   | "method_not_allowed"
   | "internal_error";
@@ -29,6 +30,9 @@ const STATUS: Record<IngestErrorCode, number> = {
   field_name_too_long: 422,
   unsupported_media_type: 415,
   malformed_body: 400,
+  // Only reachable on an endpoint whose owner opted in to `strict`. The default
+  // is `warn`, which stores the submission and never produces this at all.
+  schema_validation_failed: 422,
   rate_limited: 429,
   method_not_allowed: 405,
   internal_error: 500,

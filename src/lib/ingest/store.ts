@@ -3,7 +3,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { unsafeDb } from "../../db/client.ts";
 import { newId, newSubmissionPublicId } from "../../db/ids.ts";
 import { withWorkspace } from "../../db/scoped.ts";
-import { endpoints, submissions } from "../../db/schema.ts";
+import { endpoints, formSchemas, submissions } from "../../db/schema.ts";
+import type { OriginReason, OriginState } from "../origin/types.ts";
+import { readStoredDocument, type FormSchemaDocument } from "../schema/format.ts";
 import type { JsonValue } from "./body.ts";
 import { IngestError } from "./errors.ts";
 
@@ -26,13 +28,33 @@ import { IngestError } from "./errors.ts";
  * that blocks `unsafeDb` from route code is not weakened for the route itself.
  */
 
+/** The schema in force for an endpoint, already parsed. */
+export type ActiveSchema = {
+  id: string;
+  mode: "warn" | "strict";
+  /**
+   * Null when the stored row cannot be read by this build. The submission is
+   * still accepted and still stamped with the version id — a schema we cannot
+   * parse is our problem, and it must not become a lost lead.
+   */
+  document: FormSchemaDocument | null;
+};
+
 export type ResolvedEndpoint = {
   id: string;
   workspaceId: string;
   publicId: string;
   activeSchemaVersionId: string | null;
+  activeSchema: ActiveSchema | null;
 };
 
+/**
+ * One query, left-joined onto the active schema version.
+ *
+ * A second round-trip for the schema would be a second round-trip on the
+ * hottest path in the product, and the join is on a primary key the endpoint
+ * row already points at.
+ */
 export async function resolveEndpoint(publicId: string): Promise<ResolvedEndpoint> {
   const rows = await unsafeDb
     .select({
@@ -41,8 +63,11 @@ export async function resolveEndpoint(publicId: string): Promise<ResolvedEndpoin
       publicId: endpoints.publicId,
       activeSchemaVersionId: endpoints.activeSchemaVersionId,
       deletedAt: endpoints.deletedAt,
+      schemaMode: formSchemas.mode,
+      schemaFields: formSchemas.fields,
     })
     .from(endpoints)
+    .leftJoin(formSchemas, eq(formSchemas.id, endpoints.activeSchemaVersionId))
     .where(eq(endpoints.publicId, publicId))
     .limit(1);
 
@@ -64,11 +89,21 @@ export async function resolveEndpoint(publicId: string): Promise<ResolvedEndpoin
     );
   }
 
+  const activeSchema: ActiveSchema | null =
+    row.activeSchemaVersionId === null
+      ? null
+      : {
+          id: row.activeSchemaVersionId,
+          mode: row.schemaMode ?? "warn",
+          document: readStoredDocument(row.schemaFields),
+        };
+
   return {
     id: row.id,
     workspaceId: row.workspaceId,
     publicId: row.publicId,
     activeSchemaVersionId: row.activeSchemaVersionId,
+    activeSchema,
   };
 }
 
@@ -87,6 +122,10 @@ export type SubmissionRecord = {
   userAgent: string | null;
   ipHash: string | null;
   submittedAt: Date;
+  /** Which surface this came through, and how coherently (#30). */
+  origin: OriginState;
+  /** The signals behind the stamp. "Why is this Unverified?" is read from here. */
+  originReasons: OriginReason[];
 };
 
 export type StoredSubmission = {
@@ -111,9 +150,9 @@ export type StoredSubmission = {
  * clause here is required — without it Postgres cannot infer which index the
  * conflict target refers to.
  *
- * `origin` is left at its `unverified` default with no reasons. Deciding
- * provenance is #30, and guessing here would put a stamp on real submissions
- * that the feature has not earned yet.
+ * `origin` and `origin_reasons` arrive already decided — `src/lib/origin`
+ * answers from the request, before the payload is looked at, and this function
+ * only writes down what it said.
  */
 export async function storeSubmission(
   endpoint: ResolvedEndpoint,
@@ -127,9 +166,11 @@ export async function storeSubmission(
         workspaceId: endpoint.workspaceId,
         endpointId: endpoint.id,
         publicId: newSubmissionPublicId(),
-        // Stamped, not validated. Reading a submission against the exact schema
-        // in force when it arrived is what this column is for; enforcing that
-        // schema is #51.
+        // Stamped, never rewritten. Reading a submission against the exact
+        // schema in force when it arrived is what this column is for, and it
+        // is also what lets the issues on a submission be re-derived later
+        // instead of frozen into a column that could disagree with the values
+        // beside it.
         schemaVersionId: endpoint.activeSchemaVersionId,
         values: record.values,
         rawBody: record.rawBody,
@@ -145,6 +186,8 @@ export async function storeSubmission(
         userAgent: record.userAgent,
         ipHash: record.ipHash,
         idempotencyKey: record.idempotencyKey,
+        origin: record.origin,
+        originReasons: record.originReasons,
       })
       .onConflictDoNothing({
         target: [submissions.endpointId, submissions.idempotencyKey],

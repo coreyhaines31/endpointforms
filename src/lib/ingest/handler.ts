@@ -1,10 +1,17 @@
 import { createHash } from "node:crypto";
 
+import { decideOrigin } from "../origin/decide.ts";
+import { ORIGIN_TOKEN_FIELD_KEYS, ORIGIN_TOKEN_HEADER } from "../origin/token.ts";
+import type { OriginSurface } from "../origin/types.ts";
 import { extractAttribution } from "./attribution.ts";
 import { parseBody, readBodyCapped, sanitizeString, type JsonValue } from "./body.ts";
 import { clientIp, hashIp, responseMode } from "./client.ts";
 import { IngestError, isIngestError } from "./errors.ts";
-import { AUTO_IDEMPOTENCY_WINDOW_MS, MAX_IDEMPOTENCY_KEY_CHARS } from "./limits.ts";
+import {
+  AUTO_IDEMPOTENCY_WINDOW_MS,
+  IDEMPOTENCY_FIELD_KEYS,
+  MAX_IDEMPOTENCY_KEY_CHARS,
+} from "./limits.ts";
 import { checkRateLimit, rateLimitError } from "./rate-limit.ts";
 import {
   defaultThanksUrl,
@@ -17,6 +24,7 @@ import {
   resolveRedirect,
   type SubmissionAck,
 } from "./respond.ts";
+import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
 
 /**
@@ -29,8 +37,16 @@ import { resolveEndpoint, storeSubmission } from "./store.ts";
  *      never reaches the database.
  *   2. Resolve the endpoint.
  *   3. Read the body under a byte cap, parse it, discover the fields.
- *   4. Write the row.
- *   5. Answer in the shape the caller asked in.
+ *   4. Read it against the endpoint's schema, if it has one (#51).
+ *   5. Write the row.
+ *   6. Answer in the shape the caller asked in.
+ *
+ * Step 4 does not gate step 5. On the default `warn` mode a payload that does
+ * not match the schema is stored, and the mismatch is reported alongside the
+ * acknowledgement. Only an endpoint whose owner has deliberately switched to
+ * `strict` refuses anything, and #51's binding constraint is exactly that:
+ * declaring a schema must never start dropping submissions that used to
+ * succeed.
  *
  * **Delivery to destinations is not here.** #41 owns that, and it runs after the
  * row is committed. A slow webhook must never make a visitor wait, and it must
@@ -38,9 +54,6 @@ import { resolveEndpoint, storeSubmission } from "./store.ts";
  */
 
 const PUBLIC_ID = /^[A-Za-z0-9_-]{1,64}$/;
-
-/** Field names the endpoint reserves. Stripped from `values`, kept in `raw_body`. */
-const IDEMPOTENCY_FIELD_KEYS = ["_idempotency_key", "_idempotency", "_submission_key"] as const;
 
 export async function handlePreflight(request: Request): Promise<Response> {
   return preflightResponse(request);
@@ -59,9 +72,23 @@ export async function handleUnsupportedMethod(request: Request): Promise<Respons
   return respondWithError(request, error);
 }
 
+export type SubmissionOptions = {
+  /**
+   * Which door this arrived through (#30). Defaults to the human form endpoint;
+   * the machine-callable surface (#32) passes `"manifest"` and needs to change
+   * nothing else. Never read from the request — a caller that could name its
+   * own surface could name itself an agent, and the point of the stamp is that
+   * it cannot.
+   */
+  surface?: OriginSurface;
+  /** What a manifest caller said it was. Recorded, not trusted. */
+  agentDeclaration?: string | null;
+};
+
 export async function handleSubmission(
   request: Request,
   endpointPublicId: string,
+  options: SubmissionOptions = {},
 ): Promise<Response> {
   try {
     if (!PUBLIC_ID.test(endpointPublicId)) {
@@ -108,10 +135,36 @@ export async function handleSubmission(
       ...attribution.consumedKeys,
       ...REDIRECT_FIELD_KEYS,
       ...IDEMPOTENCY_FIELD_KEYS,
+      ...ORIGIN_TOKEN_FIELD_KEYS,
     ]);
     const values = omit(parsed.values, reserved);
 
     const submittedAt = new Date();
+
+    // Decided from the request, before anything about the payload, so that two
+    // identical bodies arriving through different doors are stamped
+    // differently — which is the entire mechanism.
+    const origin = decideOrigin({
+      surface: options.surface ?? "form",
+      headers: request.headers,
+      endpointPublicId: endpoint.publicId,
+      token:
+        firstField(parsed.values, ORIGIN_TOKEN_FIELD_KEYS) ??
+        request.headers.get(ORIGIN_TOKEN_HEADER),
+      agentDeclaration: options.agentDeclaration ?? null,
+      now: submittedAt.getTime(),
+    });
+
+    // Read against the schema, if there is one. Descriptive by default: this
+    // decides what to *say*, not whether to keep the submission. A schema row
+    // this build cannot parse yields a null document, which validates as
+    // "nothing to say" rather than as a refusal.
+    const validation = validateSubmission(endpoint.activeSchema?.document ?? null, values);
+
+    if (endpoint.activeSchema?.mode === "strict" && !validation.valid) {
+      throw new IngestError("schema_validation_failed", strictMessage(validation.errors));
+    }
+
     const idempotencyKey =
       explicitKey ?? deriveIdempotencyKey(endpoint.id, ipHash, values, submittedAt.getTime());
 
@@ -130,6 +183,8 @@ export async function handleSubmission(
       userAgent: attribution.userAgent,
       ipHash,
       submittedAt,
+      origin: origin.origin,
+      originReasons: origin.reasons,
     });
 
     if (responseMode(request) === "redirect") {
@@ -150,6 +205,17 @@ export async function handleSubmission(
       endpoint: endpoint.publicId,
       submittedAt: stored.submittedAt.toISOString(),
       duplicate: stored.duplicate,
+      // Only when there is something to say, so an endpoint with no schema
+      // answers byte-for-byte as it did before #51.
+      ...(validation.issues.length === 0
+        ? {}
+        : {
+            warnings: validation.issues.map((issue) => ({
+              field: issue.field,
+              code: issue.code,
+              message: issue.message,
+            })),
+          }),
     };
     return jsonResponse(request, 200, ack);
   } catch (error) {
@@ -169,6 +235,20 @@ export async function handleSubmission(
       ),
     );
   }
+}
+
+/**
+ * What a strict endpoint says when it refuses.
+ *
+ * Names every field and what is wrong with it, because the person reading this
+ * is the developer who owns the form, and "validation failed" would send them
+ * to our support inbox instead of to their markup.
+ */
+function strictMessage(errors: ValidationIssue[]): string {
+  const listed = errors.slice(0, 5).map((issue) => issue.message);
+  const remainder = errors.length - listed.length;
+  const tail = remainder > 0 ? ` (and ${remainder} more)` : "";
+  return `The submission did not match this endpoint's schema, which is set to strict mode: ${listed.join(" ")}${tail}`;
 }
 
 function respondWithError(request: Request, error: IngestError): Response {

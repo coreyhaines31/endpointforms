@@ -8,7 +8,13 @@ import {
   idleInviteState,
   type FormState,
 } from "@/actions/form-state";
-import { requestMagicLink, signInWithGoogle } from "@/actions/auth";
+import {
+  requestMagicLink,
+  signInWithGoogle,
+  signInWithPassword,
+  signUpWithPassword,
+} from "@/actions/auth";
+import { MIN_PASSWORD_LENGTH } from "@/lib/auth/password-policy";
 import {
   acceptInvitationAction,
   inviteMemberAction,
@@ -154,6 +160,117 @@ export function FormMessage({ state }: { state: FormState }) {
 // Sign in
 // ---------------------------------------------------------------------------
 
+/**
+ * The primary way in.
+ *
+ * `autoComplete="current-password"` and `type="password"` are not cosmetic: they
+ * are what tells a password manager to offer the saved credential rather than
+ * treating this as a new one, and what stops the field rendering in plain text
+ * over someone's shoulder.
+ *
+ * `invalid` is driven by the form's state rather than by which field was wrong,
+ * because the server does not say which field was wrong — see the note at the
+ * top of `src/actions/auth.ts`. Marking only the password would answer the
+ * question the message refuses to.
+ */
+export function PasswordSignInForm({ next }: { next: string }) {
+  const [state, action] = useActionState(signInWithPassword, idleFormState);
+  // Controlled, because React resets an uncontrolled form once its action
+  // settles — so a mistyped password would also wipe the address, and the
+  // second attempt would start by retyping something that was already right.
+  // The password field is left uncontrolled on purpose: clearing it is correct.
+  const [email, setEmail] = useState("");
+  const invalid = state.status === "error";
+
+  return (
+    <form action={action} noValidate>
+      <input type="hidden" name="next" value={next} />
+
+      <div className="grid gap-5">
+        <Field
+          label="Work email"
+          name="email"
+          type="email"
+          autoComplete="email"
+          placeholder="you@company.com"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          required
+          invalid={invalid}
+        />
+        <Field
+          label="Password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+          required
+          invalid={invalid}
+        />
+      </div>
+
+      <div className="mt-5">
+        <SubmitButton pendingLabel="Signing in…" className="w-full">
+          Sign in
+        </SubmitButton>
+      </div>
+      <FormMessage state={state} />
+    </form>
+  );
+}
+
+/**
+ * Sign-up.
+ *
+ * The length rule is stated up front rather than sprung after submitting, and it
+ * is the only rule — see `src/lib/auth/password.ts` for why there are no others.
+ * `minLength` is deliberately not set on the input: the server decides, and a
+ * browser refusing to submit would mean the sentence explaining *why* never gets
+ * a chance to appear.
+ */
+export function SignUpForm({ next }: { next: string }) {
+  const [state, action] = useActionState(signUpWithPassword, idleFormState);
+  // See `PasswordSignInForm` — controlled so a rejected password does not also
+  // take the address with it.
+  const [email, setEmail] = useState("");
+  const invalid = state.status === "error";
+
+  return (
+    <form action={action} noValidate>
+      <input type="hidden" name="next" value={next} />
+
+      <div className="grid gap-5">
+        <Field
+          label="Work email"
+          name="email"
+          type="email"
+          autoComplete="email"
+          placeholder="you@company.com"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          required
+          invalid={invalid}
+        />
+        <Field
+          label="Password"
+          name="password"
+          type="password"
+          autoComplete="new-password"
+          required
+          invalid={invalid}
+          hint={`At least ${MIN_PASSWORD_LENGTH} characters. Length is the only thing that makes a password hard to guess, so it’s the only rule.`}
+        />
+      </div>
+
+      <div className="mt-6">
+        <SubmitButton pendingLabel="Creating account…" className="w-full">
+          Create account
+        </SubmitButton>
+      </div>
+      <FormMessage state={state} />
+    </form>
+  );
+}
+
 export function MagicLinkForm({ next }: { next: string }) {
   const [state, action] = useActionState(requestMagicLink, idleFormState);
 
@@ -170,7 +287,10 @@ export function MagicLinkForm({ next }: { next: string }) {
         invalid={state.status === "error"}
       />
       <div className="mt-4">
-        <SubmitButton pendingLabel="Sending…" className="w-full">
+        {/* Quiet, not the primary fill: this sits inside a disclosure below the
+            password form, and two full-strength buttons on one screen would
+            undo the demotion the disclosure exists to make. */}
+        <SubmitButton pendingLabel="Sending…" variant="quiet" className="w-full">
           Email me a sign-in link
         </SubmitButton>
       </div>

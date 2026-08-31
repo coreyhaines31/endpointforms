@@ -79,6 +79,21 @@ const PAGE_URL_KEYS = ["_page_url", "_url", "page_url", "pageurl"] as const;
 /** An explicit referrer field, which we consume only when it is underscore-prefixed. */
 const REFERRER_KEYS = ["_referrer", "_referer", "referrer", "referer"] as const;
 
+/**
+ * Every payload key the endpoint lifts onto a column of its own.
+ *
+ * Exported for #51's HTML import: a hidden `<input name="gclid">` is real and
+ * useful markup, but it is not a field of the form in any sense a schema should
+ * describe — it lands in `click_ids`, never in `values`, so a schema field for
+ * it would describe something that is never there.
+ */
+export const ATTRIBUTION_FIELD_KEYS = [
+  ...UTM_KEYS,
+  ...CLICK_ID_KEYS,
+  ...PAGE_URL_KEYS,
+  ...REFERRER_KEYS,
+] as const;
+
 const MAX_PARAM_CHARS = 512;
 const MAX_URL_CHARS = 2048;
 const MAX_USER_AGENT_CHARS = 1024;

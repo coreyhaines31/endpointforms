@@ -23,8 +23,12 @@ import { usePathname } from "next/navigation";
  * error pages at those paths — reached directly, or when a provider bounces
  * back before our own page has been resolved. Wrapping one of those in a
  * marketing header offering "Join the waitlist" is not the moment for it.
+ *
+ * `/f` is the hosted form renderer (#28). Those pages belong to the customer
+ * whose form it is, not to us: our nav above someone's enquiry form would send
+ * their paid traffic to our waitlist.
  */
-const APP_PREFIXES = ["/app", "/login", "/api/auth"];
+const APP_PREFIXES = ["/app", "/login", "/signup", "/api/auth", "/f"];
 
 type SiteChromeProps = {
   header: React.ReactNode;
