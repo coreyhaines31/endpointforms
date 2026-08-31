@@ -1,8 +1,9 @@
-import { and, desc, eq, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 
 // Relative, extension-bearing imports rather than the `@/` alias, matching
 // `src/lib/workspaces/` and `src/db/`. Plain `node` does not resolve the alias,
 // and the tests load these modules directly.
+import { unsafeDb } from "../../db/client.ts";
 import { newId, withWorkspace } from "../../db/index.ts";
 import {
   deliveryAttempts,
@@ -11,6 +12,7 @@ import {
   submissions,
 } from "../../db/schema.ts";
 import { redactConfig } from "./config.ts";
+import { decideRetry } from "./retry.ts";
 import type {
   DeliveryLogRow,
   DeliveryStatus,
@@ -514,34 +516,84 @@ export type AttemptRecord = {
 };
 
 /**
- * Appends one attempt. Never updates a previous one.
+ * Opens an attempt row **before** the request goes out.
  *
- * The schema's comment on `attempt` is explicit — *"retries append rows; they
- * never overwrite the failed one"* — and it is the reason the delivery log can
- * answer "it was failing for two days and then started working" instead of only
- * "it works now".
+ * This is the difference between a delivery log with holes in it and one
+ * without. Writing the row only on completion means a delivery whose process is
+ * torn down mid-flight — a serverless function frozen after the response, a
+ * connection closed under load — leaves no trace at all, and a destination that
+ * has been failing for three weeks reads as "no failures recorded". That is the
+ * dishonest dashboard from `docs/00-positioning-spine.md` wearing our own logo,
+ * so it is designed out rather than hoped away.
+ *
+ * The row starts `pending` with `started_at` set and `completed_at` null, which
+ * is exactly what the schema's separate timestamps and its `pending` status are
+ * for. `settleAttempt` finishes it. If nothing ever does, `claimStaleAttempts`
+ * below finds it and calls it what it is.
+ *
+ * This is **not** a retry overwriting a previous attempt — the schema's rule
+ * that "retries append rows" still holds, because a retry opens its own row with
+ * the next attempt number. This only moves one row through its own lifecycle.
  */
-export async function recordAttempt(
+export async function beginAttempt(
   workspaceId: string,
-  record: AttemptRecord,
-): Promise<void> {
+  record: {
+    destinationId: string;
+    submissionId: string;
+    attempt: number;
+    requestBody: string | null;
+    requestHeaders: Record<string, string> | null;
+    startedAt: Date;
+  },
+): Promise<string> {
+  const id = newId();
   await withWorkspace(workspaceId, async (ws) => {
     await ws.tx.insert(deliveryAttempts).values({
-      id: newId(),
+      id,
       workspaceId,
       destinationId: record.destinationId,
       submissionId: record.submissionId,
       attempt: record.attempt,
-      status: record.status,
+      status: "pending",
       requestBody: record.requestBody,
       requestHeaders: record.requestHeaders,
-      responseStatus: record.responseStatus,
-      responseBody: record.responseBody,
-      error: record.error,
       startedAt: record.startedAt,
-      completedAt: record.completedAt,
-      nextRetryAt: record.nextRetryAt,
     });
+  });
+  return id;
+}
+
+/** Finishes an attempt opened by `beginAttempt`. */
+export async function settleAttempt(
+  workspaceId: string,
+  attemptId: string,
+  outcome: {
+    status: "succeeded" | "failed";
+    requestBody: string | null;
+    requestHeaders: Record<string, string> | null;
+    responseStatus: number | null;
+    responseBody: string | null;
+    error: string | null;
+    completedAt: Date;
+    nextRetryAt: Date | null;
+  },
+): Promise<void> {
+  await withWorkspace(workspaceId, async (ws) => {
+    await ws.tx
+      .update(deliveryAttempts)
+      .set({
+        status: outcome.status,
+        // Re-written on settle because an adapter that refused before opening a
+        // socket has no body to report until it has run.
+        requestBody: outcome.requestBody,
+        requestHeaders: outcome.requestHeaders,
+        responseStatus: outcome.responseStatus,
+        responseBody: outcome.responseBody,
+        error: outcome.error,
+        completedAt: outcome.completedAt,
+        nextRetryAt: outcome.nextRetryAt,
+      })
+      .where(ws.where(deliveryAttempts, eq(deliveryAttempts.id, attemptId)));
   });
 }
 
@@ -644,6 +696,106 @@ export async function claimDueRetries(
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// What a scheduled sweep needs — the only unscoped queries in this file
+// ---------------------------------------------------------------------------
+
+/**
+ * How long an attempt may sit `pending` before it is presumed abandoned.
+ *
+ * Comfortably longer than the 10s adapter timeout plus any plausible pause, so
+ * a slow-but-alive delivery is never reaped out from under itself. Short enough
+ * that a customer finds out the same hour.
+ */
+export const STALE_ATTEMPT_MS = 5 * 60_000;
+
+/**
+ * Workspaces with delivery work waiting.
+ *
+ * **Unscoped, deliberately, and in the same category as `resolveEndpoint` in
+ * `src/lib/ingest/store.ts`:** the question "which workspaces need a sweep?"
+ * cannot be asked inside a scope keyed on the answer. `src/db/scoped.ts` names
+ * this category explicitly.
+ *
+ * It is kept as narrow as a query can be — one column, distinct, bounded, and
+ * no customer data crosses the boundary. Everything the sweep then *does* runs
+ * inside `withWorkspace`, one workspace at a time.
+ */
+export async function workspacesWithDeliveryWork(
+  options: { now?: Date; limit?: number } = {},
+): Promise<string[]> {
+  const now = options.now ?? new Date();
+  const staleBefore = new Date(now.getTime() - STALE_ATTEMPT_MS);
+
+  const rows = await unsafeDb
+    .selectDistinct({ workspaceId: deliveryAttempts.workspaceId })
+    .from(deliveryAttempts)
+    .where(
+      or(
+        and(isNotNull(deliveryAttempts.nextRetryAt), lte(deliveryAttempts.nextRetryAt, now)),
+        and(
+          eq(deliveryAttempts.status, "pending"),
+          lte(deliveryAttempts.startedAt, staleBefore),
+        ),
+      ),
+    )
+    .limit(options.limit ?? 200);
+
+  return rows.map((row) => row.workspaceId);
+}
+
+/**
+ * Attempts that were opened and never finished, marked for what they are.
+ *
+ * A `pending` row older than `STALE_ATTEMPT_MS` means the process that opened it
+ * went away — frozen after the response, killed mid-deploy, connection dropped.
+ * Left alone it is worse than useless: `consecutiveFailures` does not count it,
+ * so the destination reads as healthy while a lead sits undelivered. This turns
+ * it into a failure with an honest sentence on it, and schedules a retry under
+ * the normal policy so the lead still gets its chances.
+ *
+ * Scoped per workspace like everything else; the sweep calls it once per
+ * workspace that `workspacesWithDeliveryWork` named.
+ */
+export async function reapStaleAttempts(
+  workspaceId: string,
+  options: { now?: Date; limit?: number } = {},
+): Promise<number> {
+  const now = options.now ?? new Date();
+  const staleBefore = new Date(now.getTime() - STALE_ATTEMPT_MS);
+
+  return withWorkspace(workspaceId, async (ws) => {
+    const stale = await ws.tx
+      .select({ id: deliveryAttempts.id, attempt: deliveryAttempts.attempt })
+      .from(deliveryAttempts)
+      .where(
+        ws.where(
+          deliveryAttempts,
+          eq(deliveryAttempts.status, "pending"),
+          lte(deliveryAttempts.startedAt, staleBefore),
+        ),
+      )
+      .limit(options.limit ?? 50);
+
+    for (const row of stale) {
+      // `network` rather than `unknown`: the delivery was started and never came
+      // back, which is what a dropped connection looks like, and it is retryable.
+      const retry = decideRetry({ attempt: row.attempt, failure: "network", now });
+      await ws.tx
+        .update(deliveryAttempts)
+        .set({
+          status: "failed",
+          completedAt: now,
+          nextRetryAt: retry.nextRetryAt,
+          error: `This delivery was started and never finished — the process handling it went away before it could report back. Recorded as a failure rather than left pending, so it cannot sit here looking like nothing happened. ${retry.reason}`,
+        })
+        .where(ws.where(deliveryAttempts, eq(deliveryAttempts.id, row.id)));
+    }
+
+    return stale.length;
+  });
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

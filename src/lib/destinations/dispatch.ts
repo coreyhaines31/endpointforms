@@ -1,12 +1,15 @@
 import { adapterFor } from "./adapters/index.ts";
-import { buildPayload, sampleSource } from "./payload.ts";
+import { buildPayload, sampleSource, serialisePayload } from "./payload.ts";
 import { decideRetry } from "./retry.ts";
 import { deliveryIdFor } from "./signature.ts";
 import {
+  beginAttempt,
   claimDueRetries,
   lastAttemptNumber,
   loadDeliveryJob,
-  recordAttempt,
+  reapStaleAttempts,
+  settleAttempt,
+  workspacesWithDeliveryWork,
   type Deliverable,
   type DeliveryJob,
 } from "./store.ts";
@@ -140,28 +143,6 @@ async function attemptDelivery(
   const adapter = adapterFor(destination.kind);
   const startedAt = options.now ?? new Date();
 
-  if (!adapter.available || !adapter.deliver) {
-    // Should be unreachable — an unavailable kind cannot be created through the
-    // UI — but a row could predate the check, or arrive from a seed. It is
-    // recorded as a failed attempt rather than silently ignored, so the
-    // destinations screen shows a broken destination rather than a quiet one.
-    await safelyRecord(workspaceId, {
-      destinationId: destination.destinationId,
-      submissionId: job.submissionId,
-      attempt: 1,
-      status: "failed",
-      requestBody: null,
-      requestHeaders: null,
-      responseStatus: null,
-      responseBody: null,
-      error: `${adapter.label} destinations are not available in this build, so nothing was delivered. The submission is still here.`,
-      startedAt,
-      completedAt: new Date(),
-      nextRetryAt: null,
-    });
-    return "skipped";
-  }
-
   const previous = await lastAttemptNumber(
     workspaceId,
     destination.destinationId,
@@ -169,12 +150,62 @@ async function attemptDelivery(
   );
   const attempt = previous + 1;
 
+  if (!adapter.available || !adapter.deliver) {
+    // Should be unreachable — an unavailable kind cannot be created through the
+    // UI — but a row could predate the check, or arrive from a seed. Recorded as
+    // a failed attempt rather than silently ignored, so the destinations screen
+    // shows a broken destination rather than a quiet one.
+    const id = await safely(() =>
+      beginAttempt(workspaceId, {
+        destinationId: destination.destinationId,
+        submissionId: job.submissionId,
+        attempt,
+        requestBody: null,
+        requestHeaders: null,
+        startedAt,
+      }),
+    );
+    if (id) {
+      await safely(() =>
+        settleAttempt(workspaceId, id, {
+          status: "failed",
+          requestBody: null,
+          requestHeaders: null,
+          responseStatus: null,
+          responseBody: null,
+          error: `${adapter.label} destinations are not available in this build, so nothing was delivered. The submission is still here.`,
+          completedAt: new Date(),
+          nextRetryAt: null,
+        }),
+      );
+    }
+    return "skipped";
+  }
+
   const payload = buildPayload(job.source, {
     id: deliveryIdFor(destination.destinationId, job.submissionId),
     attempt,
     sentAt: startedAt,
     test: false,
   });
+
+  // Opened BEFORE the request goes out. If this process is torn down mid-flight
+  // — a serverless function frozen once the response is flushed, a connection
+  // dropped under load — the row is already on disk as `pending`, and
+  // `reapStaleAttempts` turns it into an honest failure later. Writing the row
+  // only on completion is what makes a delivery log develop silent holes, and a
+  // destination that reads "no failures recorded" while it has been failing for
+  // three weeks is exactly the dashboard this product is named against.
+  const attemptId = await safely(() =>
+    beginAttempt(workspaceId, {
+      destinationId: destination.destinationId,
+      submissionId: job.submissionId,
+      attempt,
+      requestBody: serialisePayload(payload),
+      requestHeaders: null,
+      startedAt,
+    }),
+  );
 
   let result: AdapterResult;
   try {
@@ -203,23 +234,26 @@ async function attemptDelivery(
     ? { willRetry: false, nextRetryAt: null, reason: "" }
     : decideRetry({ attempt, failure: result.failure, now: startedAt });
 
-  await safelyRecord(workspaceId, {
-    destinationId: destination.destinationId,
-    submissionId: job.submissionId,
-    attempt,
-    status: result.ok ? "succeeded" : "failed",
-    requestBody: result.requestBody,
-    requestHeaders: result.requestHeaders,
-    responseStatus: result.responseStatus,
-    responseBody: result.responseBody,
-    // The retry decision is appended to the error so the log line says both what
-    // went wrong and what happens next. "Failed" without "retrying in 30s" is
-    // the log line that generates the support ticket.
-    error: result.ok ? null : `${result.error ?? "Delivery failed."} ${retry.reason}`.trim(),
-    startedAt,
-    completedAt: new Date(),
-    nextRetryAt: retry.nextRetryAt,
-  });
+  if (attemptId) {
+    await safely(() =>
+      settleAttempt(workspaceId, attemptId, {
+        status: result.ok ? "succeeded" : "failed",
+        // The adapter's own copy wins — it knows the exact bytes and the
+        // redacted headers. Falls back to the payload opened with, so a row
+        // never loses the body it was created with.
+        requestBody: result.requestBody ?? serialisePayload(payload),
+        requestHeaders: result.requestHeaders,
+        responseStatus: result.responseStatus,
+        responseBody: result.responseBody,
+        // The retry decision is appended to the error so the log line says both
+        // what went wrong and what happens next. "Failed" without "retrying in
+        // 30s" is the log line that generates the support ticket.
+        error: result.ok ? null : `${result.error ?? "Delivery failed."} ${retry.reason}`.trim(),
+        completedAt: new Date(),
+        nextRetryAt: retry.nextRetryAt,
+      }),
+    );
+  }
 
   return result.ok ? "delivered" : "failed";
 }
@@ -423,14 +457,18 @@ export async function drainDispatch(): Promise<void> {
   }
 }
 
-/** Writing an attempt row must never be the thing that throws. */
-async function safelyRecord(
-  workspaceId: string,
-  record: Parameters<typeof recordAttempt>[1],
-): Promise<void> {
+/**
+ * Runs a database write that must never be the thing that throws.
+ *
+ * A delivery is already off the response path, so an error here cannot reach a
+ * visitor — but it can lose the row, so it is logged rather than swallowed
+ * silently, and the caller gets `null` and skips the write that depended on it.
+ */
+async function safely<T>(write: () => Promise<T>): Promise<T | null> {
   try {
-    await recordAttempt(workspaceId, record);
+    return await write();
   } catch (error) {
-    console.error("[destinations] could not record a delivery attempt", error);
+    console.error("[destinations] could not write a delivery attempt", error);
+    return null;
   }
 }
