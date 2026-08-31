@@ -21,6 +21,7 @@ const columns: { heading: string; links: FooterLink[] }[] = [
       { href: "/solutions/in-house-ppc", label: "For in-house PPC" },
       { href: "/open-source", label: "Open source" },
       { href: "/#waitlist", label: "Join the waitlist" },
+      { href: "/login", label: "Sign in" },
     ],
   },
   {

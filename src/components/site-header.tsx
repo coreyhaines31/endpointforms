@@ -50,6 +50,12 @@ export function SiteHeader() {
           <ThemeToggle />
           <GithubLink compact />
           <Link
+            href="/login"
+            className="hidden shrink-0 rounded-sm px-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:inline-flex sm:items-center"
+          >
+            Sign in
+          </Link>
+          <Link
             href="/#waitlist"
             className="inline-flex h-9 shrink-0 items-center rounded-md border border-border-control px-3 text-sm font-medium text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >

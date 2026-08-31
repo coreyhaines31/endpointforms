@@ -51,7 +51,7 @@ export const FEATURES: Feature[] = [
     name: "Origin",
     summary: "Provenance on every submission.",
     title: "Every submission arrives knowing where it came from.",
-    lead: "Origin is a field on the submission, not a score we guessed from mouse movement. Human, Agent, or Unverified — recorded at the moment it lands, exportable, filterable, and auditable in the source.",
+    lead: "Origin is a field on the submission, set by which surface it came through — not a spam score inferred from how the visitor moved their mouse. Human, Agent, or Unverified, recorded at the moment it lands, exportable, filterable, and auditable in the source.",
     description:
       "Origin stamps every Endpoint Forms submission Human, Agent, or Unverified at the moment it arrives — a field on the record, not a spam score inferred from behaviour. Endpoint Forms is pre-launch.",
     definition:
@@ -67,7 +67,7 @@ export const FEATURES: Feature[] = [
       {
         step: "02",
         heading: "The surface used is the stamp",
-        body: "A submission through the human page, behaving like a browser session, is Human. A submission through the manifest, identifying itself as software, is Agent. Anything that submits the human form while behaving like software is Unverified — it told on itself by using the wrong door.",
+        body: "A submission through the human page, behaving like a browser session, is Human. A submission through the manifest, identifying itself as software, is Agent. Anything that submits the human form while behaving like software is Unverified. Software that goes to the trouble of impersonating a browser will not be — which is why Unverified is a bucket you can read, not a bin.",
       },
       {
         step: "03",

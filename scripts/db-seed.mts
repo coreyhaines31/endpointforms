@@ -122,7 +122,7 @@ async function main() {
     id: userId,
     email: USER_EMAIL,
     name: "Avery Nash",
-    emailVerifiedAt: daysAgo(60),
+    emailVerified: daysAgo(60),
   });
 
   await unsafeDb.insert(memberships).values({

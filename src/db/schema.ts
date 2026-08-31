@@ -10,12 +10,15 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+
+import { newId } from "./ids.ts";
 
 /**
  * The data model. `docs/21-data-model.md` explains the reasoning; this file is
@@ -109,19 +112,180 @@ export const workspaces = pgTable(
   (t) => [uniqueIndex("workspaces_slug_key").on(t.slug)],
 );
 
+/**
+ * People.
+ *
+ * The property names `emailVerified` and `image` are what `@auth/drizzle-adapter`
+ * reads and writes; the SQL columns keep this codebase's naming
+ * (`email_verified_at`, `image_url`). Renaming the properties rather than the
+ * columns is what let us use the official, well-exercised adapter instead of
+ * hand-writing one — an adapter bug is an authentication bug.
+ *
+ * `$defaultFn` keeps the UUIDv7 convention for rows the adapter inserts. The
+ * adapter checks `hasDefault` and lets ours win; without it every user would get
+ * a UUIDv4 from `crypto.randomUUID()`. It is runtime-only and emits no DDL.
+ */
 export const users = pgTable(
   "users",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id").primaryKey().$defaultFn(newId),
     email: text("email").notNull(),
     name: text("name"),
-    imageUrl: text("image_url"),
-    /** Magic link and Google only (#34). There is deliberately no password column. */
-    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    image: text("image_url"),
+    /**
+     * When we last saw proof that this person controls this address — set by a
+     * magic link or by Google. Password sign-up does not set it: choosing a
+     * password proves nothing about the inbox, and pretending otherwise is how
+     * an account gets created on someone else's address.
+     */
+    emailVerified: timestamp("email_verified_at", { withTimezone: true, mode: "date" }),
+    /**
+     * argon2id, parameters and salt encoded in the string. See
+     * `src/lib/auth/password.ts`.
+     *
+     * **Nullable, permanently.** A Google user has no password and never will;
+     * neither does anyone who signed up by magic link before this column
+     * existed. Null means "this person does not sign in with a password", which
+     * is a valid, ordinary account — not a broken row to be backfilled.
+     *
+     * Never selected into anything that leaves the server. The only query that
+     * reads it is the one in `src/lib/auth/credentials.ts` that verifies against
+     * it and then drops it.
+     */
+    passwordHash: text("password_hash"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("users_email_key").on(t.email)],
+  (t) => [
+    uniqueIndex("users_email_key").on(t.email),
+    /**
+     * One account per address, whatever case it was typed in.
+     *
+     * `@auth/drizzle-adapter` looks users up with an exact match, so the plain
+     * index above is the one it uses and stays. This one exists because password
+     * sign-up normalises the address before storing it: without it, someone
+     * whose row was written as `Alice@…` by an earlier magic link could sign up
+     * again as `alice@…` and end up with two accounts and half their data in
+     * each. It also backs the case-insensitive lookup in `src/lib/auth/account.ts`.
+     */
+    uniqueIndex("users_email_lower_key").on(sql`lower(${t.email})`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Auth.js (#34)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three tables `@auth/drizzle-adapter` needs, plus invitations.
+ *
+ * Property names are dictated by the adapter and cannot be changed; the SQL
+ * column names are ours. The `auth_` table prefix keeps "accounts" from ever
+ * colliding with a billing concept later — in a B2B product that word is taken.
+ *
+ * None of the three carry `workspace_id`. They are about a person, not a tenant:
+ * one human with one session can belong to several workspaces, and binding a
+ * session to a workspace would mean re-authenticating to switch. The workspace
+ * boundary is enforced on every workspace-scoped read instead, which is the only
+ * place it can be enforced completely.
+ */
+export const authAccounts = pgTable(
+  "auth_accounts",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    provider: text("provider").notNull(),
+    providerAccountId: text("provider_account_id").notNull(),
+    refresh_token: text("refresh_token"),
+    access_token: text("access_token"),
+    expires_at: integer("expires_at"),
+    token_type: text("token_type"),
+    scope: text("scope"),
+    id_token: text("id_token"),
+    session_state: text("session_state"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.provider, t.providerAccountId] }),
+    index("auth_accounts_user_id_idx").on(t.userId),
+  ],
+);
+
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    sessionToken: text("session_token").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expires: timestamp("expires", { withTimezone: true, mode: "date" }).notNull(),
+  },
+  (t) => [
+    index("auth_sessions_user_id_idx").on(t.userId),
+    // Sweeping expired sessions is the only other query this table ever gets.
+    index("auth_sessions_expires_idx").on(t.expires),
+  ],
+);
+
+/**
+ * Magic-link tokens. Auth.js stores them **hashed**, so a database leak does not
+ * hand out live sign-in links.
+ */
+export const authVerificationTokens = pgTable(
+  "auth_verification_tokens",
+  {
+    identifier: text("identifier").notNull(),
+    token: text("token").notNull(),
+    expires: timestamp("expires", { withTimezone: true, mode: "date" }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.identifier, t.token] })],
+);
+
+/**
+ * An invitation to join a workspace.
+ *
+ * Workspace-scoped, so it is covered by row-level security like everything else
+ * — an invitation names an email address, which is customer data.
+ *
+ * Only the **hash** of the token is stored. The raw token exists in the emailed
+ * URL and nowhere else, so a leaked database row cannot be redeemed. Redemption
+ * is by token alone rather than by (workspace, email) because the recipient may
+ * sign in with a different address than the one invited, and we would rather
+ * know that than silently match on something the inviter typed.
+ */
+export const invitations = pgTable(
+  "invitations",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: membershipRole("role").notNull().default("member"),
+    tokenHash: text("token_hash").notNull(),
+    invitedByUserId: uuid("invited_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedByUserId: uuid("accepted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /** Withdrawn by an owner. Kept rather than deleted so the audit trail survives. */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("invitations_token_hash_key").on(t.tokenHash),
+    // At most one live invitation per address per workspace. Partial, so
+    // re-inviting someone whose invitation was revoked or accepted still works.
+    uniqueIndex("invitations_workspace_email_live_key")
+      .on(t.workspaceId, t.email)
+      .where(sql`${t.acceptedAt} is null and ${t.revokedAt} is null`),
+    index("invitations_workspace_created_at_idx").on(t.workspaceId, t.createdAt.desc()),
+  ],
 );
 
 export const memberships = pgTable(
@@ -415,6 +579,7 @@ export const deliveryAttempts = pgTable(
  */
 export const workspaceScopedTables = [
   memberships,
+  invitations,
   endpoints,
   formSchemas,
   submissions,
@@ -424,6 +589,7 @@ export const workspaceScopedTables = [
 
 export const workspaceScopedTableNames = [
   "memberships",
+  "invitations",
   "endpoints",
   "form_schemas",
   "submissions",
@@ -434,6 +600,8 @@ export const workspaceScopedTableNames = [
 export type Workspace = typeof workspaces.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Membership = typeof memberships.$inferSelect;
+export type MembershipRole = (typeof membershipRole.enumValues)[number];
+export type Invitation = typeof invitations.$inferSelect;
 export type Endpoint = typeof endpoints.$inferSelect;
 export type FormSchema = typeof formSchemas.$inferSelect;
 export type Submission = typeof submissions.$inferSelect;

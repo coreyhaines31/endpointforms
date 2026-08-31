@@ -4,6 +4,7 @@ import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
+import { SiteChrome } from "@/components/site-chrome";
 import { ThemeScript } from "@/components/theme-script";
 
 const plexSans = IBM_Plex_Sans({
@@ -90,9 +91,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             }),
           }}
         />
-        <SiteHeader />
-        <div className="flex flex-1 flex-col">{children}</div>
-        <SiteFooter />
+        {/*
+          The authenticated app (#34) shares this root layout but not the
+          marketing chrome. See `SiteChrome` for why it is a client boundary
+          rather than a second root layout.
+        */}
+        <SiteChrome header={<SiteHeader />} footer={<SiteFooter />}>
+          {children}
+        </SiteChrome>
       </body>
     </html>
   );
