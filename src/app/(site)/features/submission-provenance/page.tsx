@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
-import { getFeature } from "@/app/features/_content";
+import { getFeature } from "@/app/(site)/features/_content";
 import {
   FeatureDetail,
   featureMetadata,
-} from "@/app/features/_components/feature-detail";
+} from "@/app/(site)/features/_components/feature-detail";
 import { OriginTable } from "@/components/mockup/origin-table";
 
 const feature = getFeature("submission-provenance");

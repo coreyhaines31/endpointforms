@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/page-header";
 import { TextLink } from "@/components/text-link";
 import { WaitlistForm } from "@/components/waitlist-form";
 import { ARGUMENT_PATH } from "@/lib/site";
-import type { Feature } from "@/app/features/_content";
+import type { Feature } from "@/app/(site)/features/_content";
 
 export function featureMetadata(feature: Feature): Metadata {
   const path = `/features/${feature.slug}`;

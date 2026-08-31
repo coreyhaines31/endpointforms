@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/page-header";
 import { TextLink } from "@/components/text-link";
 import { WaitlistForm } from "@/components/waitlist-form";
 import { ARGUMENT_PATH } from "@/lib/site";
-import { FEATURES } from "@/app/features/_content";
+import { FEATURES } from "@/app/(site)/features/_content";
 
 const title = "Features";
 const description =

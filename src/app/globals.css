@@ -7,10 +7,15 @@
 
 @theme inline {
   /* type ------------------------------------------------------------------ */
-  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, -apple-system,
-    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, "SF Mono",
-    Menlo, Consolas, "Liberation Mono", monospace;
+  /* The var() fallbacks are not decoration. Not every root layout loads IBM
+     Plex — the hosted form root (`src/app/(forms)/layout.tsx`) deliberately
+     does not — and an undefined custom property with no fallback makes the
+     whole font-family declaration invalid at computed-value time, which drops
+     the entire stack and renders the page in the browser's default serif. */
+  --font-sans: var(--font-plex-sans, ui-sans-serif), ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: var(--font-plex-mono, ui-monospace), ui-monospace, SFMono-Regular,
+    "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --font-heading: var(--font-sans);
 
   --text-display-2xl: 4.5rem;
