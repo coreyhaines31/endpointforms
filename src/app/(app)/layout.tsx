@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { AppBar } from "@/components/app/shell";
+import { AppShell } from "@/components/app/shell";
 import { RootShell } from "@/components/root-shell";
 import { FONT_VARIABLES } from "@/lib/fonts";
 import "../globals.css";
@@ -40,11 +40,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const workspaces = await listWorkspacesForUser(user.id);
 
   return (
-    <RootShell htmlClassName={FONT_VARIABLES}>
-      <div className="flex flex-1 flex-col">
-        <AppBar user={user} workspaces={workspaces} />
-        <main className="flex-1 pb-16">{children}</main>
-      </div>
+    // `group/app` is what the sidebar's collapsed state hangs off: an inline
+    // script writes `data-nav` onto <html> before paint, and every rule that
+    // changes with the collapse is a `group-data-[nav=collapsed]/app:` variant.
+    // See `src/components/app/sidebar.tsx`.
+    <RootShell htmlClassName={`${FONT_VARIABLES} group/app`}>
+      <AppShell user={user} workspaces={workspaces}>
+        {children}
+      </AppShell>
     </RootShell>
   );
 }

@@ -1,54 +1,52 @@
-import Link from "next/link";
-
-import { signOutAction } from "@/actions/auth";
-import { LogoMark } from "@/components/logo";
-import { ThemeToggle } from "@/components/theme-toggle";
-import { WorkspaceSwitcher } from "@/components/app/nav";
+import { AppSidebar, NavPreferenceScript } from "@/components/app/sidebar";
 import type { SessionUser } from "@/lib/auth/session";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 
 /**
  * The authenticated app's chrome.
  *
- * Deliberately one narrow bar rather than a sidebar. There are three
- * destinations inside a workspace; a 240px navigation rail to hold three links
- * would spend the screen on itself.
+ * A vertical sidebar, not the bar this used to be. The old comment argued that
+ * three destinations did not justify a rail; there are five now, with
+ * destinations, a builder and a yield metric queued behind them, and a
+ * horizontal bar answers "what else is in here?" by running out of room.
+ *
+ * This component owns only the composition — the sidebar's own behaviour is in
+ * `./sidebar.tsx` and the list of destinations is `WORKSPACE_NAV` in `./nav.tsx`.
+ *
+ * `AppSidebar` is a Client Component and takes `user` and `workspaces` as props;
+ * both are plain serialisable rows, and both are already loaded by the layout
+ * for the session check, so nothing is fetched twice.
  */
-export function AppBar({
+export function AppShell({
   user,
   workspaces,
+  children,
 }: {
   user: SessionUser;
   workspaces: WorkspaceSummary[];
+  children: React.ReactNode;
 }) {
   return (
-    <header className="sticky top-0 z-50 border-b border-border bg-background/85 backdrop-blur-sm">
-      <div className="flex h-14 items-center gap-3 px-[5%]">
-        <Link
-          href="/app"
-          aria-label="Endpoint Forms — your workspaces"
-          className="shrink-0 rounded-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
-        >
-          <LogoMark className="h-6 w-6" />
-        </Link>
+    <>
+      <NavPreferenceScript />
 
-        <WorkspaceSwitcher workspaces={workspaces} />
+      {/*
+        First focusable thing on the page. Without it, reaching the content of a
+        submission means tabbing past every link in the sidebar, on every page.
+      */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[60] focus:rounded-md focus:border focus:border-border-control focus:bg-card focus:px-3 focus:py-2 focus:text-sm focus:text-foreground"
+      >
+        Skip to content
+      </a>
 
-        <div className="ml-auto flex items-center gap-2">
-          <span className="hidden max-w-[24ch] truncate text-sm text-muted-foreground sm:block">
-            {user.email}
-          </span>
-          <ThemeToggle />
-          <form action={signOutAction}>
-            <button
-              type="submit"
-              className="rounded-md border border-border px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:border-border-control hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-            >
-              Sign out
-            </button>
-          </form>
-        </div>
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <AppSidebar user={user} workspaces={workspaces} />
+        <main id="main" className="min-w-0 flex-1 pb-16">
+          {children}
+        </main>
       </div>
-    </header>
+    </>
   );
 }
