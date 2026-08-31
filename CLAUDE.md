@@ -108,6 +108,12 @@ Two independent guards now exist so this cannot recur silently:
   `DATABASE_URL` during the build step**, so it proves a stranger can clone and build the repo.
   Vercel's check only proves it builds with Vercel's env vars set.
 
+One more trap, because it produced a check that reported clean while missing a file: a
+repo-wide `grep --include="*.ts" --include="*.tsx"` **does not match `.mts`**. This project runs
+its seed, its migrator and its entire test suite from `.mts` files, so a TypeScript include list
+silently skips all of them. When renaming or auditing across the repo, grep with no `--include`
+filter and exclude `node_modules` instead.
+
 For **frontend-only changes**, passing checks are not enough: open it in `agent-browser`,
 screenshot it, and look at the image in both themes before reporting it done. A computed style
 confirms the code does what you wrote, not what was asked.
