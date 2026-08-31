@@ -4,33 +4,59 @@
 
 ---
 
-## The one decision that shapes everything: submission path before builder
+## Revised 2026-08-31 — endpoint-first
 
-The instinct is to build the builder first. It is the visible thing, it demos well, and it is
-what people picture when they hear "form builder." That instinct is wrong here, for three
-reasons.
+The plan below originally assumed we render every form. Corey raised Formspree: maybe we don't
+need a builder at all, just a wrapper around form code. That reframing is right, and it is now
+the architecture.
 
-**1. A form is data. You do not need a builder to have a form.**
-The form definition is a versioned row. We can seed one, render it, and collect against it
-before any authoring UI exists. Building the builder first means writing an editor for a
-pipeline that has never carried a real submission.
+**The product is an endpoint.** You point an existing form at a URL and it works — no builder,
+no migration, one attribute changed. That is #50, and it is the fastest path to something that
+actually collects a submission.
 
-**2. The waitlist is live and losing signups right now.**
-`endpointforms.com` is public with 63 pages and an argument essay, and its only conversion
-goal refuses honestly rather than claiming a success it cannot deliver. Every day without the
-submission path is signups not captured. The builder does not fix that. The submission path
-does, in #33.
+### Why we are not simply Formspree
 
-**3. The riskiest claim in the whole position is only testable with real traffic.**
-`docs/01-positioning.md` Risk 1 — *provenance may not actually distinguish a bot from a human*
-— is the highest-severity risk we logged and it is still unfalsified. If it does not hold,
-Pillar 1 collapses and the positioning needs rework. That is a thing to discover in week two
-on our own form, not in month five on a customer's.
+Two reasons, one commercial and one structural.
 
-So: **P1 ends with our own waitlist running on Endpoint Forms.** That is the milestone that
-proves the pipeline, closes the signup leak, and puts Risk 1 in front of real traffic.
+Formspree meters purely per submission: free 50/mo, $10 for 200, $20 for 2K, $60 for 20K. That
+is exactly the meter pillar 3 exists to attack. Ours stays genuinely usable free, exports never
+paywalled. *(Billing is deprioritized — #47 — but the constraints stay binding.)*
+
+The structural reason matters more. **Formspree only ever sees posts. It never knows what the
+form is.** So it cannot build Manifest — you cannot generate an agent-callable tool definition
+from a payload you have never seen a shape for — and it cannot build Hindsight, because you
+cannot serve variants of a form you do not render.
+
+### The schema is the hinge
+
+That gap is #51. An endpoint works with **no schema**. Declaring one is **optional** and unlocks
+Manifest, Hindsight, server-side validation and typed exports.
+
+Four ways to produce a schema, only one of which is a builder:
+
+1. **Import from HTML** — paste a form or point us at a URL. The bridge between the two paths.
+2. **Declare it in a file** — JSON, committed, applied by CLI. Developer-native.
+3. **Infer and confirm** — propose one from observed submissions.
+4. **The builder** (#35) — a convenience that generates the schema, not the foundation.
+
+Corey's point about the audience resolves the objection I raised: because of AI, developers do
+marketing and marketers ship code. The two paths are not two products for two buyers — they are
+two entry points for the same person on different days.
+
+### The hard constraint on all of it
+
+**Both paths must be demoable by the end.** Backend-first is a build order, not a scope cut. The
+builder still gets built properly; it just isn't what everything else depends on.
+
+And adding a schema must never break an endpoint that worked without one. Strictly additive,
+warn-not-reject by default. If declaring a schema can start rejecting submissions that used to
+succeed, we have built a footgun.
 
 ---
+
+## The original ordering call: submission path before builder
+
+*Still correct, and endpoint-first strengthens it.*
 
 ## Phases
 
@@ -43,8 +69,11 @@ carries ad pixels, and customer form traffic must never share a cookie domain wi
 analytics vendor. `#34` carries the single most dangerous bug in a product like this: a
 cross-tenant leak. It gets a test that fails if any workspace-scoped query skips the helper.
 
-### P1 — The submission path (#28, #29, #30, #31, #32, #33)
-Renderer, ingest, Origin, spam, Manifest, then our own waitlist.
+### P1 — The submission path (#50, #29, #30, #31, #51, #32, #33)
+Endpoint, ingest, Origin, spam, the optional schema, Manifest, then our own waitlist.
+
+`#50` comes first: an endpoint any existing form can post to, with no schema and no rendering.
+`#51` follows, because Manifest cannot exist without it.
 
 `#30` (Origin) and `#32` (Manifest) are two halves of one idea and should be built together:
 the agent identifies itself, and *that identification is the filter*. `#30` is written as an
@@ -55,8 +84,12 @@ mechanism actually works, including if it doesn't.
 teardowns at `/spam` saying every existing defense is defeated — including one concluding that
 OTP works and isn't us. Shipping OTP as a paid upsell would make that page a lie.
 
-### P2 — The builder (#35, #36, #37, #38, #39)
-Authoring UI, conditional logic, multi-step, theming, embeds.
+### P2 — The builder and hosted forms (#28, #35, #36, #37, #38, #39)
+Hosted renderer, authoring UI, conditional logic, multi-step, theming, embeds.
+
+**Optional architecturally, required for the deliverable.** Corey needs both paths demoable by the
+end, so this gets built properly — it simply is not what everything else depends on. `#28` moved
+here from P1 when the product became endpoint-first.
 
 `#36` is the highest-leverage issue in this phase and possibly the plan. Conditional logic
 breaking past five conditions is the **#1 functional complaint in the category (~12 independent
@@ -102,17 +135,19 @@ never paywalled.
 
 ```
 #26 render domain ─┐
-#27 database ──────┼─→ #28 renderer ─→ #29 ingest ─┬─→ #30 Origin ─┐
-#34 auth ──────────┘                               ├─→ #32 Manifest┤
-                                                   └─→ #31 spam ───┴─→ #33 waitlist ✦
-                                                                          │
-                        ┌─────────────────────────────────────────────────┘
-                        ├─→ #35 builder ─→ #36 logic ─→ #37 steps ─→ #38 theme ─→ #39 embed
-                        └─→ #40 inbox ──→ #41 destinations ─→ #42 fail loudly
-                                                                  │
-                                            #43 Verdict ─→ #44 Yield ─→ #45 Hindsight
-                                                                  │
-                                            #46 self-host · #47 billing · #48 docs
+#27 database ──────┼─→ #50 endpoint ─→ #29 ingest ─┬─→ #30 Origin ──┐
+#34 auth ──────────┘   (no schema needed)          └─→ #31 spam ────┤
+                                                                     ├─→ #33 waitlist ✦
+                            #51 schema (optional) ─→ #32 Manifest ───┘
+                                    │
+        ┌───────────────────────────┴─────────────────────────────────┐
+        │                                                             │
+        ├─→ #28 hosted renderer ─→ #35 builder ─→ #36 logic ─→ #37 ─→ #38 ─→ #39
+        └─→ #40 inbox ──→ #41 destinations ─→ #42 fail loudly
+                                                    │
+                            #43 Verdict ─→ #44 Yield ─→ #45 Hindsight
+                                                    │
+                            #46 self-host · #48 docs · (#47 billing, deprioritized)
 ```
 
 `✦` = the milestone worth optimising for. Everything before it is infrastructure; everything
