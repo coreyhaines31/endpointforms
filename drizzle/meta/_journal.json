@@ -36,6 +36,20 @@
       "when": 1788204676602,
       "tag": "0004_user_password_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788204676603,
+      "tag": "0005_spam_defenses",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788221699099,
+      "tag": "0006_hindsight_split_tests",
+      "breakpoints": true
     }
   ]
 }

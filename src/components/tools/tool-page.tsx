@@ -41,8 +41,9 @@ export function ToolPage({
         lead={lead}
         meta={
           <p className="max-w-[62ch] border-l border-border-control pl-4 text-sm text-muted-foreground">
-            Runs in your browser. Nothing you type is sent anywhere, stored, or
-            logged — there is no request to send it in. Built by the team behind{" "}
+            The calculator runs in your browser. None of the numbers you enter
+            are sent anywhere, stored, or logged — there is no request to send
+            them in. Built by the team behind{" "}
             <TextLink href={ARGUMENT_PATH}>the dishonest dashboard</TextLink>.
           </p>
         }
@@ -117,7 +118,10 @@ export function ToolPage({
             submission carrying what it turned out to be worth. It is not shipped
             yet. The waitlist is where we tell you when it is.
           </p>
-          <WaitlistForm className="mt-8" note="Waitlist" />
+          {/* The eight calculators are eight form placements (#24). The signup
+              carries which one it came from — the tool's own slug, never
+              anything typed into the calculator above it. */}
+          <WaitlistForm className="mt-8" note="Waitlist" tool={tool.slug} />
         </div>
       </Container>
     </main>

@@ -5,6 +5,7 @@ import { newId, newSubmissionPublicId } from "../../db/ids.ts";
 import { withWorkspace } from "../../db/scoped.ts";
 import { endpoints, formSchemas, submissions } from "../../db/schema.ts";
 import type { OriginReason, OriginState } from "../origin/types.ts";
+import type { SpamReason } from "../spam/types.ts";
 import { readStoredDocument, type FormSchemaDocument } from "../schema/format.ts";
 import type { JsonValue } from "./body.ts";
 import { IngestError } from "./errors.ts";
@@ -108,6 +109,22 @@ export async function resolveEndpoint(publicId: string): Promise<ResolvedEndpoin
 }
 
 export type SubmissionRecord = {
+  /**
+   * Which Hindsight arm served the form (#45), or null when the submission is
+   * not in a test. Stamped once and never rewritten, exactly like
+   * `schemaVersionId` above it — a test has to stay readable months later
+   * against arms that may since have been superseded.
+   */
+  variantId: string | null;
+  /**
+   * The definition this submission arrived under.
+   *
+   * Normally the endpoint's active version, but a Hindsight arm serving its own
+   * form (#45) supplies that arm's version instead — the submission has to stay
+   * readable against the form the visitor was actually shown, not the one the
+   * endpoint happened to have live.
+   */
+  schemaVersionId: string | null;
   values: Record<string, JsonValue>;
   rawBody: string;
   rawContentType: string | null;
@@ -126,6 +143,18 @@ export type SubmissionRecord = {
   origin: OriginState;
   /** The signals behind the stamp. "Why is this Unverified?" is read from here. */
   originReasons: OriginReason[];
+  /**
+   * Spam scoring (#31). A third axis, kept apart from both `origin` and
+   * `verdict` — see `src/lib/spam/types.ts` for why neither could carry it.
+   *
+   * `spamState` is only ever `clear` or `flagged` here. The other two states in
+   * the column, `not_spam` and `confirmed_spam`, are human decisions and are
+   * written by `src/actions/spam.ts`, never by ingest.
+   */
+  spamState: "clear" | "flagged";
+  spamScore: number;
+  /** Every signal consulted, including the ones that scored nothing. */
+  spamReasons: SpamReason[];
 };
 
 export type StoredSubmission = {
@@ -171,7 +200,11 @@ export async function storeSubmission(
         // is also what lets the issues on a submission be re-derived later
         // instead of frozen into a column that could disagree with the values
         // beside it.
-        schemaVersionId: endpoint.activeSchemaVersionId,
+        schemaVersionId: record.schemaVersionId,
+        // Stamped, never rewritten, for the same reason as the line above. This
+        // is the only place a submission is attributed to a split test arm, and
+        // nothing recomputes it afterwards.
+        variantId: record.variantId,
         values: record.values,
         rawBody: record.rawBody,
         rawContentType: record.rawContentType,
@@ -188,6 +221,11 @@ export async function storeSubmission(
         idempotencyKey: record.idempotencyKey,
         origin: record.origin,
         originReasons: record.originReasons,
+        // Written down, never acted on. Nothing downstream of this insert reads
+        // spam_state to decide whether to keep, deliver or count the row.
+        spamState: record.spamState,
+        spamScore: record.spamScore,
+        spamReasons: record.spamReasons,
       })
       .onConflictDoNothing({
         target: [submissions.endpointId, submissions.idempotencyKey],

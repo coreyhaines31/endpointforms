@@ -1,5 +1,7 @@
 "use client";
 
+import { ChevronDown } from "lucide-react";
+
 import { useActionState, useId, useState } from "react";
 import { useFormStatus } from "react-dom";
 
@@ -418,15 +420,26 @@ export function InviteForm({ slug }: { slug: string }) {
           <label htmlFor="invite-role" className="text-sm font-medium text-foreground">
             Role
           </label>
-          <select
-            id="invite-role"
-            name="role"
-            defaultValue="member"
-            className="mt-2 h-11 rounded-md border border-border-control bg-card px-3 text-base text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            <option value="member">Member</option>
-            <option value="owner">Owner</option>
-          </select>
+          {/* appearance-none, then our own chevron. padding-right cannot move
+              the native arrow — the browser pins it a fixed distance from the
+              border — so the only way to give it room on its right is to draw
+              it ourselves. The select still owns focus and keyboard behaviour;
+              the chevron is decorative and pointer-transparent. */}
+          <div className="relative mt-2">
+            <select
+              id="invite-role"
+              name="role"
+              defaultValue="member"
+              className="h-11 w-full appearance-none rounded-md border border-border-control bg-card pl-3 pr-10 text-base text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              <option value="member">Member</option>
+              <option value="owner">Owner</option>
+            </select>
+            <ChevronDown
+              aria-hidden="true"
+              className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            />
+          </div>
         </div>
 
         <SubmitButton pendingLabel="Inviting…" variant="quiet">

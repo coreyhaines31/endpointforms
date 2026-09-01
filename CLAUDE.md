@@ -67,15 +67,70 @@ is signups not captured. That's the argument for building the submission path ea
 
 That last part matters more than the demo: **Risk 1 in `docs/01-positioning.md` — that
 provenance may not actually distinguish a bot from a human — is the highest-severity risk in
-the whole position, and it is currently unfalsified.** A public site with an argument essay on
-it will attract humans, agents and bots. Better to find out on our own form than a customer's.
+the whole position, and it is CONFIRMED, not hypothetical.** Plain `curl` carrying copied
+Chrome headers gets stamped `human`; see `docs/23-origin-findings.md`. Four copy claims were
+narrowed as a result.
+
+The two halves of the claim are not symmetric, and any copy that treats them as equal is wrong:
+- **Agent** is structural. An agent calling the MCP surface (#32) *declares itself by which
+  surface it called*. That holds up, and was demonstrated end to end.
+- **Human** is heuristic, and forgeable by anyone who can copy headers. Never write copy that
+  promises we detect bots.
+
+A public site with an argument essay on it will attract humans, agents and bots. Better to keep
+finding out on our own form than on a customer's — which is what #24/#33 is for.
 
 Also carried forward:
-- `saveSubscriber()` in `src/lib/waitlist-store.ts` is the single sink for waitlist signups —
-  swapping Kit for Endpoint is one function.
+- `saveSubscriber()` in `src/lib/waitlist-store.ts` is the single sink for waitlist signups.
+  **Endpoint is the only sink.** There is no third-party ESP in this path and none is to be
+  added — not as a fallback, not "if configured", not behind an env var. When the Endpoint path
+  fails, the form refuses honestly, which is what it already does in production today. Kit was
+  removed for this reason; do not reintroduce it or any replacement.
 - Forms must render on their own registrable domain, not a subdomain of the marketing site.
   `docs/05` §4 has the reasoning: our marketing site carries ad pixels, and customer form
   traffic must never share a cookie domain with our analytics vendor.
+
+## Verifying work — do not skip this
+
+**Run `npm run verify` before claiming anything passes.** It runs lint, typecheck, build and
+tests, checks each by **exit code**, and prints a summary that cannot be misread.
+
+Never confirm a build by grepping its output. `next build` prints **"Compiled successfully"
+before it type checks and before it collects page data**, so that string appears on builds that
+then fail. A broken build sat on `main` for hours because of exactly that — the app needed
+`DATABASE_URL` to compile, which passed on Vercel where the var is set and failed everywhere
+else. Same trap with `$?` after a pipe: it reports the last command in the pipeline, not the
+one you care about.
+
+Two independent guards now exist so this cannot recur silently:
+- `npm run verify` — one command, honest exit code
+- `.github/workflows/verify.yml` — runs on every push and PR, **with no secrets and no
+  `DATABASE_URL` during the build step**, so it proves a stranger can clone and build the repo.
+  Vercel's check only proves it builds with Vercel's env vars set.
+
+**A test that asserts an absence proves nothing until you have shown it can be non-empty.**
+An empty result set is equally consistent with "the guard works" and "the fixture wrote nothing",
+and those are not the same finding. The fix is cheap — about fifteen lines: break the thing the
+test depends on, confirm the assertion goes red, restore it in a `finally`. This is how the
+row-level-security tests are written, and it is why their passing means anything. The same shape
+applies to any assertion of the form "X does not appear": a leak test, a drift test, an
+SSRF guard, a check that a placeholder never reaches an agent tool.
+
+The general version: **when a check passes, ask what else would produce that same green.** Every
+verification failure in this project has been a check measuring the wrong thing rather than a
+missing check — `Compiled successfully` printed before the failing step, an SSRF test calling a
+guard with a spelling the URL parser never emits, `$?` reading a pipe's last command, a
+clean-clone test silently reusing an already-migrated database.
+
+One more trap, because it produced a check that reported clean while missing a file: a
+repo-wide `grep --include="*.ts" --include="*.tsx"` **does not match `.mts`**. This project runs
+its seed, its migrator and its entire test suite from `.mts` files, so a TypeScript include list
+silently skips all of them. When renaming or auditing across the repo, grep with no `--include`
+filter and exclude `node_modules` instead.
+
+For **frontend-only changes**, passing checks are not enough: open it in `agent-browser`,
+screenshot it, and look at the image in both themes before reporting it done. A computed style
+confirms the code does what you wrote, not what was asked.
 
 ## Stack
 

@@ -563,14 +563,32 @@ function buildField(
   }
 
   const type = fieldTypeOf(first);
+  const label = labelFor(first, name);
 
   return {
     key: name,
-    label: labelFor(first, name),
+    label,
     type,
     required: controls.some(isRequired),
+    ...placeholderOf(first, label),
     ...validationOf(first, type),
   };
+}
+
+/**
+ * The control's own placeholder, kept as one.
+ *
+ * Dropped when it is the same string the label ended up being, which happens
+ * whenever `labelFor` had nothing else to work with and fell back to it. A
+ * field captioned "you@company.com" with "you@company.com" greyed out inside it
+ * is the same words twice, and the imported form would look worse than the one
+ * it came from.
+ */
+function placeholderOf(control: RawControl, label: string): { placeholder?: string } {
+  if (control.tag === "select") return {};
+  const placeholder = collapseWhitespace(control.attrs.placeholder ?? "");
+  if (placeholder === "" || placeholder === label) return {};
+  return { placeholder };
 }
 
 function choiceField(

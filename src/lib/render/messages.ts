@@ -86,12 +86,19 @@ export function visitorMessage(code: IssueCode, field: SchemaField | undefined):
       return `“${label}” is outside the allowed range.`;
     }
 
-    // These three are warnings in every mode and never reach a visitor. Handled
-    // so that adding a code to `IssueCode` is a compile error here rather than a
+    // These are warnings in every mode and never reach a visitor. Handled so
+    // that adding a code to `IssueCode` is a compile error here rather than a
     // blank message on somebody's form.
+    //
+    // `answered_hidden_field` and `rules_ignored` (#36) belong to this group
+    // for a reason worth stating: they describe the *form's* conditional logic
+    // to the person who owns it, and neither is ever something to stop a
+    // visitor with. A rule must not be able to turn a lead into an error page.
     case "unknown_field":
     case "repeated_value":
     case "unsupported_value":
+    case "answered_hidden_field":
+    case "rules_ignored":
       return `Check “${label}”.`;
   }
 }

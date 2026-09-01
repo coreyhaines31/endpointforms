@@ -1,5 +1,6 @@
 import type { MembershipRole } from "../../db/schema.ts";
 import type { OriginReason, OriginState } from "../origin/types.ts";
+import type { SpamReason, SpamState } from "../spam/types.ts";
 
 /**
  * The shapes the workspace queries return.
@@ -10,7 +11,7 @@ import type { OriginReason, OriginState } from "../origin/types.ts";
  * need live.
  */
 
-export type { MembershipRole, OriginReason, OriginState };
+export type { MembershipRole, OriginReason, OriginState, SpamReason, SpamState };
 
 export type WorkspaceSummary = {
   id: string;
@@ -106,6 +107,13 @@ export type SubmissionListItem = {
   endpointName: string;
   submittedAt: Date;
   origin: OriginState;
+  /**
+   * Spam scoring (#31), a third axis alongside `origin` and `verdict`. `clear`
+   * is the normal state and renders as nothing; there is deliberately no state
+   * here that means a submission was withheld, because none ever is.
+   */
+  spamState: SpamState;
+  spamScore: number;
   verdict: SubmissionVerdict;
   /** `numeric` comes back as a string. Kept as one — a float would round money. */
   verdictValue: string | null;
@@ -141,6 +149,8 @@ export type DeliveryAttemptRow = {
 
 export type SubmissionDetail = SubmissionListItem & {
   originReasons: OriginReason[];
+  /** Every spam signal consulted, including the ones that scored nothing. */
+  spamReasons: SpamReason[];
   utmTerm: string | null;
   utmContent: string | null;
   clickIds: Record<string, unknown>;
@@ -158,6 +168,7 @@ export type SubmissionDetail = SubmissionListItem & {
 
 export type SubmissionExportRow = SubmissionListItem & {
   originReasons: OriginReason[];
+  spamReasons: SpamReason[];
   utmTerm: string | null;
   utmContent: string | null;
   clickIds: Record<string, unknown>;

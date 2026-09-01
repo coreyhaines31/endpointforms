@@ -658,6 +658,29 @@ function guardTests() {
   ok("an IPv4-mapped loopback is refused", isPrivateHost("::ffff:127.0.0.1"));
   ok("a .local name is refused", isPrivateHost("printer.local"));
   ok("an ordinary host is allowed", !isPrivateHost("example.com"));
+
+  // Everything above this line calls isPrivateHost() with a hostname a human
+  // would type. Production never does that: it passes `url.hostname`, and
+  // `new URL()` normalises IPv6 first. That gap hid a live SSRF — the
+  // "IPv4-mapped loopback" assertion above passed against a guard that could
+  // not actually block the address, because the regex tested the one spelling
+  // the URL parser never emits. These go through new URL() for that reason.
+  // Do not replace them with direct string calls.
+  const viaUrl = (literal: string) => isPrivateHost(new URL(`https://${literal}/`).hostname);
+
+  ok("IPv4-mapped loopback, as the URL parser spells it", viaUrl("[::ffff:127.0.0.1]"));
+  ok("IPv4-mapped metadata, as the URL parser spells it", viaUrl("[::ffff:169.254.169.254]"));
+  ok("the already-hex IPv4-mapped form is refused", viaUrl("[::ffff:a9fe:a9fe]"));
+  ok("IPv4-compatible loopback is refused", viaUrl("[::7f00:1]"));
+  ok("NAT64-embedded loopback is refused", viaUrl("[64:ff9b::7f00:1]"));
+  ok("NAT64-embedded metadata is refused", viaUrl("[64:ff9b::a9fe:a9fe]"));
+  ok("link-local fe80::/10 is refused", viaUrl("[fe80::1]"));
+  ok("unique-local fc00::/7 is refused", viaUrl("[fd12:3456::1]"));
+  ok("the unspecified address is refused", viaUrl("[::]"));
+
+  // The guard must not swallow the public IPv6 internet along with them.
+  ok("public IPv6 is allowed", !viaUrl("[2001:4860:4860::8888]"));
+  ok("a lookalike of the NAT64 prefix is allowed", !viaUrl("[64:ff9c::8080:8080]"));
 }
 
 // ---------------------------------------------------------------------------

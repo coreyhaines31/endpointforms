@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { dispatchSubmission } from "../destinations/dispatch.ts";
 import { decideOrigin } from "../origin/decide.ts";
 import { ORIGIN_TOKEN_FIELD_KEYS, ORIGIN_TOKEN_HEADER } from "../origin/token.ts";
 import type { OriginSurface } from "../origin/types.ts";
@@ -13,6 +14,10 @@ import {
   MAX_IDEMPOTENCY_KEY_CHARS,
 } from "./limits.ts";
 import { checkRateLimit, rateLimitError } from "./rate-limit.ts";
+import { assessSpam } from "../spam/assess.ts";
+import { HONEYPOT_FIELD_KEYS } from "../spam/honeypot.ts";
+import { loadSpamConfig } from "../spam/store.ts";
+import { observeVelocity } from "../spam/observe.ts";
 import {
   defaultThanksUrl,
   errorHtml,
@@ -26,6 +31,7 @@ import {
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
+import type { FormSchemaDocument } from "../schema/format.ts";
 
 /**
  * The submission endpoint (#50, #29).
@@ -48,9 +54,10 @@ import { resolveEndpoint, storeSubmission } from "./store.ts";
  * declaring a schema must never start dropping submissions that used to
  * succeed.
  *
- * **Delivery to destinations is not here.** #41 owns that, and it runs after the
- * row is committed. A slow webhook must never make a visitor wait, and it must
- * never be the reason a lead was not written down.
+ * **Delivery to destinations happens after step 5 and outside step 6.** #41
+ * owns it, `dispatchSubmission` is the one call into it, and it returns without
+ * awaiting anything. A slow webhook must never make a visitor wait, and a
+ * broken one must never be the reason a lead was not written down.
  */
 
 const PUBLIC_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -83,6 +90,29 @@ export type SubmissionOptions = {
   surface?: OriginSurface;
   /** What a manifest caller said it was. Recorded, not trusted. */
   agentDeclaration?: string | null;
+  /**
+   * Which Hindsight arm served this form (#45), or null for a submission that
+   * is not in a test — which is most of them.
+   *
+   * Passed by the caller rather than read from the request body for the same
+   * reason `surface` is: a value the submitter can type is a value the
+   * submitter can choose, and a split test whose arm assignment can be chosen
+   * by the person being tested is not one. `/f/{id}/submit` re-derives it from
+   * the visitor cookie with the same pure function that served the page; see
+   * `src/lib/hindsight/serve.ts`.
+   */
+  variantId?: string | null;
+  /**
+   * The form definition that arm actually served, when it has one of its own.
+   *
+   * A submission has to stay readable against the exact definition it arrived
+   * under — that is what `submissions.schema_version_id` is for — and for a
+   * visitor in a variant arm that definition is the **arm's**, not the
+   * endpoint's active schema. Without this the inbox renders a variant's
+   * submission against a form it was never shown, and `strict` mode rejects a
+   * submission for omitting fields the visitor was never given.
+   */
+  variantSchema?: { id: string; document: FormSchemaDocument | null } | null;
 };
 
 export async function handleSubmission(
@@ -107,6 +137,13 @@ export async function handleSubmission(
     if (!limit.allowed) throw rateLimitError(limit);
 
     const endpoint = await resolveEndpoint(endpointPublicId);
+
+    // What this visitor was actually shown. The Hindsight arm's definition when
+    // one served them (#45), the endpoint's active schema otherwise — and the
+    // difference matters everywhere a document is read below, because a form
+    // the visitor never saw is the wrong thing to judge their answers against.
+    const servedDocument =
+      options.variantSchema?.document ?? endpoint.activeSchema?.document ?? null;
 
     const bytes = await readBodyCapped(request);
     const parsed = await parseBody(request, bytes);
@@ -136,6 +173,11 @@ export async function handleSubmission(
       ...REDIRECT_FIELD_KEYS,
       ...IDEMPOTENCY_FIELD_KEYS,
       ...ORIGIN_TOKEN_FIELD_KEYS,
+      // The spam decoys (#31). Stripped from `values` for the same reason as
+      // the token: the inbox should show the customer's fields, not our traps.
+      // Still verbatim in `raw_body`, and still read by `assessSpam` below,
+      // which is given `parsed.values` rather than this stripped copy.
+      ...HONEYPOT_FIELD_KEYS,
     ]);
     const values = omit(parsed.values, reserved);
 
@@ -155,11 +197,46 @@ export async function handleSubmission(
       now: submittedAt.getTime(),
     });
 
+    // Scored, never enforced (#31). `assessSpam` has no path that can refuse a
+    // submission, throw, or drop a field — it returns a number, a state of
+    // `clear` or `flagged`, and the reasons behind both. A flagged submission
+    // takes exactly the same route through the rest of this function as a clean
+    // one and gets exactly the same acknowledgement, so a caller cannot learn
+    // whether its decoy-filling worked.
+    //
+    // A separate axis from `origin` on purpose: a person in Chrome can send a
+    // casino advert and an agent using Manifest can send the best lead of the
+    // quarter. It is also never allowed near `verdict`, which is the downstream
+    // business outcome and the input to Yield's ranking.
+    //
+    // Given `parsed.values`, not `values`: the decoys were stripped above and
+    // this is the one thing that still has to see them.
+    const spamConfig = await loadSpamConfig(endpoint);
+    const spam = assessSpam({
+      values: parsed.values,
+      endpointPublicId: endpoint.publicId,
+      ipHash,
+      token:
+        firstField(parsed.values, ORIGIN_TOKEN_FIELD_KEYS) ??
+        request.headers.get(ORIGIN_TOKEN_HEADER),
+      realFieldNames: servedDocument?.fields.map((field) => field.key) ?? [],
+      velocity: observeVelocity({
+        endpointId: endpoint.id,
+        values,
+        ipHash,
+        userAgent: attribution.userAgent,
+        now: submittedAt.getTime(),
+      }),
+      lists: spamConfig.lists,
+      policy: spamConfig.policy,
+      now: submittedAt.getTime(),
+    });
+
     // Read against the schema, if there is one. Descriptive by default: this
     // decides what to *say*, not whether to keep the submission. A schema row
     // this build cannot parse yields a null document, which validates as
     // "nothing to say" rather than as a refusal.
-    const validation = validateSubmission(endpoint.activeSchema?.document ?? null, values);
+    const validation = validateSubmission(servedDocument, values);
 
     if (endpoint.activeSchema?.mode === "strict" && !validation.valid) {
       throw new IngestError("schema_validation_failed", strictMessage(validation.errors));
@@ -169,6 +246,10 @@ export async function handleSubmission(
       explicitKey ?? deriveIdempotencyKey(endpoint.id, ipHash, values, submittedAt.getTime());
 
     const stored = await storeSubmission(endpoint, {
+      variantId: options.variantId ?? null,
+      // The arm's version when it served its own form, so the submission stays
+      // readable against the definition it actually arrived under.
+      schemaVersionId: options.variantSchema?.id ?? endpoint.activeSchemaVersionId,
       values,
       rawBody: parsed.rawBody,
       rawContentType: parsed.rawContentType,
@@ -185,7 +266,27 @@ export async function handleSubmission(
       submittedAt,
       origin: origin.origin,
       originReasons: origin.reasons,
+      spamState: spam.state,
+      spamScore: spam.score,
+      spamReasons: spam.reasons,
     });
+
+    // Destinations (#41). The row is committed; from here on nothing can cost
+    // this lead. `dispatchSubmission` returns void synchronously and defers the
+    // work to `after()`, so a slow third-party endpoint cannot make the visitor
+    // wait and a broken one cannot fail the submission — every failure inside
+    // it lands in `delivery_attempts` instead of in this response.
+    //
+    // A collapsed duplicate is not re-delivered: the original already went, and
+    // sending it twice is exactly the double lead the idempotency key exists to
+    // prevent.
+    if (!stored.duplicate) {
+      dispatchSubmission({
+        workspaceId: endpoint.workspaceId,
+        endpointId: endpoint.id,
+        submissionPublicId: stored.publicId,
+      });
+    }
 
     if (responseMode(request) === "redirect") {
       let target = resolveRedirect(request, requestedRedirect);

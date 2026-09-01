@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...and .env.example is that opt-in. It holds no secrets, only the list of
+# variables the app reads. Without this negation the `.env*` line above hides
+# it from every clone, so a self-hoster gets no starting point at all (#46).
+!.env.example
 
 # vercel
 .vercel

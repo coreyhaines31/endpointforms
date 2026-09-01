@@ -18,14 +18,14 @@ const GATE_PATTERNS = [
   /showResult\s*&&\s*email/i, /hasSubmittedEmail/i,
 ];
 
-const toolDirs = readdirSync("src/app/tools", { withFileTypes: true })
+const toolDirs = readdirSync("src/app/(site)/tools", { withFileTypes: true })
   .filter((d) => d.isDirectory()).map((d) => d.name);
 
 console.log("Free calculators must be ungated:\n");
 t(`found tool pages to check (${toolDirs.length})`, toolDirs.length >= 8);
 
 for (const dir of toolDirs) {
-  const src = readFileSync(join("src/app/tools", dir, "page.tsx"), "utf8");
+  const src = readFileSync(join("src/app/(site)/tools", dir, "page.tsx"), "utf8");
   const hit = GATE_PATTERNS.find((p) => p.test(src));
   t(`/tools/${dir} does not gate its result`, !hit, hit ? `matched ${hit}` : "");
 }

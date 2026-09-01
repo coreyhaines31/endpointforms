@@ -3,9 +3,11 @@ import Link from "next/link";
 import { Container } from "@/components/container";
 import { EmptyState, Panel, PanelBody, PanelHeader } from "@/components/app/panel";
 import { RelativeTime } from "@/components/app/time";
+import { YieldBreakdown, YieldPanel } from "@/components/app/yield-panel";
 import { listEndpointsWithStats } from "@/lib/workspaces/endpoints";
 import { requireWorkspace } from "@/lib/workspaces/server";
 import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
+import { readYield, readYieldByDimension } from "@/lib/yield/query";
 
 /**
  * The workspace overview.
@@ -25,6 +27,14 @@ export default async function WorkspaceOverviewPage({
   const { workspace, role } = await requireWorkspace(slug);
 
   const endpoints = await listEndpointsWithStats(workspace.id);
+
+  // Yield across the whole workspace, and the same metric per endpoint (#44).
+  // Both reads are workspace-scoped; the components are given the results
+  // rather than the query, which is what `eslint.config.mjs` requires.
+  const [yieldReport, yieldByEndpoint] = await Promise.all([
+    readYield(workspace.id),
+    readYieldByDimension(workspace.id, "endpoint"),
+  ]);
   const awaiting = endpoints.reduce((total, endpoint) => total + endpoint.awaitingCount, 0);
 
   return (
@@ -48,6 +58,21 @@ export default async function WorkspaceOverviewPage({
           .
         </p>
       ) : null}
+
+      <YieldPanel
+        className="mt-8"
+        report={yieldReport}
+        description="What this workspace's submissions turned out to be worth. Shown beside the submission count, never instead of it — the gap between the two is the point."
+      />
+
+      <YieldBreakdown
+        className="mt-6"
+        groups={yieldByEndpoint}
+        title="Yield by endpoint"
+        description="Which forms produce deals and which only produce fills. Both numbers are here, because a form can be excellent at one and useless at the other. Only endpoints that have taken a submission appear — the rest are in the list below."
+        keyLabel="Endpoint"
+        href={(group) => (group.key ? `/app/${workspace.slug}/endpoints/${group.key}` : null)}
+      />
 
       <Panel className="mt-8">
         <PanelHeader

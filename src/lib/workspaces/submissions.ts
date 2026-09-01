@@ -170,6 +170,9 @@ const listColumns = {
   endpointName: endpoints.name,
   submittedAt: submissions.submittedAt,
   origin: submissions.origin,
+  // Spam is its own axis (#31), beside origin rather than folded into it.
+  spamState: submissions.spamState,
+  spamScore: submissions.spamScore,
   verdict: submissions.verdict,
   verdictValue: submissions.verdictValue,
   verdictCurrency: submissions.verdictCurrency,
@@ -229,6 +232,7 @@ export async function listSubmissionsForExport(
       .select({
         ...listColumns,
         originReasons: submissions.originReasons,
+        spamReasons: submissions.spamReasons,
         utmTerm: submissions.utmTerm,
         utmContent: submissions.utmContent,
         clickIds: submissions.clickIds,
@@ -246,6 +250,7 @@ export async function listSubmissionsForExport(
 
     return rows.map((row) => ({
       ...toListItem(row),
+      spamReasons: asSpamReasons(row.spamReasons),
       utmTerm: row.utmTerm,
       utmContent: row.utmContent,
       clickIds: asRecord(row.clickIds),
@@ -276,6 +281,7 @@ export async function getSubmission(
         ...listColumns,
         id: submissions.id,
         originReasons: submissions.originReasons,
+        spamReasons: submissions.spamReasons,
         utmTerm: submissions.utmTerm,
         utmContent: submissions.utmContent,
         clickIds: submissions.clickIds,
@@ -318,6 +324,7 @@ export async function getSubmission(
     return {
       ...toListItem(row),
       originReasons: asReasons(row.originReasons),
+      spamReasons: asSpamReasons(row.spamReasons),
       utmTerm: row.utmTerm,
       utmContent: row.utmContent,
       clickIds: asRecord(row.clickIds),
@@ -354,6 +361,8 @@ function toListItem(row: ListRow): SubmissionListItem {
     endpointName: String(row.endpointName),
     submittedAt: row.submittedAt as Date,
     origin: row.origin as SubmissionListItem["origin"],
+    spamState: row.spamState as SubmissionListItem["spamState"],
+    spamScore: Number(row.spamScore ?? 0),
     verdict: row.verdict as SubmissionListItem["verdict"],
     verdictValue: (row.verdictValue as string | null) ?? null,
     verdictCurrency: (row.verdictCurrency as string | null) ?? null,
@@ -369,6 +378,16 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/**
+ * The same tolerance the Origin reader has, for the same reason: a row written
+ * by an older build, or one that predates spam scoring entirely, must render as
+ * "nothing recorded" rather than throwing on the screen someone opened to find
+ * out where their lead went.
+ */
+function asSpamReasons(value: unknown): SubmissionDetail["spamReasons"] {
+  return Array.isArray(value) ? (value as SubmissionDetail["spamReasons"]) : [];
 }
 
 function asReasons(value: unknown): SubmissionDetail["originReasons"] {

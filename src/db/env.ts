@@ -84,6 +84,22 @@ export function databaseUrl(): string {
   return LOCAL_DATABASE_URL;
 }
 
+/**
+ * Whether `databaseUrl()` would return rather than throw.
+ *
+ * Exists so the db client can tell "no URL configured" apart from "URL is
+ * wrong" without catching, and so `next build` can construct the Drizzle
+ * wrapper on a clean checkout with no DATABASE_URL at all.
+ */
+export function hasDatabaseUrl(): boolean {
+  try {
+    databaseUrl();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Host and database only — safe to log. Never returns credentials. */
 export function describeDatabase(): string {
   try {
