@@ -21,7 +21,7 @@
     "db:reset": "docker compose down -v && npm run db:up && npm run db:migrate && npm run db:seed",
     "lint": "eslint",
     "roadmap": "bash scripts/sync-roadmap.sh",
-    "test": "node --experimental-strip-types tests/waitlist-validate.test.mjs && npm run test:waitlist && node --experimental-strip-types tests/tools.test.mjs && node --experimental-strip-types tests/content-links.test.mjs && node --experimental-strip-types tests/tools-ungated.test.mjs && node --experimental-strip-types tests/workspace-slug.test.mjs && npm run test:classes && npm run test:browser-weight && npm run test:origin && npm run test:spam && npm run test:schema && npm run test:builder && npm run test:rules && npm run test:render && npm run test:manifest && npm run test:destinations && npm run test:yield && npm run test:hindsight && npm run test:db",
+    "test": "node --experimental-strip-types tests/waitlist-validate.test.mjs && npm run test:waitlist && node --experimental-strip-types tests/tools.test.mjs && node --experimental-strip-types tests/content-links.test.mjs && node --experimental-strip-types tests/tools-ungated.test.mjs && node --experimental-strip-types tests/workspace-slug.test.mjs && npm run test:classes && npm run test:browser-weight && npm run test:client-ip && npm run test:origin && npm run test:spam && npm run test:schema && npm run test:builder && npm run test:rules && npm run test:render && npm run test:manifest && npm run test:destinations && npm run test:yield && npm run test:hindsight && npm run test:db",
     "test:waitlist": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/waitlist-endpoint.test.mts",
     "test:origin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/origin.test.mts",
     "test:spam": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/spam.test.mts",
@@ -47,7 +47,8 @@
     "test:db:neon": "DB_TARGET=neon npm run test:db",
     "verify": "bash scripts/verify.sh",
     "test:classes": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/class-merge.test.mts",
-    "test:browser-weight": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/browser-weight.test.mts"
+    "test:browser-weight": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/browser-weight.test.mts",
+    "test:client-ip": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/client-ip.test.mts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

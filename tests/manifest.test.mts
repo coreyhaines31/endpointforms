@@ -28,6 +28,11 @@ process.env.INGEST_RATE_LIMIT_ENDPOINT_PER_MINUTE = "1000000";
 process.env.INGEST_RATE_LIMIT_IP_PER_MINUTE = "1000000";
 process.env.INGEST_RATE_LIMIT_ENDPOINT_IP_PER_MINUTE = "1000000";
 
+// The rate-limit fixtures below identify callers by `x-forwarded-for`, which is
+// only believed behind a proxy known to sanitise it. Declared here so the
+// per-IP limit is actually exercised rather than silently skipped.
+process.env.TRUST_PROXY_HEADERS = "1";
+
 import { and, eq, isNull } from "drizzle-orm";
 
 import { sqlClient, unsafeDb } from "../src/db/client.ts";

@@ -1,3 +1,4 @@
+import { trustedClientIp } from "../net/client-ip.ts";
 import { createHash } from "node:crypto";
 
 import { checkRateLimit, resetRateLimits } from "../ingest/rate-limit.ts";
@@ -78,23 +79,10 @@ export function authRateLimitConfig(): RateLimitConfig {
  * trustworthy as the proxy in front of us, which is why this decides how often
  * someone may *try* and never whether they get in.
  */
-const IP_HEADERS = [
-  "x-vercel-forwarded-for",
-  "x-forwarded-for",
-  "cf-connecting-ip",
-  "x-real-ip",
-] as const;
-
 const DEFAULT_SALT = "endpointforms-auth-ip-hash-v1";
 
 export function clientIpFromHeaders(headers: Headers): string | null {
-  for (const header of IP_HEADERS) {
-    const value = headers.get(header);
-    if (!value) continue;
-    const first = value.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return null;
+  return trustedClientIp(headers);
 }
 
 /**
