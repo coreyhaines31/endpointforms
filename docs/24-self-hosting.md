@@ -167,42 +167,70 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 | `AUTH_SECRET` | Session cookies and Auth.js tokens. Read by Auth.js itself, not by our code | **Auth.js throws in production.** Required |
 | `SUBMISSION_IP_SALT` | Salts the SHA-256 hash of submitter IPs. The raw IP is never stored, only this hash | Falls back to the built-in constant `endpointforms-ip-hash-v1` and warns once in production. Hashes become guessable, and identical across every deployment that forgot it |
 | `ORIGIN_TOKEN_SECRET` | Signs the client token minted at `GET /e/{id}/token`, one of nine form-surface origin signals | Falls back to a built-in key and warns once in production. A forgeable token is a weaker signal — but refusing the submission would be a lost lead |
-| `VERDICT_API_KEY_SECRET` | Signs and verifies the outcome API keys | **`POST /api/v1/verdict` answers `503 server_not_configured` in production.** Outside production it falls back to a fixed dev secret so you can try the API without configuring anything |
+| `VERDICT_API_KEY_SECRET` | Signs and verifies the **legacy** `efv1` outcome keys. Current `efv2` keys do not use it | **A legacy `efv1` key gets `503 server_not_configured` in production; `efv2` keys keep working.** Outside production it falls back to a fixed dev secret so you can try the legacy format without configuring anything |
 
 **The asymmetry is deliberate and worth understanding before you decide which to skip.** The two
 that guard *a signal* degrade rather than refuse, because losing a lead is worse than a weakened
 signal. `VERDICT_API_KEY_SECRET` guards **write access to another company's data**, so a
-built-in fallback would mean anyone who read the source could mint a key for any workspace on any
-deployment that forgot to set it. That one refuses.
+built-in fallback would mean anyone who read the source could mint a legacy key for any
+workspace on any deployment that forgot to set it. That one refuses.
 
-#### More on `VERDICT_API_KEY_SECRET`
+**A new deployment does not need it at all.** Current outcome keys are random secrets stored as
+hashes, so they are unforgeable whether or not this variable is set. Leave it unset and the
+outcome webhook still works; only the legacy `efv1` format needs it.
 
-The outcome API key is **derived, not stored**:
+#### Outcome API keys, current and legacy
+
+**Current keys (`efv2`) are stored hashes.** A workspace creates them in settings and can hold
+several at once, which is what makes rotation survivable — create the new key, move the
+integration across, revoke the old one, with both live in between.
+
+```
+efv2.<key-id>.<secret>          secret = 32 random bytes, base64url
+stored:  sha256(secret), hex    the plaintext is shown once and never again
+```
+
+SHA-256 rather than argon2, and the reason is not laziness: argon2 exists to make *guessing*
+expensive, which is what a human-chosen password needs. A 256-bit random secret is already
+beyond guessing, the only property still required is one-wayness, and an argon2 verification
+would land on every call of an endpoint that CRMs retry.
+
+Each key carries `created_at`, `last_used_at` (to the nearest five minutes), `last_used_ip`,
+`revoked_at` and a label. Revoking one affects that key and nothing else. Rows are never
+deleted, because "which key was this, and when did we kill it" is precisely what a revocation
+exists to be able to answer later.
+
+**Legacy keys (`efv1`) are derived, not stored**, and are still accepted so that integrations
+already in the field keep working:
 
 ```
 efv1.<workspace-slug>.<mac>
 mac = base64url(HMAC-SHA256(VERDICT_API_KEY_SECRET, "efv1:" + workspaceId))
 ```
 
-`workspaces` has no key column. Minting and verifying are the same computation, so there is no
-key table to leak, nothing to migrate, and no hash to compare against. The slug rides in the
-clear purely as a lookup handle; the MAC is over the workspace **id**, so a key cannot be
-repointed at another workspace by editing the slug in it.
+Minting and verifying are the same computation, so there is no key table to leak — and equally,
+anything holding `VERDICT_API_KEY_SECRET` can recompute every workspace's legacy key on demand,
+which is the weakness `efv2` removes. The slug rides in the clear purely as a lookup handle; the
+MAC is over the workspace **id**, so a key cannot be repointed at another workspace by editing
+the slug in it.
 
-Three costs of that design, worth knowing **before** you build an integration on it:
+Two costs of that design remain, and the third is fixed:
 
-1. **Rotation is fleet-wide, not per-tenant.** Revoking one workspace's key means changing
-   `VERDICT_API_KEY_SECRET`, which invalidates every workspace's key at once. Set the old value
-   as `VERDICT_API_KEY_SECRET_PREVIOUS` — both are accepted on verify, only the current one is
-   minted from — so live integrations survive the change while you reissue.
-2. **Renaming a workspace invalidates its key**, because the slug no longer resolves. That is
-   intended rather than a bug: the slug is the render subdomain and is documented as effectively
-   permanent, and a key that silently followed a rename would be a key nobody could reason about.
-3. **There is no per-key audit trail.** Every caller holding a workspace's key is
-   indistinguishable from every other.
+1. ~~**Rotation is fleet-wide, not per-tenant.**~~ **Each workspace can now revoke its own
+   legacy key** from settings, leaving every other workspace's untouched. Rotating
+   `VERDICT_API_KEY_SECRET` is still fleet-wide and is still how you invalidate all of them at
+   once; set the old value as `VERDICT_API_KEY_SECRET_PREVIOUS` — both are accepted on verify,
+   only the current one is minted from — so live integrations survive while you reissue.
+2. **Renaming a workspace invalidates its legacy key**, because the slug no longer resolves.
+   Intended rather than a bug: the slug is the render subdomain and is documented as effectively
+   permanent. `efv2` keys are looked up by their own id and survive a rename.
+3. **The legacy key's audit trail is coarser.** There is only ever one per workspace, so several
+   callers sharing it stay indistinguishable. One `efv2` key per integration is what separates
+   them.
 
-A stored key with its own `revoked_at` is the real answer to all three, and it needs a column the
-data model deliberately does not have yet.
+If you are standing up a new deployment with no legacy integrations, leave
+`VERDICT_API_KEY_SECRET` unset and use `efv2` keys only. Every workspace's legacy key is then
+unmintable and unverifiable, which is the strongest position available.
 
 ### 3.2 Database
 

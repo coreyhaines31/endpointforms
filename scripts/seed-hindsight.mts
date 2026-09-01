@@ -1,7 +1,7 @@
 /**
- * Seeds two Hindsight split tests (#45), because one of them is not enough.
+ * Seeds three Hindsight split tests (#45, #59), because one of them is not enough.
  *
- * ## The two screens this exists to make reachable
+ * ## The screens this exists to make reachable
  *
  * **A stopped, mature test where the raw winner is the Yield loser.** Three
  * fields collect half again as many submissions as seven and close a quarter as
@@ -33,6 +33,15 @@
  *
  * The young test is the mirror image: nine days old, about a third decided, so
  * `still_maturing` fires on the clock before anything else is even consulted.
+ *
+ * **A draft that has never been started, with a pre-registered effect (#59).**
+ * The third screen, and the only one that says something useful with no data at
+ * all: it names the sample the test will need and roughly how long that will
+ * take, at this workspace's own volume, *before* any traffic is committed. It
+ * is seeded deliberately expensive — a 10% improvement on a 12% baseline needs
+ * thousands of decided submissions per arm — because the honest answer for a
+ * lot of forms is "do not start this", and a demo in which every proposed test
+ * is worth running would be selling the wrong product.
  *
  * ## Deterministic, not random
  *
@@ -398,6 +407,49 @@ export async function seedHindsightTests(
       .set({ activeSchemaVersionId: liveSchemaVersionId })
       .where(eq(endpoints.id, endpointId));
   }
+
+  // ── The draft (#59) ──────────────────────────────────────────────────────
+  //
+  // No arms with traffic, no exposures, no submissions: the point is that the
+  // panel can still say what this will cost. Nothing here is started, so
+  // `mde_registered_at` genuinely precedes any data, which is what the word
+  // "pre-registered" is claiming.
+  const draftId = newId();
+  const draftPublicId = newEndpointPublicId();
+  const draftCreatedAt = daysAgo(2);
+
+  await db.insert(splitTests).values({
+    id: draftId,
+    workspaceId,
+    endpointId,
+    publicId: draftPublicId,
+    name: "One qualifying question, or none",
+    status: "draft",
+    startedAt: null,
+    stoppedAt: null,
+    createdByUserId: userId,
+    createdAt: draftCreatedAt,
+    updatedAt: draftCreatedAt,
+    mdeRelative: "0.1000",
+    mdeBaselineRate: "0.12000000",
+    mdeBasis: "submission",
+    mdeRegisteredAt: draftCreatedAt,
+  });
+
+  for (const [index, armName] of ["No qualifying question", "Budget question"].entries()) {
+    await db.insert(splitTestVariants).values({
+      id: newId(),
+      workspaceId,
+      testId: draftId,
+      schemaVersionId: null,
+      name: armName,
+      isControl: index === 0,
+      weight: 1,
+      createdAt: draftCreatedAt,
+    });
+  }
+
+  created.push({ name: "One qualifying question, or none", publicId: draftPublicId });
 
   return { endpointPublicId, tests: created };
 }

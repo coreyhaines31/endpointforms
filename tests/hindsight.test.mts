@@ -40,11 +40,13 @@ import {
   computeHindsight,
   MIN_DETECTABLE_LIFT,
   MIN_RESOLVED_SHARE,
+  preRegisteredSamplePerArm,
   sampleRatioCheck,
 } from "../src/lib/hindsight/compare.ts";
 import type {
   HindsightReport,
   HindsightState,
+  PreRegisteredEffect,
   SplitTestDefinition,
   VariantDefinition,
 } from "../src/lib/hindsight/types.ts";
@@ -110,6 +112,7 @@ function definition(
     status: "running",
     startedAt: daysAgo(90),
     stoppedAt: null,
+    preRegistered: null,
     variants,
     ...overrides,
   };
@@ -164,6 +167,8 @@ const NO_TIMING = {
   medianDaysToVerdict: null,
   p90DaysToVerdict: null,
   awaitingOlderThanMedian: 0,
+  submissionsPerMonth: 0,
+  gradedShare: 0,
 };
 
 /** A workspace that decides a lead in a fortnight, with a long tail. */
@@ -171,6 +176,8 @@ const NORMAL_TIMING = {
   medianDaysToVerdict: 14,
   p90DaysToVerdict: 32,
   awaitingOlderThanMedian: 0,
+  submissionsPerMonth: 600,
+  gradedShare: 0.8,
 };
 
 const reports: { name: string; report: HindsightReport }[] = [];
@@ -872,6 +879,284 @@ for (const { name, report } of reports) {
     report.state === "winner" || report.decision.tone !== "good",
     report.decision.headline,
   );
+}
+
+section("a pre-registered effect — the finish line stops moving (#59)");
+
+/**
+ * Every test below is built around one question: **does the requirement move
+ * when the data does?**
+ *
+ * That is the whole defect. `requiredSamplePerArm` fed the observed difference
+ * asks for a *small* sample when the observed gap is *large* — and a gap that
+ * is mostly noise is a large gap — so the power gate is loosest exactly when it
+ * is carrying the most weight. Asserting that a pre-registered requirement does
+ * not move proves nothing on its own, because a requirement that was always the
+ * same number would pass that too. So each case here is run twice, once with
+ * the pre-registration and once without, and the version without it is asserted
+ * to move. An assertion that something is stable is worth nothing until the
+ * same measurement has been shown to be unstable.
+ */
+const PRE_REGISTERED: PreRegisteredEffect = {
+  relativeLift: 0.2,
+  baselineRate: 0.06,
+  basis: "submission",
+  registeredAt: daysAgo(120),
+};
+
+function twoArms(): VariantDefinition[] {
+  return [
+    variant(CONTROL_ID, "Control", { isControl: true }),
+    variant(CHALLENGER_ID, "Shorter form"),
+  ];
+}
+
+{
+  const perArm = preRegisteredSamplePerArm(PRE_REGISTERED);
+  ok("a requirement exists with no data in the world at all", perArm !== null && perArm > 0);
+
+  const draft = run("draft with a pre-registered effect", {
+    test: definition(twoArms(), {
+      status: "draft",
+      startedAt: null,
+      preRegistered: PRE_REGISTERED,
+    }),
+    tallies: [],
+    timing: NORMAL_TIMING,
+  });
+
+  t("a draft with no data reports that same number", draft.requirement.perArm, perArm);
+  t("and says the number is pre-registered", draft.requirement.source, "pre_registered");
+  t("and states the units it is counted in", draft.requirement.basis, "submission");
+  ok(
+    "and can say roughly how long the test will take before it is started",
+    draft.forecast !== null && draft.forecast.monthsTotal !== null,
+  );
+  ok(
+    "…using the public calculator's own verdict, unedited",
+    draft.forecast !== null && draft.forecast.verdict.headline.length > 0,
+  );
+
+  const noPre = run("draft with no pre-registered effect", {
+    test: definition(twoArms(), { status: "draft", startedAt: null, preRegistered: null }),
+    tallies: [],
+    timing: NORMAL_TIMING,
+  });
+  t("without one, a draft can say nothing about what it will need", noPre.requirement.perArm, null);
+  t("and has nothing to forecast from", noPre.forecast, null);
+}
+
+{
+  // The same pre-registration under two very different observed gaps. The
+  // sample the winner gate waits for must be identical in both.
+  const narrow = [
+    { variantId: CONTROL_ID, tallies: arm({ submissions: 900, won: 45, lost: 855 }) },
+    { variantId: CHALLENGER_ID, tallies: arm({ submissions: 900, won: 50, lost: 850 }) },
+  ];
+  const wide = [
+    { variantId: CONTROL_ID, tallies: arm({ submissions: 900, won: 45, lost: 855 }) },
+    { variantId: CHALLENGER_ID, tallies: arm({ submissions: 900, won: 81, lost: 819 }) },
+  ];
+
+  const withPreNarrow = run("pre-registered, narrow observed gap", {
+    test: definition(twoArms(), { preRegistered: PRE_REGISTERED }),
+    tallies: narrow,
+    timing: NORMAL_TIMING,
+  });
+  const withPreWide = run("pre-registered, wide observed gap", {
+    test: definition(twoArms(), { preRegistered: PRE_REGISTERED }),
+    tallies: wide,
+    timing: NORMAL_TIMING,
+  });
+
+  t(
+    "the gating sample is the same under both gaps",
+    withPreNarrow.leaderComparisons[0]?.requiredPerArm,
+    withPreWide.leaderComparisons[0]?.requiredPerArm,
+  );
+  t(
+    "…and it is the pre-registered number rather than either observation",
+    withPreNarrow.leaderComparisons[0]?.requiredPerArm,
+    preRegisteredSamplePerArm(PRE_REGISTERED),
+  );
+
+  // The control that makes the assertion above mean something: without a
+  // pre-registration, that number moves — and moves *down* as the gap widens,
+  // which is the defect stated as an observation.
+  const withoutNarrow = run("observed rule, narrow gap", {
+    test: definition(twoArms()),
+    tallies: narrow,
+    timing: NORMAL_TIMING,
+  });
+  const withoutWide = run("observed rule, wide gap", {
+    test: definition(twoArms()),
+    tallies: wide,
+    timing: NORMAL_TIMING,
+  });
+
+  const narrowNeeds = withoutNarrow.leaderComparisons[0]?.requiredPerArm ?? 0;
+  const wideNeeds = withoutWide.leaderComparisons[0]?.requiredPerArm ?? 0;
+  ok(
+    "without a pre-registration the requirement does move",
+    narrowNeeds !== wideNeeds,
+    { narrowNeeds, wideNeeds },
+  );
+  ok(
+    "…and the wider the observed gap, the less sample it demands",
+    wideNeeds < narrowNeeds,
+    { narrowNeeds, wideNeeds },
+  );
+  ok(
+    "the observed number is still reported alongside the pre-registered one",
+    withPreWide.leaderComparisons[0]?.observedRequiredPerArm === wideNeeds,
+  );
+}
+
+{
+  // A test the observed rule would call, and a pre-registration would not.
+  // Pre-registering can only ever delay a winner, never hasten one, because it
+  // is sized for the smallest effect worth acting on.
+  const tallies = [
+    { variantId: CONTROL_ID, tallies: arm({ submissions: 4000, won: 200, lost: 3800 }) },
+    { variantId: CHALLENGER_ID, tallies: arm({ submissions: 4000, won: 280, lost: 3720 }) },
+  ];
+
+  const observed = run("observed rule calls this a winner", {
+    test: definition(twoArms()),
+    tallies,
+    timing: NORMAL_TIMING,
+  });
+  t("state is winner", observed.state, "winner");
+
+  const strict = run("a 5% pre-registration will not call the same numbers", {
+    test: definition(twoArms(), {
+      preRegistered: {
+        relativeLift: 0.05,
+        baselineRate: 0.05,
+        basis: "submission",
+        registeredAt: daysAgo(120),
+      },
+    }),
+    tallies,
+    timing: NORMAL_TIMING,
+  });
+  t("state is underpowered instead", strict.state, "underpowered");
+  ok(
+    "and the sample it is waiting for is far larger",
+    (strict.requirement.perArm ?? 0) > (observed.leaderComparisons[0]?.requiredPerArm ?? 0),
+  );
+  ok(
+    "the same arms, the same p-value — only the requirement changed",
+    strict.leaderComparisons[0]?.test.p === observed.leaderComparisons[0]?.test.p &&
+      strict.leaderComparisons[0]?.significant === true,
+  );
+}
+
+{
+  // The second consequence: `no_difference` becomes reachable, because the
+  // threshold stops being recomputed from the control rate on every load.
+  const tallies = [
+    { variantId: CONTROL_ID, tallies: arm({ submissions: 400, won: 80, lost: 320 }) },
+    { variantId: CHALLENGER_ID, tallies: arm({ submissions: 400, won: 82, lost: 318 }) },
+  ];
+
+  const registered = run("pre-registered, and genuinely the same", {
+    test: definition(twoArms(), {
+      preRegistered: {
+        relativeLift: 0.5,
+        baselineRate: 0.2,
+        basis: "submission",
+        registeredAt: daysAgo(120),
+      },
+    }),
+    tallies,
+    timing: NORMAL_TIMING,
+  });
+  t("state is no_difference", registered.state, "no_difference");
+  ok(
+    "and the sentence credits the effect the customer registered",
+    /registered as worth acting on/i.test(registered.decision.detail),
+  );
+
+  const drifting = run("the same numbers under the observed rule", {
+    test: definition(twoArms()),
+    tallies,
+    timing: NORMAL_TIMING,
+  });
+  t("state is underpowered — the finish line is still ahead", drifting.state, "underpowered");
+  ok(
+    "because the observed rule sizes itself from a rate that moves",
+    (drifting.requirement.perArm ?? 0) > (registered.requirement.perArm ?? 0),
+  );
+}
+
+{
+  // A requirement registered per visitor, on arms nobody counted visitors for.
+  // The honest outcome is a stated fallback, not a silent one.
+  const stranded = run("registered per visitor, no view count", {
+    test: definition(twoArms(), {
+      preRegistered: {
+        relativeLift: 0.2,
+        baselineRate: 0.01,
+        basis: "exposure",
+        registeredAt: daysAgo(120),
+      },
+    }),
+    tallies: [
+      { variantId: CONTROL_ID, tallies: arm({ submissions: 900, won: 45, lost: 855 }) },
+      { variantId: CHALLENGER_ID, tallies: arm({ submissions: 900, won: 50, lost: 850 }) },
+    ],
+    timing: NORMAL_TIMING,
+  });
+
+  t("it falls back to the observed rule", stranded.requirement.source, "observed");
+  ok("and says why, in a sentence", (stranded.requirement.unusableReason ?? "").length > 0);
+  ok(
+    "…which the reader actually sees",
+    stranded.caveats.some((line) => line === stranded.requirement.unusableReason),
+  );
+
+  // The same registration, on arms that do have a view count, is honoured.
+  const counted = run("registered per visitor, with a view count", {
+    test: definition(twoArms(), {
+      preRegistered: {
+        relativeLift: 0.2,
+        baselineRate: 0.01,
+        basis: "exposure",
+        registeredAt: daysAgo(120),
+      },
+    }),
+    tallies: [
+      {
+        variantId: CONTROL_ID,
+        tallies: arm({ exposures: 9000, submissions: 900, won: 45, lost: 855 }),
+      },
+      {
+        variantId: CHALLENGER_ID,
+        tallies: arm({ exposures: 9000, submissions: 900, won: 50, lost: 850 }),
+      },
+    ],
+    timing: NORMAL_TIMING,
+  });
+  t("that one is used", counted.requirement.source, "pre_registered");
+  t("with no fallback to explain", counted.requirement.unusableReason, null);
+  t("counted in visitors", counted.requirement.basis, "exposure");
+}
+
+{
+  // Nothing about a pre-registration may loosen a gate that is not about power.
+  const immature = run("pre-registered but younger than the sales cycle", {
+    test: definition(twoArms(), {
+      startedAt: daysAgo(3),
+      preRegistered: PRE_REGISTERED,
+    }),
+    tallies: [
+      { variantId: CONTROL_ID, tallies: arm({ submissions: 900, won: 45, awaiting: 855 }) },
+      { variantId: CHALLENGER_ID, tallies: arm({ submissions: 900, won: 81, awaiting: 819 }) },
+    ],
+    timing: NORMAL_TIMING,
+  });
+  t("the maturity gate still binds", immature.state, "still_maturing");
 }
 
 {

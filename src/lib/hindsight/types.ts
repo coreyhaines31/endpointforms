@@ -1,4 +1,9 @@
-import type { ProportionTest, SplitTestResult, Verdict } from "../tools/engine.ts";
+import type {
+  ProportionTest,
+  SplitTestResult,
+  TimeToOutcomeResult,
+  Verdict,
+} from "../tools/engine.ts";
 import type { Interval, YieldReport, YieldTallies } from "../yield/types.ts";
 
 /**
@@ -39,6 +44,75 @@ export type VariantDefinition = {
   schemaVersionId: string | null;
 };
 
+/**
+ * The effect size a test committed to **before it saw any data** (#59).
+ *
+ * The whole value is in the tense. `requiredSamplePerArm` fed the observed
+ * difference between two arms is circular: when the gap is noise the sample it
+ * demands is small, so the gate meant to catch noise is loosened by it. Fixing
+ * the number up front breaks the loop, and buys two things the observed rule
+ * cannot give at any sample size:
+ *
+ *   - The requirement exists **with no data at all**, so a draft can be told
+ *     what it will cost before a visitor is committed to it. Some tests should
+ *     never be started; today that is only discoverable by running one.
+ *   - `no_difference` becomes reachable. Its threshold currently moves with the
+ *     observed control rate — the finish line drifts as the data arrives — and
+ *     a fixed baseline holds it still.
+ *
+ * `basis` is not decoration. A Yield rate per visitor and a Yield rate per
+ * submission are different numbers whose required samples differ by roughly the
+ * completion rate, so a baseline stored without its denominator would be a
+ * pre-registration of a quantity nobody could check.
+ *
+ * Settable only while the test is a draft, and never editable afterwards: an
+ * effect size that can be revised after seeing the data is not pre-registered,
+ * it is rationalised, and it puts the circularity back through the front door.
+ */
+export type PreRegisteredEffect = {
+  /** Relative improvement worth acting on. 0.2 is "a fifth more closed deals". */
+  relativeLift: number;
+  /** The control Yield rate the requirement is computed from, 0..1. */
+  baselineRate: number;
+  /** Which denominator that rate is per. */
+  basis: RankingBasis;
+  /** Comparable against `startedAt`: what makes "pre-registered" checkable. */
+  registeredAt: Date;
+};
+
+/**
+ * The sample each arm has to reach, and where that number came from.
+ *
+ * `source` is reported rather than inferred because the two are not equally
+ * trustworthy and a reader is entitled to know which one is gating their test.
+ * `observed` is the pre-#59 rule, still in force for every test that recorded
+ * no effect size, and still circular.
+ */
+export type SampleRequirement = {
+  /** Trials per arm, in `basis`. Null when no requirement can be computed. */
+  perArm: number | null;
+  /**
+   * The denominator `perArm` counts.
+   *
+   * For a pre-registered requirement this is the basis it was registered on,
+   * which need not be the basis the report ranks on: a test can rank per
+   * visitor while its requirement is stated in submissions, because a
+   * per-visitor baseline is not knowable before the form has ever been served
+   * and the point of pre-registering is that it is knowable in advance.
+   */
+  basis: RankingBasis;
+  source: "pre_registered" | "observed";
+  /** The rate the requirement was computed from. Null for an unknown one. */
+  baselineRate: number | null;
+  /** The relative lift it is sized to detect. */
+  relativeLift: number;
+  /**
+   * Why a recorded pre-registration is not being used, when one exists and is
+   * not. Null whenever the requirement is what the test asked for.
+   */
+  unusableReason: string | null;
+};
+
 /** The test itself, without its numbers. */
 export type SplitTestDefinition = {
   id: string;
@@ -50,6 +124,8 @@ export type SplitTestDefinition = {
   /** When traffic started splitting. Null while the test is a draft. */
   startedAt: Date | null;
   stoppedAt: Date | null;
+  /** The effect size fixed at creation, or null for the observed rule (#59). */
+  preRegistered: PreRegisteredEffect | null;
   variants: VariantDefinition[];
 };
 
@@ -149,8 +225,22 @@ export type Comparison = {
   alpha: number;
   /** `test.p < alpha`. Not `test.significant`, which hardcodes 0.05. */
   significant: boolean;
-  /** Sample per arm the observed difference needs at 95% confidence and 80% power. */
+  /**
+   * Sample per arm this comparison is actually gated on, at 95% confidence and
+   * 80% power. The pre-registered number when the test has one, the sample the
+   * observed difference needs when it does not.
+   */
   requiredPerArm: number | null;
+  /** Which of those two it is. See `SampleRequirement.source`. */
+  requirementSource: SampleRequirement["source"];
+  /**
+   * What the observed difference alone would have demanded.
+   *
+   * Kept even when a pre-registration supersedes it, because the gap between
+   * the two is the thing #59 is about: a much smaller observed requirement is
+   * precisely the signature of a difference that is mostly noise.
+   */
+  observedRequiredPerArm: number | null;
   /** How much more each arm needs. Null when the requirement is unknown or met. */
   shortfallPerArm: number | null;
   /** True when both arms have reached `requiredPerArm`. */
@@ -198,6 +288,19 @@ export type HindsightTiming = {
   p90DaysToVerdict: number | null;
   /** This test's open submissions already older than that median. */
   awaitingOlderThanMedian: number;
+  /**
+   * The workspace's submission volume, excluding this test's own arms.
+   *
+   * Here so a **draft** can be forecast. A pre-registered requirement is a
+   * number of submissions per arm, and turning that into "about D days" needs a
+   * rate of arrival that the test itself cannot supply before it has run. The
+   * workspace can, and it is measured with this test excluded for the same
+   * reason its median is — a test large enough to dominate its workspace would
+   * otherwise be forecasting itself.
+   */
+  submissionsPerMonth: number;
+  /** Share of those that ever receive a verdict. The forecast's other input. */
+  gradedShare: number;
 };
 
 /** What the test would need before it could say something it currently cannot. */
@@ -247,6 +350,23 @@ export type HindsightReport = {
    */
   leaderComparisons: Comparison[];
   state: HindsightState;
+  /** The sample every arm has to reach, and where that number came from (#59). */
+  requirement: SampleRequirement;
+  /**
+   * What the pre-registered requirement costs in traffic and time.
+   *
+   * The answer to "should this test be started at all", available **before it
+   * is**. Computed by `computeTimeToOutcome` — the arithmetic behind
+   * `/tools/time-to-outcome-calculator` — on this workspace's measured volume
+   * and disposition lag rather than on numbers a visitor typed, so the product
+   * cannot tell a paying customer something softer than the public tool tells a
+   * stranger.
+   *
+   * Null when there is no pre-registration, when the requirement is stated in
+   * visitors (that calculator counts submissions, and a draft has no view rate
+   * to convert with), or when the workspace has no measurable volume yet.
+   */
+  forecast: TimeToOutcomeResult | null;
   /** What to tell the customer. Shares `Verdict` with Yield and the public tools. */
   decision: Verdict;
   /** Every gate the decision passed through, met or not. */

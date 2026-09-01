@@ -3,6 +3,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   boolean,
   char,
+  check,
   date,
   foreignKey,
   index,
@@ -144,6 +145,19 @@ export const splitTestStatus = pgEnum("split_test_status", [
   "stopped",
 ]);
 
+/**
+ * Which denominator a rate is measured against (#59).
+ *
+ * The database twin of `RankingBasis` in `src/lib/hindsight/types.ts`, and it
+ * exists for one column: a pre-registered effect size is meaningless without
+ * it. "A 4% Yield rate" is two different numbers depending on whether the
+ * denominator is people shown the form or submissions received, and the sample
+ * a test needs differs by an order of magnitude between them. Storing the
+ * number without storing which one it is would be pre-registering a quantity
+ * nobody could check.
+ */
+export const splitTestBasis = pgEnum("split_test_basis", ["exposure", "submission"]);
+
 // ---------------------------------------------------------------------------
 // Tenancy
 // ---------------------------------------------------------------------------
@@ -155,6 +169,27 @@ export const workspaces = pgTable(
     /** Becomes the render subdomain (#34), so it is public and effectively permanent. */
     slug: text("slug").notNull(),
     name: text("name").notNull(),
+    /**
+     * When this workspace's **derived** outcome key was killed (#57).
+     *
+     * The original verdict key is an HMAC over the workspace id — nothing is
+     * stored, so there is no row to revoke, and until now killing one meant
+     * rotating the fleet-wide secret and every other customer's key with it.
+     * These two columns are the whole per-tenant fix for that key: a timestamp
+     * that `verifyDerivedKey`'s caller checks, and a last-seen so an operator
+     * can answer "is anything still using it?" *before* revoking rather than
+     * finding out from a support ticket afterwards.
+     *
+     * They live on `workspaces` rather than in `verdict_api_keys` because a
+     * derived key has no stored secret to hash, no label a person chose and no
+     * creation event — it is a property of the workspace, and giving it a row
+     * would mean backfilling one for every existing workspace and minting one
+     * for every future workspace, with a silently keyless workspace as the
+     * failure mode. One nullable column cannot fail that way.
+     */
+    derivedKeyRevokedAt: timestamp("derived_key_revoked_at", { withTimezone: true }),
+    /** Throttled to `DERIVED_KEY_TOUCH_INTERVAL_MS`; see `src/lib/verdict/key-store.ts`. */
+    derivedKeyLastUsedAt: timestamp("derived_key_last_used_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -865,6 +900,113 @@ export const endpointSpamPolicies = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Verdict — outcome API keys (#57)
+// ---------------------------------------------------------------------------
+
+/**
+ * One outcome API key, with an identity that can be killed on its own.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THESE ARE STORED HASHES AND NOT DERIVED
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * `src/lib/verdict/keys.ts` explains the derived key it replaces: an HMAC over
+ * the workspace id, minted and verified by the same computation, with nothing
+ * written down. That bought "no key table to leak" and cost three things —
+ * fleet-wide rotation, no audit trail, and a key that dies when the slug moves.
+ *
+ * Fixing the first of those means a row per key whatever else is true: a key
+ * that can be revoked individually is by definition a key with an identity, and
+ * an identity has to be stored. So the question is not *whether* to store, only
+ * *what*. Once a row exists either way, storing a hash instead of a key id
+ * costs nothing and removes the derived scheme's real weakness — that anything
+ * holding `VERDICT_API_KEY_SECRET` can recompute every live key for every
+ * workspace on demand, forever, including keys it was never shown. With a hash
+ * the plaintext exists once, in the response that created it, and nothing in
+ * this system can produce it again.
+ *
+ * The price is paid by the customer and is worth naming: a key that cannot be
+ * re-derived cannot be shown twice. The settings page displays it once and
+ * afterwards shows only its identity. That is how every API key surface a
+ * customer has already used behaves, so it is a cost they can predict, unlike
+ * a leak they cannot contain.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IS AND IS NOT STORED
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * `secret_hash` is SHA-256 of the token's secret half, hex. **Never the token.**
+ * A slow KDF (argon2, as `users.password_hash` uses) would be wrong here and
+ * the difference is not laziness: argon2 exists to make *guessing* expensive,
+ * which matters when the input is a human-chosen password with maybe 30 bits in
+ * it. This input is 256 bits from `randomBytes`, so guessing is already beyond
+ * reach and the only property still needed is one-wayness — while the cost of
+ * argon2 would land on every outcome webhook call, on a path a CRM retries.
+ *
+ * Rows are never deleted, including on revoke. `revoked_at` is the tombstone,
+ * because "which key was this, and when did we kill it" is precisely the
+ * question a revocation exists to be able to answer later.
+ */
+export const verdictApiKeys = pgTable(
+  "verdict_api_keys",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /**
+     * The half of the token that travels in the clear, and the lookup handle.
+     *
+     * The key is `efv2.<public_id>.<secret>`. Looking a key up by this rather
+     * than by the workspace slug is what makes renaming a workspace stop
+     * invalidating its keys — cost 3 in `src/lib/verdict/keys.ts` — and it is
+     * one indexed equality instead of a slug resolution followed by a scan.
+     */
+    publicId: text("public_id").notNull(),
+    /** SHA-256 of the secret half, hex. Never the secret. */
+    secretHash: text("secret_hash").notNull(),
+    /** What the customer called it. "Salesforce webhook", not a UUID. */
+    label: text("label").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /**
+     * Last accepted use, to the nearest `TOUCH_INTERVAL_MS`.
+     *
+     * Deliberately coarse. Writing this on every request would put a row update
+     * on the outcome webhook's hot path and serialise every caller sharing a
+     * key behind one row lock; `src/lib/verdict/key-store.ts` describes the
+     * conditional update that avoids both. Coarse is enough for the question it
+     * is here to answer — "is anything still using this key?" — which nobody
+     * asks to the second.
+     */
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /**
+     * Where from, as the caller's IP.
+     *
+     * Stored in the clear, unlike `submissions.ip_hash`, and the difference is
+     * whose address it is: a submission's IP belongs to a member of the public
+     * who filled in a form, while this one belongs to the customer's own CRM or
+     * middleware calling an API with their own credential. "Last used from
+     * 52.x.x.x" is the answer to the first question asked after a suspected
+     * leak, and a hash of it answers nothing.
+     */
+    lastUsedIp: text("last_used_ip"),
+    /** Set once, never cleared. Revocation is not undoable — mint a new key. */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (t) => [
+    uniqueIndex("verdict_api_keys_public_id_key").on(t.publicId),
+    unique("verdict_api_keys_workspace_id_id_key").on(t.workspaceId, t.id),
+    index("verdict_api_keys_workspace_idx").on(t.workspaceId, t.createdAt.desc()),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Hindsight — split tests scored on outcomes (#45)
 // ---------------------------------------------------------------------------
 
@@ -899,6 +1041,50 @@ export const splitTests = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true }),
     /** Stops the split. The report keeps working; it just stops moving. */
     stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+
+    // ── The pre-registered minimum detectable effect (#59) ──────────────────
+    //
+    // Three columns and a timestamp, all null together or all set together.
+    // Null is the pre-#59 behaviour and stays supported forever: a test that
+    // recorded no effect size is judged against the sample the *observed*
+    // difference needs, which is what every test created before this column
+    // existed is already running under.
+    //
+    // Why they exist: `requiredSamplePerArm` fed the observed difference is
+    // circular. If the gap between the arms is noise, the sample derived from
+    // it is too small, so the gate meant to guard against noise is sized by
+    // it — and it is smallest exactly when the noise is largest. Fixing the
+    // effect before any data exists breaks that loop, and buys two things the
+    // observed rule cannot give at any price:
+    //
+    //   1. The requirement is knowable **with no data at all**, so a draft can
+    //      say "this needs N per arm, about D days" before a single visitor is
+    //      committed to it. Some tests should not be started, and today that is
+    //      only discoverable by running one.
+    //   2. `no_difference` becomes reachable. Its threshold currently moves
+    //      with the observed control rate, so the finish line drifts as the
+    //      data arrives and a test can never quite arrive at "these are the
+    //      same". A fixed baseline holds it still.
+    //
+    // Immutable once set, and settable only while the test is a draft —
+    // enforced in `src/lib/hindsight/store.ts`. An effect size that can be
+    // edited after seeing the data is not pre-registered, it is a rationalised
+    // one, and it would restore the circularity through the front door.
+
+    /** Relative improvement worth acting on. 0.2 is "a fifth more closed deals". */
+    mdeRelative: numeric("mde_relative", { precision: 6, scale: 4 }),
+    /** The control Yield rate the requirement is computed from, 0..1. */
+    mdeBaselineRate: numeric("mde_baseline_rate", { precision: 9, scale: 8 }),
+    /** Which denominator that rate is per. See `splitTestBasis`. */
+    mdeBasis: splitTestBasis("mde_basis"),
+    /**
+     * When it was registered.
+     *
+     * The fact that makes "pre-registered" checkable rather than asserted: it
+     * is comparable against `started_at`, and the app refuses to set it on
+     * anything that is not still a draft.
+     */
+    mdeRegisteredAt: timestamp("mde_registered_at", { withTimezone: true }),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -921,6 +1107,27 @@ export const splitTests = pgTable(
     index("split_tests_running_idx")
       .on(t.endpointId)
       .where(sql`${t.status} = 'running' and ${t.deletedAt} is null`),
+
+    // The pre-registration is all-or-nothing (#59). A relative lift with no
+    // baseline rate cannot produce a sample size, and a baseline rate with no
+    // basis is a number whose units are unknown — either half alone would sit
+    // in the row looking like a pre-registration while the code silently fell
+    // back to the observed rule. The application only ever writes all four
+    // together; this makes the half-written row impossible rather than unlikely.
+    check(
+      "split_tests_mde_all_or_nothing",
+      sql`(${t.mdeRelative} is null and ${t.mdeBaselineRate} is null and ${t.mdeBasis} is null and ${t.mdeRegisteredAt} is null) or (${t.mdeRelative} is not null and ${t.mdeBaselineRate} is not null and ${t.mdeBasis} is not null and ${t.mdeRegisteredAt} is not null)`,
+    ),
+    // A pre-registration has to be able to move the finish line, and a zero or
+    // negative one cannot: `requiredSamplePerArm` returns null when the two
+    // rates are equal, so a zero lift would leave the gate unmeasurable while
+    // the row still claimed a pre-registration. That is exactly the "gate that
+    // looks like it is doing work and is quietly not" #59 is about.
+    check("split_tests_mde_relative_positive", sql`${t.mdeRelative} is null or ${t.mdeRelative} > 0`),
+    check(
+      "split_tests_mde_baseline_rate_range",
+      sql`${t.mdeBaselineRate} is null or (${t.mdeBaselineRate} > 0 and ${t.mdeBaselineRate} < 1)`,
+    ),
   ],
 );
 
@@ -1036,6 +1243,7 @@ export const workspaceScopedTables = [
   deliveryAttempts,
   spamListEntries,
   endpointSpamPolicies,
+  verdictApiKeys,
   splitTests,
   splitTestVariants,
   splitTestExposures,
@@ -1052,6 +1260,7 @@ export const workspaceScopedTableNames = [
   "delivery_attempts",
   "spam_list_entries",
   "endpoint_spam_policies",
+  "verdict_api_keys",
   "split_tests",
   "split_test_variants",
   "split_test_exposures",
@@ -1074,7 +1283,9 @@ export type EndpointSpamPolicy = typeof endpointSpamPolicies.$inferSelect;
 export type SubmissionSpamState = (typeof submissionSpamState.enumValues)[number];
 export type SpamListKind = (typeof spamListKind.enumValues)[number];
 export type SpamListEffect = (typeof spamListEffect.enumValues)[number];
+export type VerdictApiKey = typeof verdictApiKeys.$inferSelect;
 export type SplitTest = typeof splitTests.$inferSelect;
 export type SplitTestVariant = typeof splitTestVariants.$inferSelect;
 export type SplitTestExposure = typeof splitTestExposures.$inferSelect;
 export type SplitTestStatus = (typeof splitTestStatus.enumValues)[number];
+export type SplitTestBasis = (typeof splitTestBasis.enumValues)[number];

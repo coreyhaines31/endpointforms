@@ -35,6 +35,16 @@ export const newSubmissionPublicId = () => nano(16);
 export const newPartialPublicId = () => nano(16);
 
 /**
+ * The visible half of an outcome API key (#57): `efv2.<this>.<secret>`.
+ *
+ * 12 chars, matching an endpoint's, because it is the same kind of thing — a
+ * handle that is unguessable but not itself a credential. It is what the
+ * settings page shows to tell two keys apart after the secret half has been
+ * displayed once and can never be shown again.
+ */
+export const newVerdictKeyPublicId = () => nano(12);
+
+/**
  * The token a visitor's form carries between screens (#37).
  *
  * Longer than a public ID, deliberately. This one is not merely unguessable in

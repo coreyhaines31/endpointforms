@@ -27,12 +27,24 @@ import { eq, like } from "drizzle-orm";
 import { sqlClient, unsafeDb } from "../src/db/client.ts";
 import { describeDatabase } from "../src/db/env.ts";
 import { newEndpointPublicId, newId, newSubmissionPublicId } from "../src/db/ids.ts";
-import { endpoints, submissions, workspaces } from "../src/db/schema.ts";
+import { endpoints, submissions, verdictApiKeys, workspaces } from "../src/db/schema.ts";
 import { handleVerdict } from "../src/lib/verdict/handler.ts";
 import {
-  mintVerdictApiKey,
+  createVerdictApiKey,
+  listVerdictApiKeys,
+  MAX_LIVE_KEYS,
+  revokeDerivedVerdictKey,
+  revokeVerdictApiKey,
+  TOUCH_INTERVAL_MS,
+} from "../src/lib/verdict/key-store.ts";
+import {
+  mintDerivedVerdictApiKey,
+  mintStoredVerdictApiKey,
   parseVerdictApiKey,
+  verifyStoredVerdictApiKey,
   verifyVerdictApiKey,
+  type ParsedDerivedKey,
+  type ParsedVerdictApiKey,
 } from "../src/lib/verdict/keys.ts";
 import { measureTimeToOutcome } from "../src/lib/verdict/latency.ts";
 import { parseValue, parseOccurredAt, normalizeVerdict, parseCsv } from "../src/lib/verdict/parse.ts";
@@ -53,6 +65,11 @@ const t = (name: string, got: unknown, want: unknown) => {
     console.log(`        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`);
   }
 };
+
+/** Narrows a parse result to the legacy `efv1` shape, or null. */
+function derived(parsed: ParsedVerdictApiKey | null): ParsedDerivedKey | null {
+  return parsed !== null && parsed.kind === "derived" ? parsed : null;
+}
 
 const ok = (name: string, condition: boolean, detail?: unknown) => {
   if (condition) pass++;
@@ -126,7 +143,7 @@ async function createSpace(slug: string, seeds: Seed[]): Promise<Space> {
     });
   }
 
-  const key = mintVerdictApiKey({ id: workspaceId, slug });
+  const key = mintDerivedVerdictApiKey({ id: workspaceId, slug });
   if (!key) throw new Error("no key minted; VERDICT_API_KEY_SECRET is unset");
 
   return { workspaceId, slug, endpointId, key, ids };
@@ -187,6 +204,20 @@ async function read(response: Response): Promise<Body> {
   return JSON.parse(await response.text()) as Body;
 }
 
+/**
+ * The error code in a refusal, or a description of what came back instead.
+ *
+ * Reaching straight through `.error.code` throws when the response was not a
+ * refusal at all, which aborts the run on the *next* line instead of failing on
+ * this one — so a regression in revocation reports one red assertion and then a
+ * stack trace, hiding every test after it. This turns that into a plain
+ * mismatch.
+ */
+async function errorCode(response: Response): Promise<string> {
+  const body = (await read(response)) as Partial<Body>;
+  return body.error?.code ?? `no error object (status ${response.status})`;
+}
+
 async function row(publicId: string) {
   const [found] = await unsafeDb
     .select({
@@ -227,7 +258,7 @@ async function main() {
   console.log("keys");
   // -------------------------------------------------------------------------
   {
-    const parsed = parseVerdictApiKey(a.key);
+    const parsed = derived(parseVerdictApiKey(a.key));
     ok("a minted key parses", parsed !== null);
     t("the key names its workspace", parsed?.slug, SLUG_A);
     ok(
@@ -238,10 +269,10 @@ async function main() {
       "does not verify against another workspace's id",
       parsed !== null && !verifyVerdictApiKey(parsed, { id: b.workspaceId, slug: a.slug }),
     );
-    ok("minting is deterministic", mintVerdictApiKey({ id: a.workspaceId, slug: a.slug }) === a.key);
+    ok("minting is deterministic", mintDerivedVerdictApiKey({ id: a.workspaceId, slug: a.slug }) === a.key);
 
     const swapped = `${a.key.split(".")[0]}.${SLUG_B}.${a.key.split(".")[2]}`;
-    const swappedParsed = parseVerdictApiKey(swapped);
+    const swappedParsed = derived(parseVerdictApiKey(swapped));
     ok(
       "a key with the slug swapped does not verify",
       swappedParsed !== null && !verifyVerdictApiKey(swappedParsed, { id: b.workspaceId, slug: SLUG_B }),
@@ -253,10 +284,10 @@ async function main() {
     const secret = process.env.VERDICT_API_KEY_SECRET;
     delete process.env.VERDICT_API_KEY_SECRET;
     setNodeEnv("production");
-    t("production with no secret configured mints nothing", mintVerdictApiKey({ id: a.workspaceId, slug: a.slug }), null);
+    t("production with no secret configured mints nothing", mintDerivedVerdictApiKey({ id: a.workspaceId, slug: a.slug }), null);
     setNodeEnv("test");
-    ok("development still works, so nobody has to configure one to try this", mintVerdictApiKey({ id: a.workspaceId, slug: a.slug }) !== null);
-    ok("and the development key is not the configured one", mintVerdictApiKey({ id: a.workspaceId, slug: a.slug }) !== a.key);
+    ok("development still works, so nobody has to configure one to try this", mintDerivedVerdictApiKey({ id: a.workspaceId, slug: a.slug }) !== null);
+    ok("and the development key is not the configured one", mintDerivedVerdictApiKey({ id: a.workspaceId, slug: a.slug }) !== a.key);
     process.env.VERDICT_API_KEY_SECRET = secret;
 
     ok("a truncated key does not parse", parseVerdictApiKey("efv1.acme") === null);
@@ -276,7 +307,7 @@ async function main() {
     t("a forged signature is 401", badKey.status, 401);
 
     const unknownWorkspace = await post(
-      mintVerdictApiKey({ id: newId(), slug: "no-such-workspace" }),
+      mintDerivedVerdictApiKey({ id: newId(), slug: "no-such-workspace" }),
       "{}",
     );
     t("an unknown workspace is 401, not 404", unknownWorkspace.status, 401);
@@ -799,6 +830,241 @@ async function main() {
     ok("with Retry-After", second.headers.get("retry-after") !== null);
     process.env.VERDICT_RATE_LIMIT_WORKSPACE_PER_MINUTE = "1000000";
     resetVerdictRateLimits();
+  }
+
+  // -------------------------------------------------------------------------
+  console.log("\nstored keys, and killing one without killing everyone else's (#57)");
+  // -------------------------------------------------------------------------
+  //
+  // The shape of every test here: **a refusal is only evidence once the same
+  // request has been shown to succeed.** A 401 proves nothing on its own — a
+  // typo in the fixture, a submission id that never existed, a workspace that
+  // failed to seed all produce exactly the same red. So each revocation below
+  // is bracketed: the key works, the key is revoked, the key is refused, and a
+  // sibling key on the same workspace still works. The last of those is the one
+  // that says revocation is per key rather than per deployment, which is the
+  // entire issue.
+  {
+    const keys = await createSpace("verdict-test-keys", [
+      { publicId: "vtK00000000000001" },
+      { publicId: "vtK00000000000002" },
+      { publicId: "vtK00000000000003" },
+    ]);
+
+    const first = await createVerdictApiKey({
+      workspaceId: keys.workspaceId,
+      label: "Salesforce webhook",
+    });
+    const second = await createVerdictApiKey({
+      workspaceId: keys.workspaceId,
+      label: "Zapier",
+    });
+
+    ok("a created key is in the current format", first.key.startsWith("efv2."));
+    ok("two keys on one workspace are different strings", first.key !== second.key);
+
+    // Nothing anywhere stores the thing that was handed out.
+    const rows = await unsafeDb
+      .select()
+      .from(verdictApiKeys)
+      .where(eq(verdictApiKeys.workspaceId, keys.workspaceId));
+    t("both rows exist", rows.length, 2);
+    const secretHalf = first.key.split(".")[2];
+    ok(
+      "no column anywhere holds the key or its secret half",
+      rows.every((row) =>
+        Object.values(row).every(
+          (value) =>
+            typeof value !== "string" || (!value.includes(secretHalf) && !value.includes(first.key)),
+        ),
+      ),
+    );
+    ok(
+      "the stored hash is not the secret",
+      rows.every((row) => row.secretHash !== secretHalf && row.secretHash.length === 64),
+    );
+
+    // Both live.
+    const withFirst = await post(
+      first.key,
+      JSON.stringify({ submission_id: keys.ids[0], verdict: "won" }),
+    );
+    const withSecond = await post(
+      second.key,
+      JSON.stringify({ submission_id: keys.ids[1], verdict: "won" }),
+    );
+    t("the first key is accepted", withFirst.status, 200);
+    t("the second key is accepted", withSecond.status, 200);
+
+    // A different workspace's stored key cannot reach these rows. The most
+    // important assertion in the file, restated for the new format.
+    const foreign = await createVerdictApiKey({ workspaceId: b.workspaceId, label: "Theirs" });
+    const crossed = await post(
+      foreign.key,
+      JSON.stringify({ submission_id: keys.ids[2], verdict: "won" }),
+    );
+    t("another workspace's key cannot grade this submission", crossed.status, 404);
+
+    // Revoke exactly one of the two.
+    await revokeVerdictApiKey(keys.workspaceId, rows.find((row) => row.label === "Salesforce webhook")!.id);
+
+    const afterRevoke = await post(
+      first.key,
+      JSON.stringify({ submission_id: keys.ids[2], verdict: "won" }),
+    );
+    t("the revoked key is refused", afterRevoke.status, 401);
+    t("and says it was revoked rather than wrong", await errorCode(afterRevoke), "key_revoked");
+
+    const siblingStillWorks = await post(
+      second.key,
+      JSON.stringify({ submission_id: keys.ids[2], verdict: "won" }),
+    );
+    t("the other key on the same workspace still works", siblingStillWorks.status, 200);
+
+    const stillForeign = await post(
+      foreign.key,
+      JSON.stringify({ submission_id: b.ids[0], verdict: "won" }),
+    );
+    t("and another workspace's key was untouched by it", stillForeign.status, 200);
+
+    // The audit trail.
+    const listed = await listVerdictApiKeys(keys.workspaceId);
+    const salesforce = listed.find((entry) => entry.label === "Salesforce webhook");
+    const zapier = listed.find((entry) => entry.label === "Zapier");
+    ok("the revoked key stays listed", salesforce !== undefined);
+    ok("…marked revoked", salesforce?.revokedAt !== null);
+    ok("…and still says when it was last used", salesforce?.lastUsedAt !== null);
+    ok("the live key records a last use too", zapier?.lastUsedAt !== null);
+    ok(
+      "…and where from, when the caller had an address",
+      listed.every((entry) => entry.lastUsedIp === null || typeof entry.lastUsedIp === "string"),
+    );
+    ok(
+      "the legacy derived key is listed beside them",
+      listed.some((entry) => entry.kind === "derived"),
+    );
+
+    // Throttling. A second accepted call in the same interval must not move
+    // the timestamp — that is the whole reason the update carries a predicate.
+    const before = zapier?.lastUsedAt ?? null;
+    ok("there is a timestamp to compare against", before !== null);
+    await post(second.key, JSON.stringify({ submission_id: keys.ids[1], verdict: "lost" }));
+    const reread = await listVerdictApiKeys(keys.workspaceId);
+    t(
+      "a second call inside the interval does not rewrite last_used_at",
+      reread.find((entry) => entry.label === "Zapier")?.lastUsedAt?.toISOString(),
+      before?.toISOString(),
+    );
+
+    // …and it is a throttle, not a one-shot. Backdate the row past the
+    // interval and the next accepted request writes again. Without this the
+    // assertion above is equally consistent with "the column is written once
+    // and never again", which is a different and much worse behaviour.
+    await unsafeDb
+      .update(verdictApiKeys)
+      .set({ lastUsedAt: new Date(Date.now() - TOUCH_INTERVAL_MS - 60_000) })
+      .where(eq(verdictApiKeys.id, rows.find((row) => row.label === "Zapier")!.id));
+    await post(second.key, JSON.stringify({ submission_id: keys.ids[1], verdict: "won" }));
+    const third = await listVerdictApiKeys(keys.workspaceId);
+    const moved = third.find((entry) => entry.label === "Zapier")?.lastUsedAt ?? null;
+    ok(
+      "once the interval has passed it is written again",
+      moved !== null && moved.getTime() > Date.now() - TOUCH_INTERVAL_MS,
+      moved,
+    );
+
+    // The cap.
+    let refused = false;
+    try {
+      for (let i = 0; i < MAX_LIVE_KEYS + 2; i++) {
+        await createVerdictApiKey({ workspaceId: keys.workspaceId, label: `Filler ${i}` });
+      }
+    } catch (error) {
+      refused = (error as Error).name === "VerdictKeyError";
+    }
+    ok("live keys per workspace are capped", refused);
+  }
+
+  // -------------------------------------------------------------------------
+  console.log("\nrevoking the legacy derived key, for one workspace only");
+  // -------------------------------------------------------------------------
+  {
+    const one = await createSpace("verdict-test-legacy-1", [{ publicId: "vtL00000000000001" }]);
+    const two = await createSpace("verdict-test-legacy-2", [{ publicId: "vtL00000000000002" }]);
+
+    // Both work first. Without this line the two 401s below would be
+    // indistinguishable from a broken fixture.
+    t(
+      "the first workspace's derived key works",
+      (await post(one.key, JSON.stringify({ submission_id: one.ids[0], verdict: "won" }))).status,
+      200,
+    );
+    t(
+      "the second workspace's derived key works",
+      (await post(two.key, JSON.stringify({ submission_id: two.ids[0], verdict: "won" }))).status,
+      200,
+    );
+
+    await revokeDerivedVerdictKey(one.workspaceId);
+
+    const killed = await post(
+      one.key,
+      JSON.stringify({ submission_id: one.ids[0], verdict: "lost" }),
+    );
+    t("the revoked derived key is refused", killed.status, 401);
+    t("…as revoked", await errorCode(killed), "key_revoked");
+
+    // The point of the whole issue: nobody else's key moved.
+    t(
+      "the other workspace's derived key still works",
+      (await post(two.key, JSON.stringify({ submission_id: two.ids[0], verdict: "lost" }))).status,
+      200,
+    );
+
+    // And a stored key issued to the workspace whose legacy key was killed is
+    // unaffected, so revoking the old format is not an outage.
+    const replacement = await createVerdictApiKey({
+      workspaceId: one.workspaceId,
+      label: "Replacement",
+    });
+    t(
+      "a new key on that workspace works immediately",
+      (await post(
+        replacement.key,
+        JSON.stringify({ submission_id: one.ids[0], verdict: "won" }),
+      )).status,
+      200,
+    );
+
+    const listed = await listVerdictApiKeys(one.workspaceId);
+    const derivedRow = listed.find((entry) => entry.kind === "derived");
+    ok("the derived key is listed as revoked", derivedRow?.revokedAt !== null);
+    ok("and its last use is on record", derivedRow?.lastUsedAt !== null);
+  }
+
+  // -------------------------------------------------------------------------
+  console.log("\nkey formats");
+  // -------------------------------------------------------------------------
+  {
+    const minted = mintStoredVerdictApiKey();
+    const parsed = parseVerdictApiKey(minted.key);
+    t("an efv2 key parses as a stored key", parsed?.kind, "stored");
+    ok(
+      "and verifies against its own hash",
+      parsed !== null && parsed.kind === "stored" && verifyStoredVerdictApiKey(parsed, minted.secretHash),
+    );
+    ok(
+      "and not against another key's hash",
+      parsed !== null &&
+        parsed.kind === "stored" &&
+        !verifyStoredVerdictApiKey(parsed, mintStoredVerdictApiKey().secretHash),
+    );
+    ok("a truncated efv2 key does not parse", parseVerdictApiKey("efv2.abc") === null);
+    ok(
+      "an efv2 key with a short handle does not parse",
+      parseVerdictApiKey(`efv2.short.${minted.key.split(".")[2]}`) === null,
+    );
+    t("the legacy format still parses as derived", parseVerdictApiKey(a.key)?.kind, "derived");
   }
 
   await cleanup();

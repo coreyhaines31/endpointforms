@@ -48,6 +48,7 @@ export {
   decideState,
   MIN_DETECTABLE_LIFT,
   MIN_RESOLVED_SHARE,
+  preRegisteredSamplePerArm,
   rankingRate,
   rankingTrials,
   sampleRatioCheck,
@@ -68,6 +69,7 @@ export {
 } from "./visitor.ts";
 export {
   createSplitTest,
+  preRegisterSplitTestEffect,
   readSplitTestStatus,
   recordExposure,
   SplitTestStoreError,
@@ -75,6 +77,7 @@ export {
   stopSplitTest,
   type CreatedSplitTest,
   type CreateSplitTestInput,
+  type PreRegisterInput,
 } from "./store.ts";
 export type {
   Comparison,
@@ -82,8 +85,10 @@ export type {
   HindsightReport,
   HindsightState,
   HindsightTiming,
+  PreRegisteredEffect,
   RankingBasis,
   Requirement,
+  SampleRequirement,
   SplitTestDefinition,
   SplitTestStatus,
   VariantArm,
