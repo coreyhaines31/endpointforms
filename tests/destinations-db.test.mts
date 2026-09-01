@@ -50,6 +50,7 @@ import {
   listDestinations,
   newDestinationSecret,
   reapStaleAttempts,
+  runSweep,
   sendTestDelivery,
   sweepDueRetries,
   updateDestination,
@@ -58,7 +59,12 @@ import {
   HEADER_DELIVERY_ID,
   HEADER_SIGNATURE,
   HEADER_TIMESTAMP,
+  STALE_ATTEMPT_MS,
 } from "../src/lib/destinations/index.ts";
+// Not part of the public surface in `index.ts` — the abandonment test has to
+// call the claim on its own, without the delivery that normally follows it,
+// because that gap *is* the thing under test.
+import { claimDueRetries, workspacesWithDeliveryWork } from "../src/lib/destinations/store.ts";
 
 let pass = 0;
 let fail = 0;
@@ -95,12 +101,27 @@ type Receiver = {
   url: string;
   received: Received[];
   /** Set to change what the next requests answer with. */
-  reply: { status: number; body: string; delayMs?: number };
+  reply: {
+    status: number;
+    body: string;
+    delayMs?: number;
+    /**
+     * Awaited before the response is written, so a test can change the world
+     * *during* a delivery. The only way to reach a code path that depends on
+     * something moving between two steps of one function call.
+     */
+    beforeRespond?: (() => Promise<void>) | null;
+  };
 };
 
 async function startReceiver(): Promise<Receiver> {
   const received: Received[] = [];
-  const reply = { status: 200, body: '{"ok":true}', delayMs: 0 };
+  const reply: Receiver["reply"] = {
+    status: 200,
+    body: '{"ok":true}',
+    delayMs: 0,
+    beforeRespond: null,
+  };
 
   const server = createServer((request, response) => {
     let body = "";
@@ -113,8 +134,12 @@ async function startReceiver(): Promise<Receiver> {
         response.writeHead(reply.status, { "content-type": "application/json" });
         response.end(reply.body);
       };
-      if (reply.delayMs) setTimeout(send, reply.delayMs);
-      else send();
+      const respond = async () => {
+        if (reply.beforeRespond) await reply.beforeRespond();
+        if (reply.delayMs) setTimeout(send, reply.delayMs);
+        else send();
+      };
+      void respond();
     });
   });
 
@@ -201,6 +226,9 @@ async function main() {
     await crud(fixture);
     await testDelivery(fixture, receiver);
     await pendingRowsAndTheSweep(fixture, receiver);
+    await abandonedClaims(fixture, receiver);
+    await concurrentClaimsTakeItOnce(fixture, receiver);
+    await claimsWhoseDestinationGoesAway(fixture, receiver);
   } finally {
     await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
   }
@@ -854,6 +882,250 @@ async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
 
   await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
   await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+// ---------------------------------------------------------------------------
+// A claim that is never attempted (#60)
+// ---------------------------------------------------------------------------
+
+/**
+ * The gap between claiming a retry and attempting it.
+ *
+ * `claimDueRetries` commits before any request goes out, and the attempts then
+ * run sequentially. A process that dies in that window used to leave the row
+ * `failed` with `next_retry_at` null and **no attempt row at all** — which
+ * matches neither branch of `workspacesWithDeliveryWork`, so nothing ever came
+ * back for it. The lead was still stored and still visible, but the redelivery
+ * was gone, and the destinations screen said "gave up" about a delivery that had
+ * never been tried.
+ *
+ * The crash is simulated the only honest way available: call the claim, and then
+ * do nothing. No delivery, no settle. Everything after that point asks whether
+ * the system recovers on its own.
+ */
+async function abandonedClaims(fixture: Fixture, receiver: Receiver) {
+  console.log("\nabandoned claims (#60)");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Abandoned claim target",
+    config: { url: `${receiver.url}/abandoned`, secret: SECRET },
+  });
+  if (!created) return;
+
+  const requests = () => receiver.received.filter((row) => row.path === "/abandoned").length;
+
+  receiver.reply.status = 503;
+  receiver.reply.body = "upstream unavailable";
+  await submit(fixture.endpointPublicId, { email: "abandoned@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  let log = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  t("the first attempt failed", log.length, 1);
+  ok("and scheduled a retry", log[0].nextRetryAt !== null);
+  t("having sent exactly one request", requests(), 1);
+
+  // The crash. A sweep claims the due retry — and then the process goes away
+  // before the request is made.
+  const claimedAt = new Date(Date.now() + 2 * 3_600_000);
+  const claimed = await claimDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: claimedAt,
+  });
+  t("the sweep claims the due retry", claimed.length, 1);
+  t("and sends nothing yet", requests(), 1);
+
+  const afterClaim = await attemptsFor(created.id);
+  t("claiming opens the attempt row, so an abandoned claim leaves a trace", afterClaim.length, 2);
+  const open = afterClaim.find((row) => row.status === "pending");
+  ok("which is pending", open !== undefined, afterClaim.map((row) => row.status));
+  t("numbered as the next attempt, not a repeat of the failed one", open?.attempt, 2);
+
+  // A delivery with an attempt open has not given up. The dead-letter count is
+  // the number a customer reads as "these leads are not coming", and it must not
+  // say that about one that is in flight.
+  let health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("an open attempt does not read as a delivery that gave up", health?.health.deadLetterCount, 0);
+
+  // The other half of the fix: re-claiming must not overlap a live attempt.
+  const concurrent = await sweepDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: new Date(claimedAt.getTime() + 60_000),
+    timeoutMs: 3_000,
+  });
+  t(
+    "a second sweep while the attempt is open claims nothing",
+    concurrent.delivered + concurrent.failed + concurrent.skipped,
+    0,
+  );
+  t("and sends nothing", requests(), 1);
+
+  // Recovery, with no submission to this endpoint to piggyback on. Once the
+  // open row is older than `STALE_ATTEMPT_MS` the reaper's own machinery covers
+  // it — which is the whole reason the row is opened at claim time.
+  const staleAt = new Date(claimedAt.getTime() + STALE_ATTEMPT_MS + 60_000);
+  const waiting = await workspacesWithDeliveryWork({ now: staleAt });
+  ok(
+    "an abandoned claim still counts as delivery work waiting",
+    waiting.includes(fixture.workspaceId),
+    waiting,
+  );
+
+  const reapPass = await runSweep({ now: staleAt, timeoutMs: 3_000 });
+  ok("the sweep reaps it", reapPass.reaped >= 1, reapPass);
+
+  const reaped = (await listDeliveryAttempts(fixture.workspaceId, created.id)).find(
+    (row) => row.id === open?.id,
+  );
+  t("turning the abandoned attempt into an honest failure", reaped?.status, "failed");
+  // `reaped?.nextRetryAt !== null` would be vacuously true when the row does not
+  // exist at all, which is precisely the broken case. Asserted against the row.
+  ok("with a retry scheduled", reaped !== undefined && reaped.nextRetryAt !== null, reaped);
+
+  const laterOn = new Date(staleAt.getTime() + 2 * 3_600_000);
+  await runSweep({ now: laterOn, timeoutMs: 3_000 });
+
+  log = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  const succeeded = log.filter((row) => row.status === "succeeded");
+  t("and the lead is eventually delivered", succeeded.length, 1);
+  t("having been sent to the receiver exactly twice — once failed, once good", requests(), 2);
+  t("with every attempt on the record", log.length, 3);
+
+  health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("and nothing is left dead-lettered", health?.health.deadLetterCount, 0);
+  t("or pending", health?.health.pendingCount, 0);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+/**
+ * Two sweeps racing for the same due retry.
+ *
+ * A cron and a submission can collide, and now that a claim *inserts* a row the
+ * cost of both winning would be two attempts and two outbound requests for one
+ * lead. The claim is therefore an update that also requires the schedule to
+ * still be set, and only the transaction whose update returns the row has taken
+ * it — the other re-checks the predicate after the row lock clears and finds
+ * nothing.
+ */
+async function concurrentClaimsTakeItOnce(fixture: Fixture, receiver: Receiver) {
+  console.log("\ntwo sweeps racing for one retry (#60)");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Contended",
+    config: { url: `${receiver.url}/contended`, secret: SECRET },
+  });
+  if (!created) return;
+
+  receiver.reply.status = 503;
+  receiver.reply.body = "upstream unavailable";
+  await submit(fixture.endpointPublicId, { email: "contended@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  const now = new Date(Date.now() + 2 * 3_600_000);
+  const [left, right] = await Promise.all([
+    claimDueRetries(fixture.workspaceId, { endpointId: fixture.endpointId, now }),
+    claimDueRetries(fixture.workspaceId, { endpointId: fixture.endpointId, now }),
+  ]);
+
+  t("exactly one of the two sweeps takes it", left.length + right.length, 1);
+
+  const rows = await attemptsFor(created.id);
+  t("and exactly one attempt is opened, not two", rows.filter((row) => row.status === "pending").length, 1);
+  t("so the delivery has two rows in total", rows.length, 2);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+/**
+ * A claim whose destination goes away before the delivery runs.
+ *
+ * The claim opens a `pending` row, and if nothing is ever attempted against it
+ * nothing settles it. That happens when a destination is paused between the
+ * claim and the delivery — both check that it is live, a moment apart. Left
+ * alone the row would sit until the reaper called it a network failure, which
+ * would be a lie about what happened, so the sweep closes it itself.
+ *
+ * Reaching that gap needs the world to change *inside* one call, so the
+ * receiver pauses the first delivery and pauses the second destination while it
+ * is holding the request open.
+ */
+async function claimsWhoseDestinationGoesAway(fixture: Fixture, receiver: Receiver) {
+  console.log("\na claim whose destination is paused mid-sweep (#60)");
+
+  const first = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Still here",
+    config: { url: `${receiver.url}/still-here`, secret: SECRET },
+  });
+  const second = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Paused mid-sweep",
+    config: { url: `${receiver.url}/paused`, secret: SECRET },
+  });
+  if (!first || !second) return;
+
+  // Both fail, so both have a retry due.
+  receiver.reply.status = 503;
+  receiver.reply.body = "upstream unavailable";
+  await submit(fixture.endpointPublicId, { email: "vanishing@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  t("both destinations failed", (await attemptsFor(second.id)).length, 1);
+
+  // Claims come back in `next_retry_at` order, and the schedule carries ±20%
+  // jitter — so the order is pinned by hand rather than left to chance. The
+  // surviving destination must be delivered first, because the pause has to
+  // happen while the sweep is still working.
+  const due = new Date(Date.now() + 3_600_000);
+  await unsafeDb
+    .update(deliveryAttempts)
+    .set({ nextRetryAt: due })
+    .where(eq(deliveryAttempts.destinationId, first.id));
+  await unsafeDb
+    .update(deliveryAttempts)
+    .set({ nextRetryAt: new Date(due.getTime() + 1_000) })
+    .where(eq(deliveryAttempts.destinationId, second.id));
+
+  // The sweep claims both up front, then delivers them one at a time. While the
+  // first delivery is in flight, the second destination is paused.
+  receiver.reply.beforeRespond = async () => {
+    receiver.reply.beforeRespond = null;
+    await updateDestination(fixture.workspaceId, second.id, { enabled: false });
+  };
+
+  const swept = await sweepDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: new Date(Date.now() + 2 * 3_600_000),
+    timeoutMs: 3_000,
+  });
+  receiver.reply.beforeRespond = null;
+
+  t("the destination that is still there gets its retry", swept.delivered, 1);
+
+  const orphan = (await attemptsFor(second.id)).find((row) => row.attempt === 2);
+  ok("the paused one's claimed row exists", orphan !== undefined);
+  t("and is not left pending forever", orphan?.status, "failed");
+  ok(
+    "with a sentence naming what actually happened, not a made-up network error",
+    /paused or removed/i.test(orphan?.error ?? ""),
+    orphan?.error,
+  );
+  ok("and no retry scheduled against a destination that is off", orphan?.nextRetryAt === null);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, first.id));
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, second.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, first.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, second.id));
 }
 
 // ---------------------------------------------------------------------------

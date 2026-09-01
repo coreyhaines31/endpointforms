@@ -188,8 +188,8 @@ the failure mode of a misconfiguration is "nothing runs", never "anyone can run 
 comparison is constant-time and the 401 does not reveal whether a secret is configured.
 
 Bounded per invocation (100 workspaces, 25 retries and 50 stale rows each) and safe to run
-twice: a sweep clears `next_retry_at` on every row it claims, inside the transaction that
-reads it, so a second sweep — or a cron whose previous run overran — finds nothing to take.
+twice: a sweep claims a row with an update that also requires `next_retry_at` to still be set,
+so a second sweep — or a cron whose previous run overran — finds nothing to take.
 `more: true` in the response says a cap was hit and another pass has work.
 
 ### Attempt rows are written before the request, not after
@@ -206,6 +206,37 @@ the normal policy. Left alone it would be worse than a missing row, because
 `consecutiveFailures` does not count a pending row — the destination would read as healthy
 while a lead sat undelivered.
 
+### A claimed retry opens its row at claim time (#60)
+
+Claiming a retry and attempting it are two different moments. The claim commits, and the
+attempts then run one after another — up to five per submission-triggered sweep, at up to ten
+seconds each. **A process that dies in that gap used to lose the redelivery entirely:** the row
+was left `failed` with `next_retry_at` null and no attempt row anywhere, which matches neither
+branch of the discovery query, so nothing ever came back for it. The lead was still stored and
+still visible, but the destinations screen said "gave up" about a delivery that had never been
+tried once.
+
+So **the claim opens the `pending` row itself**, in the same transaction that clears the
+schedule. An abandoned claim then looks exactly like the case already handled above — a
+`pending` row nobody finished — and the reaper covers it with no new machinery.
+
+The obvious alternative, leaving a short lease in `next_retry_at` so the row simply becomes due
+again, was rejected: it lets a **slow but alive** attempt be re-claimed and delivered a second
+time. The delivery id is stable across retries, so a receiver that dedupes is safe, but one
+that does not gets the lead twice, and trading silent loss for silent duplication is not an
+improvement. The five-minute stale window is the lease instead, and it is far longer than the
+ten-second adapter timeout any attempt can run for.
+
+What this costs: a crashed claim now waits up to five minutes to be noticed rather than being
+recovered instantly, and the destination shows one extra `pending` delivery for that window.
+The remaining hole is a process that is frozen for longer than five minutes and then resumes —
+the reaper will already have rescheduled its delivery, and both copies can arrive. That window
+is not new; it is the one the reaper has always had.
+
+A delivery with an attempt still open is **not** counted as dead-lettered. Between a claim and
+its settle there is no schedule to see, so without that rule every retry in flight would be
+reported as a lead that gave up — the same misreport in a smaller window.
+
 ## What we will not do
 
 - **Follow redirects.** A 3xx is a failure, not a hop. Following one re-opens the SSRF hole
@@ -215,6 +246,12 @@ while a lead sat undelivered.
   spelling of them (`0x7f.0.0.1`, `2130706433`, `127.1`, `[::ffff:7f00:1]`) are refused, and
   the URL is re-checked on **every delivery**, not only when it was saved — a hostname that
   resolved publicly in March can resolve to `127.0.0.1` in June.
+- **Resolve a name twice.** Checking a hostname and then handing that hostname to `fetch` lets
+  the second lookup answer differently from the first, which is DNS rebinding and it defeats a
+  hostname check outright. A delivery resolves the name once, requires **every** address the
+  answer contains to pass, and then connects to those addresses — the `Host` header and TLS
+  certificate still belong to the name, so virtual-hosted receivers are unaffected. Between the
+  check and the socket there is no second lookup to poison.
 - **Deliver over plaintext http.** This carries your leads and a signing secret. A self-hoster
   posting to a service on their own network sets `ALLOW_INSECURE_DESTINATIONS=1` deliberately.
 - **Accept credentials in the URL.** `https://user:pass@host/` puts a secret in every log line.

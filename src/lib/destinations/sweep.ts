@@ -32,8 +32,13 @@ import { reapStaleAttempts, workspacesWithDeliveryWork } from "./store.ts";
  * Two independent reasons, and both matter because a cron and a submission can
  * collide:
  *
- * - `claimDueRetries` **clears `next_retry_at` inside the same transaction that
- *   reads it**, so two concurrent sweeps cannot both pick up the same row.
+ * - `claimDueRetries` **claims a row with an update that also requires
+ *   `next_retry_at` to still be set**, and counts it claimed only if that update
+ *   returns it. A second sweep blocks on the row lock, re-checks the predicate
+ *   against the committed version, and takes nothing.
+ * - That claim also opens the attempt's `pending` row, so a delivery already in
+ *   flight cannot be started again by anything except the reaper, and only after
+ *   `STALE_ATTEMPT_MS` — far longer than an attempt can run (#60).
  * - The delivery id is **derived** from `(destination, submission)` rather than
  *   stored, so every attempt of the same delivery — from a sweep, from the
  *   ingest path, from the redeliver button, from a different machine three hours
