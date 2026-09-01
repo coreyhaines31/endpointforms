@@ -128,6 +128,20 @@ its seed, its migrator and its entire test suite from `.mts` files, so a TypeScr
 silently skips all of them. When renaming or auditing across the repo, grep with no `--include`
 filter and exclude `node_modules` instead.
 
+**Browser tooling fails open — check that your check took effect.** Two separate verification
+attempts in this project measured nothing and passed anyway: `agent-browser network route --abort`
+on `**/*.js` did not block the scripts (React still hydrated — `__reactFiber$` was on the form),
+and a dark-mode emulation silently no-opped while colours were read off it as if it had worked.
+Neither errored. Both would have shipped as confident false claims in exactly the place evidence
+had been asked for.
+
+So after arming any emulation or interception, assert the state it was supposed to produce before
+you trust anything downstream of it: `__reactFiber$` absent for no-JS, the computed background
+actually dark for dark mode, the request actually absent from the network log for a block. For
+disabling JavaScript specifically, CDP's `Emulation.setScriptExecutionDisabled` is the real switch
+— it is what DevTools' "Disable JavaScript" toggles — and `curl` is stronger still where the
+markup is all you need, because it cannot execute a script even if one existed.
+
 **Never click `button[type=submit]` in an authenticated page.** The sidebar's **Sign out**
 is the first submit button in the DOM on every `/app` screen, so a generic selector signs you
 out and lands you on `/login`. That looks exactly like the feature being broken, and it has
