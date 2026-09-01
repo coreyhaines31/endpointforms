@@ -82,6 +82,19 @@ export type FormViewProps = {
   values: Record<string, string | string[]>;
   /** True when an answer was too large to carry back across the redirect. */
   truncated: boolean;
+  /**
+   * Underscore-prefixed fields the endpoint consumes before `values` is
+   * written — `_page_url` today, from an embed (#39).
+   *
+   * Separate from `values` on purpose, and the separation is the security
+   * boundary rather than tidiness: `values` is what a person answered, and
+   * these are what the page they were on asserted. `attribution.ts` lifts them
+   * onto columns of their own and they never reach the customer's inbox as
+   * fields. Nothing here may be one of the schema's own keys — see
+   * `src/lib/embed/prefill.ts` for why a URL is not allowed to fill in
+   * something the person submitting cannot see.
+   */
+  controlFields?: Record<string, string>;
 };
 
 /**
@@ -114,10 +127,64 @@ const THEME_DEFAULTS: Record<string, string> = {
   "--form-danger": "var(--destructive)",
   "--form-danger-surface": "var(--destructive-surface)",
   "--form-radius": "var(--radius)",
+  /**
+   * The page's own breathing room, as a property rather than a literal, because
+   * an embedded form (#39) wants far less of it: this block sits inside
+   * somebody else's section, which already has padding, and a second helping of
+   * it reads as a misaligned box. `page.tsx` overrides this and nothing else
+   * about the layout changes.
+   */
+  "--form-pad": "clamp(2.5rem,7vw,4.5rem)",
+  /**
+   * Horizontal padding, which is its own property because it goes to zero for a
+   * different reason than the vertical one does.
+   *
+   * On a phone, an embedded form that keeps this ends up inset twice — once by
+   * the host section's padding and once by its own — and sits visibly indented
+   * from the heading above it. The host's container is the thing that decides
+   * how far from the edge of a 390px screen its content starts, and the form is
+   * that container's content.
+   */
+  "--form-pad-x": "1.25rem",
+  /**
+   * The measure, for the same reason and with the same override.
+   *
+   * A hosted page centres the form in a 34rem column because nothing else is
+   * on the screen. Inside somebody's `<div>` the column has already been
+   * chosen — by them, in their layout — and centring a narrower one inside it
+   * reads as a misaligned widget rather than as part of the page.
+   */
+  "--form-width": "34rem",
+  /**
+   * Density and button style (#38), which are the two theme controls that could
+   * not otherwise be reached.
+   *
+   * Everything else a theme sets is already a custom property, so it arrives in
+   * the `style` attribute and wins by the cascade. These four measurements and
+   * three button colours were Tailwind literals in the markup below —
+   * `gap-7`, `px-3 py-2.5`, `min-w-[12rem]` — which a `style` attribute cannot
+   * touch. Naming them here is what makes them themeable; every value is the
+   * literal it replaced, so an unthemed form renders the same pixels it did
+   * before.
+   *
+   * The button gets **its own** three tokens rather than reusing the accent.
+   * The checkboxes and radios are painted with `accent-[var(--form-accent)]`,
+   * so an outline button style driven off the shared token would hollow those
+   * out too — a theme choosing "outline button" would silently also un-fill
+   * every checkbox on the form. The defaults point at the accent, so the two
+   * are identical until a theme deliberately separates them.
+   */
+  "--form-gap": "1.75rem",
+  "--form-control-px": "0.75rem",
+  "--form-control-py": "0.625rem",
+  "--form-button-bg": "var(--form-accent)",
+  "--form-button-ink": "var(--form-accent-ink)",
+  "--form-button-edge": "var(--form-accent-edge)",
+  "--form-button-min": "12rem",
 };
 
 const CONTROL_CLASS =
-  "w-full min-w-0 rounded-[var(--form-radius)] border border-[var(--form-border-control)] bg-[var(--form-bg)] px-3 py-2.5 text-base text-[var(--form-fg)] placeholder:text-[var(--form-muted)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] aria-invalid:border-2 aria-invalid:border-[var(--form-danger)]";
+  "w-full min-w-0 rounded-[var(--form-radius)] border border-[var(--form-border-control)] bg-[var(--form-bg)] px-[var(--form-control-px)] py-[var(--form-control-py)] text-base text-[var(--form-fg)] placeholder:text-[var(--form-muted)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] aria-invalid:border-2 aria-invalid:border-[var(--form-danger)]";
 
 export function FormView({
   document,
@@ -128,6 +195,7 @@ export function FormView({
   errors,
   values,
   truncated,
+  controlFields,
 }: FormViewProps) {
   const style = {
     ...THEME_DEFAULTS,
@@ -173,7 +241,7 @@ export function FormView({
   return (
     <main
       style={style}
-      className="mx-auto flex w-full max-w-[34rem] flex-1 flex-col bg-[var(--form-page)] px-5 py-[clamp(2.5rem,7vw,4.5rem)] text-[var(--form-fg)]"
+      className="mx-auto flex w-full max-w-[var(--form-width)] flex-1 flex-col bg-[var(--form-page)] px-[var(--form-pad-x)] py-[var(--form-pad)] text-[var(--form-fg)]"
     >
       {/* `break-words` because the title is somebody else's string and can be a
           single unbroken token — an imported form is often named after the URL
@@ -197,6 +265,13 @@ export function FormView({
             off the marketing site's thank-you page. */}
         <input type="hidden" name="_redirect" value={redirectTo} />
 
+        {/* The embed's own metadata (#39). Rendered as plain hidden inputs
+            through React, so a page URL containing a quote or a `<` is escaped
+            into the attribute rather than able to leave it. */}
+        {Object.entries(controlFields ?? {}).map(([name, value]) => (
+          <input key={name} type="hidden" name={name} value={value} />
+        ))}
+
         {/* The spam decoys (#31). Rendered here rather than in `src/lib/spam`
             because this is the only place that knows which field names the
             customer's own schema already uses — a decoy named `company_website`
@@ -212,7 +287,7 @@ export function FormView({
           <input key={name} {...honeypotInputProps(name)} />
         ))}
 
-        <div className="grid gap-7">
+        <div className="grid gap-[var(--form-gap)]">
           {rendered.map((entry) =>
             entry.field.type === "hidden" ? (
               <HiddenField key={entry.id} field={entry.field} values={values} />
@@ -232,7 +307,7 @@ export function FormView({
 
         <button
           type="submit"
-          className="mt-9 inline-flex h-12 w-full items-center justify-center rounded-[var(--form-radius)] bg-[var(--form-accent)] px-5 text-base font-medium text-[var(--form-accent-ink)] shadow-[inset_0_0_0_1px_var(--form-accent-edge)] transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:w-auto sm:min-w-[12rem]"
+          className="mt-9 inline-flex h-12 w-full items-center justify-center rounded-[var(--form-radius)] bg-[var(--form-button-bg)] px-5 text-base font-medium text-[var(--form-button-ink)] shadow-[inset_0_0_0_1px_var(--form-button-edge)] transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:w-auto sm:min-w-[var(--form-button-min)]"
         >
           Submit
         </button>
