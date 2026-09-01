@@ -32,6 +32,7 @@ export const PAGE_SIZE = 50;
 export const EXPORT_LIMIT = 10_000;
 
 const ORIGINS = ["human", "agent", "unverified"] as const;
+const LANES = ["submissions", "partials"] as const;
 const VERDICTS = ["won", "lost", "disqualified", "awaiting"] as const;
 
 /**
@@ -67,6 +68,11 @@ export function parseSubmissionFilters(
   const page = Number.parseInt(one("page") ?? "1", 10);
 
   return {
+    // Anything unrecognised is the submissions lane, which is what this screen
+    // was before #37 and what every existing bookmark means.
+    lane: LANES.includes(one("lane") as (typeof LANES)[number])
+      ? (one("lane") as (typeof LANES)[number])
+      : "submissions",
     endpointPublicId: one("endpoint"),
     origin,
     verdict,
@@ -107,6 +113,9 @@ export function filtersToSearchParams(
   overrides: { page?: number } = {},
 ): URLSearchParams {
   const params = new URLSearchParams();
+  // Omitted for the default lane, so a shared inbox URL looks the way it always
+  // did and an export link is unchanged.
+  if (filters.lane !== "submissions") params.set("lane", filters.lane);
   if (filters.endpointPublicId) params.set("endpoint", filters.endpointPublicId);
   if (filters.origin.length > 0) params.set("origin", filters.origin.join(","));
   if (filters.verdict.length > 0) params.set("verdict", filters.verdict.join(","));

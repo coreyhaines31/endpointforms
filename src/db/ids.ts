@@ -27,3 +27,19 @@ export const newEndpointPublicId = () => nano(12);
 
 /** Public submission ID. 16 chars; these are handed to a customer's CRM for outcome matching (#43). */
 export const newSubmissionPublicId = () => nano(16);
+
+/**
+ * Public ID for a partial capture (#37). 16 chars, matching a submission's:
+ * they show up in the same inbox and get read aloud in the same conversations.
+ */
+export const newPartialPublicId = () => nano(16);
+
+/**
+ * The token a visitor's form carries between screens (#37).
+ *
+ * Longer than a public ID, deliberately. This one is not merely unguessable in
+ * the usual sense — guessing one lets somebody overwrite a stranger's
+ * in-progress answers, so it is sized for that rather than for being read out.
+ * 24 characters of the 64-symbol alphabet is 144 bits.
+ */
+export const newPartialKey = () => nano(24);

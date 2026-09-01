@@ -158,6 +158,8 @@ export type SubmissionRecord = {
 };
 
 export type StoredSubmission = {
+  /** The internal primary key. Only the partial link (#37) reads it. */
+  id: string;
   publicId: string;
   submittedAt: Date;
   /** True when an identical key already had a row, and this one was collapsed onto it. */
@@ -232,17 +234,27 @@ export async function storeSubmission(
         where: sql`${submissions.idempotencyKey} is not null`,
       })
       .returning({
+        id: submissions.id,
         publicId: submissions.publicId,
         submittedAt: submissions.submittedAt,
       });
 
     const row = inserted[0];
     if (row) {
-      return { publicId: row.publicId, submittedAt: row.submittedAt, duplicate: false };
+      return {
+        id: row.id,
+        publicId: row.publicId,
+        submittedAt: row.submittedAt,
+        duplicate: false,
+      };
     }
 
     const existing = await ws.tx
-      .select({ publicId: submissions.publicId, submittedAt: submissions.submittedAt })
+      .select({
+        id: submissions.id,
+        publicId: submissions.publicId,
+        submittedAt: submissions.submittedAt,
+      })
       .from(submissions)
       .where(
         ws.where(
@@ -255,14 +267,23 @@ export async function storeSubmission(
 
     const prior = existing[0];
     if (prior) {
-      return { publicId: prior.publicId, submittedAt: prior.submittedAt, duplicate: true };
+      return {
+        id: prior.id,
+        publicId: prior.publicId,
+        submittedAt: prior.submittedAt,
+        duplicate: true,
+      };
     }
 
     // The only way here is a conflict with a row that has since been soft
     // deleted, so `ws.where` filtered it out. Look again without that filter
     // rather than reporting a failure for a submission that did land.
     const deleted = await ws.tx
-      .select({ publicId: submissions.publicId, submittedAt: submissions.submittedAt })
+      .select({
+        id: submissions.id,
+        publicId: submissions.publicId,
+        submittedAt: submissions.submittedAt,
+      })
       .from(submissions)
       .where(
         and(
@@ -276,6 +297,7 @@ export async function storeSubmission(
     const priorDeleted = deleted[0];
     if (priorDeleted) {
       return {
+        id: priorDeleted.id,
         publicId: priorDeleted.publicId,
         submittedAt: priorDeleted.submittedAt,
         duplicate: true,

@@ -30,6 +30,8 @@ import {
   type SubmissionAck,
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
+import { PARTIAL_KEY_PATTERN, STEP_FIELD_KEYS, PARTIAL_KEY_FIELD } from "../steps/format.ts";
+import { completePartial } from "../steps/store.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
 import type { FormSchemaDocument } from "../schema/format.ts";
 
@@ -178,6 +180,13 @@ export async function handleSubmission(
       // Still verbatim in `raw_body`, and still read by `assessSpam` below,
       // which is given `parsed.values` rather than this stripped copy.
       ...HONEYPOT_FIELD_KEYS,
+      // The multi-step flow's own fields (#37): which partial this visit was
+      // writing to, and which screen it came from. Stripped for the same
+      // reason as everything above it — the inbox shows the customer's fields,
+      // not our plumbing — and note that they are stripped for *every* caller,
+      // not only the hosted form. A raw POST that happens to send `_step` gets
+      // the same treatment as one that sends `_redirect`.
+      ...STEP_FIELD_KEYS,
     ]);
     const values = omit(parsed.values, reserved);
 
@@ -286,6 +295,30 @@ export async function handleSubmission(
         endpointId: endpoint.id,
         submissionPublicId: stored.publicId,
       });
+    }
+
+    // The partial this submission grew out of (#37), closed now that it has
+    // become a lead. This is what stops one visitor being two rows: the inbox
+    // lists open partials only, so a capture that finished stops being one the
+    // instant its submission is committed.
+    //
+    // Placed here, after the write, for the same reason `dispatchSubmission` is:
+    // the row is safe, so nothing beyond this point can cost the lead.
+    // `completePartial` swallows its own errors, and the worst it can do is
+    // leave a row looking open that is not.
+    //
+    // Done on the ingest path rather than in the hosted form's route so that it
+    // is true of every door. A submission carrying a partial key closes that
+    // partial whichever surface it came through.
+    const partialKey = firstField(parsed.values, [PARTIAL_KEY_FIELD]);
+    if (partialKey !== null && PARTIAL_KEY_PATTERN.test(partialKey)) {
+      await completePartial(
+        endpoint.workspaceId,
+        endpoint.id,
+        partialKey,
+        stored.id,
+        submittedAt,
+      );
     }
 
     if (responseMode(request) === "redirect") {

@@ -7,7 +7,13 @@ import {
   type FormSchemaDocument,
   type SchemaField,
 } from "../../../lib/schema/format.ts";
+import { EMPTY_THEME, serializeTheme, type StoredTheme } from "../../../lib/render/theme.ts";
 import { isReservedFieldName } from "../../../lib/schema/reserved.ts";
+import {
+  serializePartials,
+  serializeSteps,
+  type FormStep,
+} from "../../../lib/steps/format.ts";
 import {
   previewRules,
   ruleIssues,
@@ -108,6 +114,43 @@ export type DraftDocument = {
   fields: DraftField[];
   /** Conditional logic (#36). Edited in `rules-panel.tsx`; shaped in `rules-state.ts`. */
   rules: DraftRule[];
+  /**
+   * How the form looks (#38). Edited in `theme-panel.tsx`.
+   *
+   * Kept as the stored shape rather than a draft shape of its own, unlike the
+   * fields and the rules. Those need draft-only state — a client id, a
+   * half-typed number that is not yet a number — and this does not: every
+   * control is an enum or a hex colour, so what the panel edits is already
+   * exactly what gets written.
+   *
+   * Optional, mirroring `FormSchemaDocument.theme`, and absent means the
+   * default rather than "not decided yet". There is no state in which a draft
+   * has a theme that is neither a stored theme nor the default one.
+   */
+  theme?: StoredTheme;
+  /**
+   * Screens (#37). Edited in `steps-panel.tsx`.
+   *
+   * Optional like `theme`, and for the same reason: absent and empty mean the
+   * same thing — one screen — so there is no state a draft can be in where the
+   * difference matters.
+   *
+   * Kept in the stored shape, like `theme` and unlike the fields and rules,
+   * because a step has no draft-only state: it is an id, two strings and a list
+   * of field keys, all of which are already exactly what gets written. The
+   * step's own id doubles as the React key, which is why the panel refuses to
+   * let two steps share one.
+   */
+  steps?: FormStep[];
+  /**
+   * The sentence a visitor reads about partial capture, in the customer's own
+   * words. Empty means our wording, never no wording — see `partialNotice`.
+   *
+   * A plain string rather than the stored `partials` object, because the object
+   * has exactly one field and there is no second thing it could ever say: there
+   * is no switch for capturing without disclosing, deliberately.
+   */
+  notice?: string;
 };
 
 export type IssueSeverity = "error" | "warning";
@@ -217,7 +260,7 @@ export function newDraftOption(id: string, seed: Partial<DraftOption> = {}): Dra
 }
 
 export function emptyDraft(): DraftDocument {
-  return { name: "", fields: [], rules: [] };
+  return { name: "", fields: [], rules: [], theme: EMPTY_THEME, steps: [], notice: "" };
 }
 
 /** A stored document, opened for editing. Ids are positional and stable. */
@@ -226,6 +269,14 @@ export function fromDocument(document: FormSchemaDocument): DraftDocument {
     name: document.name ?? "",
     fields: document.fields.map((field, index) => fromField(field, `f${index}`)),
     rules: rulesFromDocument(document),
+    theme: document.theme ?? EMPTY_THEME,
+    steps: (document.steps ?? []).map((step) => ({
+      id: step.id,
+      ...(step.title === undefined ? {} : { title: step.title }),
+      ...(step.description === undefined ? {} : { description: step.description }),
+      fields: [...step.fields],
+    })),
+    notice: document.partials?.notice ?? "",
   };
 }
 
@@ -371,6 +422,22 @@ export function toSchemaDocument(draft: DraftDocument): unknown {
   // serialises to exactly the bytes it did before #36 — which is what the
   // unsaved-changes comparison in `builder.tsx` is measured against.
   if (draft.rules.length > 0) out.rules = toRules(draft.rules);
+  // Omitted when the theme sets nothing, for the same reason `rules` is: this
+  // is the object the unsaved-changes fingerprint is computed from, and a
+  // `theme: {}` on every document would mark every stored schema dirty on open.
+  const theme = serializeTheme(draft.theme ?? EMPTY_THEME);
+  if (theme !== undefined) out.theme = theme;
+  // Screens, on the same terms again: omitted entirely when there are none, so
+  // a one-screen form fingerprints to the bytes it did before #37.
+  const steps = serializeSteps(draft.steps ?? []);
+  if (steps !== undefined) out.steps = steps;
+  // The disclosure wording, which is only meaningful alongside screens. A
+  // notice left on a form whose steps were removed would be a stored sentence
+  // nothing ever shows, and it would mark the draft dirty forever.
+  if (steps !== undefined) {
+    const partials = serializePartials({ notice: draft.notice ?? "" });
+    if (partials !== undefined) out.partials = partials;
+  }
   return out;
 }
 
@@ -412,6 +479,7 @@ export function previewDocument(draft: DraftDocument): {
   // same thing the hosted form would show, skip included, is the only reason to
   // have a preview. See `previewRules`.
   const rules = previewRules(draft.rules);
+  const previewTheme = serializeTheme(draft.theme ?? EMPTY_THEME);
 
   return {
     document: {
@@ -419,6 +487,11 @@ export function previewDocument(draft: DraftDocument): {
       ...(draft.name.trim() === "" ? {} : { name: draft.name.trim() }),
       fields,
       ...(rules.length === 0 ? {} : { rules }),
+      // Carried into the preview whole. The theme is the one part of a draft
+      // that cannot be half-valid — every control is a closed enum bar the
+      // colour, and an unparseable colour never reaches the state — so there is
+      // nothing to skip and nothing to report.
+      ...(previewTheme === undefined ? {} : { theme: previewTheme }),
     },
     skipped,
   };

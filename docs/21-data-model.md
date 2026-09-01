@@ -90,6 +90,7 @@ visible.
 | `endpoints` | What a customer points a form at (#50). Workspace, public short ID, name. **Works with no schema.** |
 | `form_schemas` | *Optional*, immutable, versioned field definitions (#51). |
 | `submissions` | The central row. Values, provenance, verdict, source metadata. |
+| `submission_partials` | Somebody who filled in part of a multi-step form and never submitted it (#37). **Deliberately not a `submissions` row.** |
 | `destinations` | Where data goes (#41). |
 | `delivery_attempts` | Whether it got there, with both sides of the exchange retained (#42). |
 
@@ -121,6 +122,54 @@ never break an endpoint that worked without one:
 The seed demonstrates this directly: its endpoint ran for eight submissions with
 no schema at all, then had one declared. Those eight rows are still there and
 still readable.
+
+### A partial is not a submission, and gets a table of its own
+
+`submission_partials` holds a visit to a multi-step form (#37) that completed at
+least one screen and never finished. It is the point of that feature: someone
+who filled in three screens of five and left is a lead you can still see, rather
+than something a form builder quietly threw away.
+
+It could have been a `submissions` row with a flag. It is not, for one reason:
+
+**Yield is wins over everything that arrived.** Widening "everything that
+arrived" to include people who never submitted would have moved every customer's
+number the day it shipped — unless every query that already existed, and every
+query anyone writes later, remembered to filter partials out. A separate table
+makes that impossible instead of merely unlikely: no existing query can see
+these rows, so none of them changed, and none had to be audited to prove it.
+
+It is also the more honest model. Nobody pressed submit.
+
+What the stamps mean here:
+
+- **`origin`** — stamped identically. Only the hosted form has steps, so a
+  partial is always a `form` surface, but the human/unverified split still
+  applies and is still worth seeing.
+- **`variant_id`, `schema_version_id`** — stamped. A partial belongs to the arm
+  that served it and stays readable against the definition it was captured
+  under, exactly as a submission does.
+- **No `verdict`.** A verdict is a downstream outcome on a lead that arrived; a
+  partial did not arrive. Recording one would put a win in a numerator whose
+  denominator does not contain it, which is precisely the invented arithmetic
+  `src/lib/yield/compute.ts` refuses to do.
+- **No `spam_state`.** Scoring is calibrated on complete submissions, and
+  `observeVelocity` in particular would read one visitor stepping through four
+  screens as four submissions from one address inside a minute — poisoning the
+  signal for the real submissions beside it. Partials are unscored, and the step
+  route never calls the assessor.
+
+`completed_at` closes a partial when its visitor finally submits; the row is
+kept rather than deleted, because "they hesitated on the pricing screen for six
+minutes and then finished" is the thing this table exists to be able to say. A
+closed partial is excluded from every open-partial count and list, which is what
+stops one person appearing as two.
+
+The table is also where the flow keeps its state between screens — a 303 turns a
+POST into a GET and the body is gone. That is why partial capture has no off
+switch: a stepped form holds screen one's answers while the visitor is on screen
+two whatever anyone claims, so the only real choice was whether to say so. It is
+said, on every screen, in a sentence the customer may reword and cannot remove.
 
 ### Schemas are immutable and versioned; the endpoint holds a pointer
 

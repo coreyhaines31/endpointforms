@@ -4,6 +4,16 @@ import { MAX_FIELD_NAME_CHARS } from "../ingest/limits.ts";
 import { ruleErrorMessages } from "../rules/analyze.ts";
 import { type Rule } from "../rules/algebra.ts";
 import { rulesSchema } from "../rules/format.ts";
+import { readStoredTheme, serializeTheme, themeSchema } from "../render/theme.ts";
+import {
+  partialSettingsSchema,
+  readStoredPartials,
+  readStoredSteps,
+  serializePartials,
+  serializeSteps,
+  stepErrorMessages,
+  stepsSchema,
+} from "../steps/format.ts";
 
 /**
  * The optional form schema (#51).
@@ -238,6 +248,41 @@ const documentShape = z.strictObject({
    * merely unwise; see the document-level refinement below.
    */
   rules: rulesSchema.optional(),
+  /**
+   * Presentation (#38). Optional, and additive on exactly the same terms as
+   * `rules`: a document written before it existed has no `theme` key, reads
+   * exactly as it always did, and renders the same form byte for byte.
+   *
+   * It lives on the document rather than on the endpoint because it is part of
+   * the definition a version *is*. A form published on Tuesday carries the look
+   * it was published with, so rolling back a version rolls back its appearance
+   * too — and there is no state where the fields are from one version and the
+   * colours are from another.
+   *
+   * `src/lib/render/theme.ts` holds the shape, the palettes and the contrast
+   * derivation. What is enforced here is only that the value is one this build
+   * can turn into CSS: every property is a closed enum bar one hex colour, so
+   * nothing a person types can reach a style attribute unmatched.
+   */
+  theme: themeSchema.optional(),
+  /**
+   * Multi-step rendering (#37). Optional, and additive on exactly the same
+   * terms as `rules` and `theme`: a document written before it existed has no
+   * `steps` key and produces the same form, the same tool definition and the
+   * same validation result byte for byte.
+   *
+   * It is a **rendering** key and nothing else reads it. `validate.ts` never
+   * consults it, `manifest/tool.ts` never consults it, and the ingest path
+   * never consults it — a raw POST and an agent call have no steps and must
+   * never be judged against them. `src/lib/steps` holds the reasoning in full.
+   */
+  steps: stepsSchema.optional(),
+  /**
+   * What this form does with a visit that stops halfway (#37), and what the
+   * visitor is told about it. Only meaningful alongside `steps`; a one-screen
+   * form has no boundary at which a visit could be half-finished.
+   */
+  partials: partialSettingsSchema.optional(),
 });
 
 /**
@@ -278,6 +323,13 @@ const documentSchema = documentShape.superRefine((doc, ctx) => {
   // reach this refinement. See `src/lib/rules/analyze.ts`.
   for (const message of ruleErrorMessages(doc)) {
     ctx.addIssue({ code: "custom", path: ["rules"], message });
+  }
+
+  // Steps, on the same terms as the rules above: only a step list whose
+  // behaviour cannot be stated is refused. A field no step names is *not* an
+  // error — see `stepErrorMessages`.
+  for (const message of stepErrorMessages(doc)) {
+    ctx.addIssue({ code: "custom", path: ["steps"], message });
   }
 });
 
@@ -387,11 +439,35 @@ export function readStoredDocument(stored: unknown): FormSchemaDocument | null {
     fields.push(field.data);
   }
 
+  // Read and re-serialised in one step, which is what strips a property this
+  // build does not know about and drops one whose value is already the default.
+  // A row that carries `theme: {}`, or a theme whose every key is the default,
+  // comes back with no `theme` at all — so reopening it and saving it again
+  // writes the same bytes. See `serializeTheme`.
+  const theme = serializeTheme(readStoredTheme(record));
+
+  // Steps are all-or-nothing like rules, and for the same reason: a step list
+  // with one screen missing is a form asking a different set of questions from
+  // the one its owner published. Anything unreadable falls back to the
+  // one-screen form, which is what every form was before #37.
+  //
+  // A step naming a field this build dropped above is left alone rather than
+  // repaired. `planSteps` renders only the fields it can find, so a stale key
+  // costs nothing — and rewriting somebody's step list on read would mean the
+  // bytes that come back are not the bytes that went in.
+  const steps = readStoredSteps(record);
+  const partials = readStoredPartials(record);
+
   return {
     formatVersion: parsed.data.formatVersion,
     ...(parsed.data.name === undefined ? {} : { name: parsed.data.name }),
     fields,
     ...(rules === undefined || rules.length === 0 ? {} : { rules }),
+    ...(theme === undefined ? {} : { theme }),
+    ...(steps === undefined ? {} : { steps }),
+    // Dropped when it carries nothing but the defaults, so reopening a stored
+    // schema and saving it again writes the same bytes.
+    ...(serializePartials(partials) === undefined ? {} : { partials }),
   };
 }
 
@@ -427,6 +503,7 @@ function stripUnknown(raw: Record<string, unknown>): Record<string, unknown> {
  * dated by guesswork.
  */
 export function serializeSchemaDocument(document: FormSchemaDocument): FormSchemaDocument {
+  const serializedTheme = document.theme === undefined ? undefined : serializeTheme(document.theme);
   return {
     formatVersion: SCHEMA_FORMAT_VERSION,
     ...(document.name === undefined ? {} : { name: document.name }),
@@ -454,6 +531,21 @@ export function serializeSchemaDocument(document: FormSchemaDocument): FormSchem
             then: rule.then.map((action) => ({ action: action.action, field: action.field })),
           })),
         }),
+    // Omitted entirely when the theme sets nothing, so a form nobody has themed
+    // serialises to exactly the bytes it did before #38 — the same requirement
+    // `rules` has, and for the same reason: the builder decides whether there
+    // are unsaved changes by comparing serialised documents, and an
+    // always-present `theme: {}` would make every stored schema look edited the
+    // moment it was opened.
+    ...(serializedTheme === undefined ? {} : { theme: serializedTheme }),
+    // Steps and partial settings, omitted entirely when there are none — the
+    // same requirement as `rules` and `theme` above, for the same reason.
+    ...(serializeSteps(document.steps) === undefined
+      ? {}
+      : { steps: serializeSteps(document.steps) }),
+    ...(serializePartials(document.partials) === undefined
+      ? {}
+      : { partials: serializePartials(document.partials) }),
   };
 }
 

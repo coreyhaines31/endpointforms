@@ -9,6 +9,9 @@ import { RelativeTime } from "@/components/app/time";
 import { VerdictChip } from "@/components/app/verdict-chip";
 import { describeSource, summariseValues } from "@/lib/submission-values";
 import { listEndpointsWithStats } from "@/lib/workspaces/endpoints";
+import { countPartialsMatching, listPartials } from "@/lib/workspaces/partials";
+import { PartialsTable } from "@/components/app/partials-table";
+import { InboxLanes } from "@/components/app/inbox-lanes";
 import { requireWorkspace } from "@/lib/workspaces/server";
 import {
   filtersToSearchParams,
@@ -41,10 +44,25 @@ export default async function SubmissionsPage({
   const { workspace } = await requireWorkspace(slug);
 
   const filters = parseSubmissionFilters(query);
-  const [page, endpoints] = await Promise.all([
+
+  /**
+   * Two lanes, and the count of the other one (#37).
+   *
+   * The partial count is fetched on both lanes and shown on both, and it is
+   * **never added to the submission count**. That is the whole discipline of
+   * this feature on this screen: somebody who filled in three screens of five
+   * and left is a lead worth seeing, and is not a submission. A single merged
+   * total would have quietly changed every number a customer had already
+   * learned to read — including Yield's denominator, which is submissions and
+   * nothing else.
+   */
+  const [page, endpoints, partialCount, partials] = await Promise.all([
     listSubmissions(workspace.id, filters),
     listEndpointsWithStats(workspace.id),
+    countPartialsMatching(workspace.id, filters),
+    filters.lane === "partials" ? listPartials(workspace.id, filters) : null,
   ]);
+  const onPartials = filters.lane === "partials" && partials !== null;
 
   const filtered = hasActiveFilters(filters);
   // The export carries the same filters, minus the page — a file that stopped
@@ -56,40 +74,77 @@ export default async function SubmissionsPage({
     return `/app/${workspace.slug}/submissions/export?${params.toString()}`;
   };
 
-  const lastPage = Math.max(1, Math.ceil(page.total / page.pageSize));
-  const firstOnPage = page.total === 0 ? 0 : (page.page - 1) * page.pageSize + 1;
-  const lastOnPage = Math.min(page.page * page.pageSize, page.total);
+  const shown = onPartials ? partials : page;
+  const lastPage = Math.max(1, Math.ceil(shown.total / shown.pageSize));
+  const firstOnPage = shown.total === 0 ? 0 : (shown.page - 1) * shown.pageSize + 1;
+  const lastOnPage = Math.min(shown.page * shown.pageSize, shown.total);
 
   return (
     <Container className="pt-10">
-      <p className="font-mono text-label uppercase text-muted-foreground">Submissions</p>
-      <h1 className="mt-4 text-h2">
-        {page.total === 0
-          ? filtered
-            ? "Nothing matches those filters"
-            : "Nothing has arrived yet"
-          : `${page.awaiting.toLocaleString("en-GB")} ${page.awaiting === 1 ? "submission awaits" : "submissions awaiting"} verdict`}
-      </h1>
+      <p className="font-mono text-label uppercase text-muted-foreground">
+        {onPartials ? "Unfinished" : "Submissions"}
+      </p>
+      {onPartials ? (
+        <>
+          <h1 className="mt-4 text-h2">
+            {partials.total === 0
+              ? filtered
+                ? "Nothing matches those filters"
+                : "Nobody has left a form half-finished"
+              : `${partials.total.toLocaleString("en-GB")} ${partials.total === 1 ? "person" : "people"} filled something in and stopped`}
+          </h1>
+          <p className="mt-3 max-w-[60ch] text-base text-muted-foreground">
+            They completed at least one step of a multi-step form and never
+            submitted it. <span className="text-foreground">None of them is
+            counted as a submission</span>, here or in Yield — the numbers on the
+            Submissions lane are unchanged by anything on this one.
+          </p>
+        </>
+      ) : (
+        <>
+          <h1 className="mt-4 text-h2">
+            {page.total === 0
+              ? filtered
+                ? "Nothing matches those filters"
+                : "Nothing has arrived yet"
+              : `${page.awaiting.toLocaleString("en-GB")} ${page.awaiting === 1 ? "submission awaits" : "submissions awaiting"} verdict`}
+          </h1>
 
-      {page.total > 0 ? (
-        <p className="mt-3 max-w-[60ch] text-base text-muted-foreground">
-          Out of {page.total.toLocaleString("en-GB")}{" "}
-          {filtered ? "matching this filter" : "in this workspace"}. A submission
-          awaits a verdict until something downstream says what it was worth — that
-          is the number the split tests will eventually rank on.
-        </p>
+          {page.total > 0 ? (
+            <p className="mt-3 max-w-[60ch] text-base text-muted-foreground">
+              Out of {page.total.toLocaleString("en-GB")}{" "}
+              {filtered ? "matching this filter" : "in this workspace"}. A submission
+              awaits a verdict until something downstream says what it was worth — that
+              is the number the split tests will eventually rank on.
+            </p>
+          ) : null}
+        </>
+      )}
+
+      {/* The two counts, side by side and never summed. Hidden entirely when a
+          workspace has never captured a partial, so a customer with no
+          multi-step forms sees the screen they always saw. */}
+      {partialCount > 0 || onPartials ? (
+        <InboxLanes
+          slug={workspace.slug}
+          filters={filters}
+          submissionCount={page.total}
+          partialCount={partialCount}
+        />
       ) : null}
 
       {/* Hidden only when the workspace has genuinely never received anything —
           two buttons that produce a header row and nothing else read as
           unconsidered. A filter that matches nothing still gets them: an empty
           result for a specific question is a real answer worth exporting. */}
-      {page.total > 0 || filtered ? (
+      {shown.total > 0 || filtered ? (
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <ExportLink href={exportHref("csv")} format="CSV" />
           <ExportLink href={exportHref("json")} format="JSON" />
           <p className="text-sm text-muted-foreground">
-            Everything shown here, on every plan. Exports are never paywalled.
+            {onPartials
+              ? "The unfinished ones too, on every plan. Exports are never paywalled."
+              : "Everything shown here, on every plan. Exports are never paywalled."}
           </p>
         </div>
       ) : null}
@@ -107,18 +162,28 @@ export default async function SubmissionsPage({
       <Panel className="mt-6">
         <PanelHeader
           title={
-            page.total === 0
-              ? "Inbox"
-              : `Showing ${firstOnPage.toLocaleString("en-GB")}–${lastOnPage.toLocaleString("en-GB")} of ${page.total.toLocaleString("en-GB")}`
+            shown.total === 0
+              ? onPartials
+                ? "Unfinished"
+                : "Inbox"
+              : `Showing ${firstOnPage.toLocaleString("en-GB")}–${lastOnPage.toLocaleString("en-GB")} of ${shown.total.toLocaleString("en-GB")}`
           }
           description={
-            page.total > 0
-              ? "Newest first. Every row carries the stamp it arrived with; nothing here is re-scored after the fact."
-              : undefined
+            shown.total === 0
+              ? undefined
+              : onPartials
+                ? "Most recent activity first. Each row is one visit, not one screen — the answers update in place as somebody goes forward."
+                : "Newest first. Every row carries the stamp it arrived with; nothing here is re-scored after the fact."
           }
         />
 
-        {page.rows.length === 0 ? (
+        {onPartials ? (
+          partials.rows.length === 0 ? (
+            <EmptyPartials slug={workspace.slug} filtered={filtered} />
+          ) : (
+            <PartialsTable slug={workspace.slug} rows={partials.rows} />
+          )
+        ) : page.rows.length === 0 ? (
           <Empty slug={workspace.slug} filtered={filtered} hasEndpoints={endpoints.length > 0} />
         ) : (
           <DataTable
@@ -181,6 +246,38 @@ export default async function SubmissionsPage({
         />
       ) : null}
     </Container>
+  );
+}
+
+/**
+ * The partials lane's empty state.
+ *
+ * Deliberately not phrased as good news. Zero unfinished visits on a workspace
+ * with multi-step forms is worth reading twice — it is much more often a form
+ * nobody has reached than a form nobody abandons.
+ */
+function EmptyPartials({ slug, filtered }: { slug: string; filtered: boolean }) {
+  if (filtered) {
+    return (
+      <EmptyState title="No unfinished visits match those filters.">
+        Nothing is missing — this combination just excludes all of them.{" "}
+        <Link
+          href={`/app/${slug}/submissions?lane=partials`}
+          className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
+          Clear the filters
+        </Link>
+        .
+      </EmptyState>
+    );
+  }
+
+  return (
+    <EmptyState title="Nothing half-finished, yet.">
+      A visit lands here the moment somebody completes a step of a multi-step
+      form and does not submit it. Only forms with steps can produce one — a
+      single-screen form stores nothing until it is sent.
+    </EmptyState>
   );
 }
 

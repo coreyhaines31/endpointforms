@@ -17,6 +17,8 @@ import {
 import { FormRules } from "./form-rules";
 import { endpointHoneypotFields, honeypotInputProps } from "@/lib/spam/honeypot";
 import { DEFAULT_FONT_STACK, type FormTheme } from "@/lib/render/theme";
+import type { StepContext } from "@/lib/steps/serve";
+import { PartialNotice, StepCarry, StepHeader, StepNav } from "./steps-view";
 
 /**
  * The hosted form (#28).
@@ -95,6 +97,27 @@ export type FormViewProps = {
    * something the person submitting cannot see.
    */
   controlFields?: Record<string, string>;
+  /**
+   * One screen of a stepped form (#37), or null/absent for the one-screen form
+   * every endpoint has by default.
+   *
+   * When it is absent this file renders exactly what it rendered before #37 —
+   * every field, one `<form>`, one Submit button. `resolveStepContext` returns
+   * null for a document with no steps *and* for every failure it can meet, so
+   * there is no state in which a visitor is shown a wizard we cannot drive.
+   */
+  step?: StepContext | null;
+  /**
+   * Where a screen that is not the last one posts. Required whenever `step` is
+   * given; ignored otherwise.
+   *
+   * **Every** screen posts here, including the last. The step route forwards
+   * the final screen's identical bytes to `handleSubmission`, so routing the
+   * last one through `action` instead would gain nothing and lose the thing
+   * that matters: a validation failure there would 303 to `/f/{id}` with no
+   * partial key, dropping somebody onto screen one holding nothing.
+   */
+  stepAction?: string;
 };
 
 /**
@@ -196,6 +219,8 @@ export function FormView({
   values,
   truncated,
   controlFields,
+  step,
+  stepAction,
 }: FormViewProps) {
   const style = {
     ...THEME_DEFAULTS,
@@ -236,7 +261,18 @@ export function FormView({
   // worse than no trap.
   const decoys = endpointHoneypotFields(document.fields.map((field) => field.key));
 
-  const listed = rendered.filter((entry) => entry.error && entry.field.type !== "hidden");
+  /**
+   * The fields on this screen, or all of them.
+   *
+   * A `hidden` field is never on a screen and is carried instead — see
+   * `carryKeys` in `src/lib/steps/plan.ts` — so filtering by the screen's field
+   * list is enough here and the hidden branch below simply never fires on a
+   * stepped form.
+   */
+  const onScreen = step ? new Set(step.plan.current.fieldKeys) : null;
+  const shown = onScreen ? rendered.filter((entry) => onScreen.has(entry.field.key)) : rendered;
+
+  const listed = shown.filter((entry) => entry.error && entry.field.type !== "hidden");
 
   return (
     // The themed ground is full-bleed and the content column is a child of it.
@@ -270,7 +306,16 @@ export function FormView({
         </p>
       ) : null}
 
-      <form method="post" action={action} className="mt-8" {...{ [FORM_ATTRIBUTE]: "" }}>
+      {/* Which screen this is, and how many there are. Above the form so it is
+          read before the questions rather than after them. */}
+      {step ? <StepHeader plan={step.plan} /> : null}
+
+      <form
+        method="post"
+        action={step ? (stepAction ?? action) : action}
+        className="mt-8"
+        {...{ [FORM_ATTRIBUTE]: "" }}
+      >
         {/* `_redirect` is the ingest path's own field for naming where a browser
             lands afterwards (`src/lib/ingest/respond.ts`). Setting it rather
             than relying on the fallback is what keeps a customer's hosted form
@@ -299,8 +344,14 @@ export function FormView({
           <input key={name} {...honeypotInputProps(name)} />
         ))}
 
+        {/* Every answer that is not on this screen, re-posted (#37). This is
+            what makes the last screen's POST an ordinary complete submission,
+            so `handleSubmission` merges nothing and knows nothing about steps.
+            It also heals a partial whose earlier write was lost. */}
+        {step ? <StepCarry keys={step.plan.carryKeys} values={values} /> : null}
+
         <div className="grid gap-[var(--form-gap)]">
-          {rendered.map((entry) =>
+          {shown.map((entry) =>
             entry.field.type === "hidden" ? (
               <HiddenField key={entry.id} field={entry.field} values={values} />
             ) : (
@@ -317,17 +368,29 @@ export function FormView({
           )}
         </div>
 
-        <button
-          type="submit"
-          className="mt-9 inline-flex h-12 w-full items-center justify-center rounded-[var(--form-radius)] bg-[var(--form-button-bg)] px-5 text-base font-medium text-[var(--form-button-ink)] shadow-[inset_0_0_0_1px_var(--form-button-edge)] transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:w-auto sm:min-w-[var(--form-button-min)]"
-        >
-          Submit
-        </button>
+        {/* Back and Continue, or Back and Submit on the last screen. `StepNav`
+            draws the primary button too, so the plain Submit below is the
+            one-screen form's and only the one-screen form's. */}
+        {step ? (
+          <StepNav plan={step.plan} partialKey={step.partialKey} />
+        ) : (
+          <button
+            type="submit"
+            className="mt-9 inline-flex h-12 w-full items-center justify-center rounded-[var(--form-radius)] bg-[var(--form-button-bg)] px-5 text-base font-medium text-[var(--form-button-ink)] shadow-[inset_0_0_0_1px_var(--form-button-edge)] transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:w-auto sm:min-w-[var(--form-button-min)]"
+          >
+            Submit
+          </button>
+        )}
 
         {/* Renders nothing. Present only when there is logic to run, so a form
             without rules ships not one byte of it. */}
         {(document.rules?.length ?? 0) > 0 ? <FormRules schema={document} /> : null}
       </form>
+
+      {/* What the visitor is told about their answers being kept (#37). Under
+          the buttons that cause it, on every screen, and there is no path
+          through `partialNotice` that returns null for a form that captures. */}
+      {step?.plan.notice ? <PartialNotice text={step.plan.notice} /> : null}
       </div>
     </main>
   );

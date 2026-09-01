@@ -45,9 +45,16 @@ export function SubmissionFilterBar({
   // The end date is held exclusive — the day after the one typed — so the input
   // has to show the day back. See `parseSubmissionFilters`.
   const toValue = filters.to ? shiftDay(filters.to, -1) : "";
+  // A partial has no verdict, so the Verdict group is not shown on that lane
+  // (#37). A control that is on screen and does nothing is worse than one that
+  // is absent: it invites somebody to conclude the filter is broken.
+  const onPartials = filters.lane === "partials";
 
   return (
     <form method="get" className="px-5 py-5">
+      {/* Keeps Apply on the lane you are looking at. Without it, filtering the
+          unfinished list would silently return you to the submissions list. */}
+      {onPartials ? <input type="hidden" name="lane" value="partials" /> : null}
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <label className="flex flex-col text-sm font-medium text-foreground">
           Search values
@@ -113,12 +120,14 @@ export function SubmissionFilterBar({
           options={ORIGINS}
           selected={filters.origin as readonly string[]}
         />
-        <CheckGroup
-          legend="Verdict"
-          name="verdict"
-          options={VERDICTS}
-          selected={filters.verdict as readonly string[]}
-        />
+        {onPartials ? null : (
+          <CheckGroup
+            legend="Verdict"
+            name="verdict"
+            options={VERDICTS}
+            selected={filters.verdict as readonly string[]}
+          />
+        )}
       </div>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
@@ -131,7 +140,7 @@ export function SubmissionFilterBar({
 
         {active ? (
           <Link
-            href={`/app/${slug}/submissions`}
+            href={`/app/${slug}/submissions${onPartials ? "?lane=partials" : ""}`}
             className="inline-flex h-10 items-center rounded-md border border-border-control px-4 text-sm font-medium text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             Clear

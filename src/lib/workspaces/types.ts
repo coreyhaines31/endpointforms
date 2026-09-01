@@ -90,7 +90,20 @@ export type EndpointDetail = EndpointListItem;
 
 export type SubmissionVerdict = "won" | "lost" | "disqualified" | "awaiting";
 
+/**
+ * Which lane of the inbox is being looked at (#37).
+ *
+ * Two lanes, never one merged list. `submissions` is what arrived; `partials`
+ * is people who filled something in and never finished. They live in different
+ * tables and their counts are never added together, so that adding partial
+ * capture to a workspace cannot change a single number that was already on the
+ * screen. See `src/lib/workspaces/partials.ts`.
+ */
+export type InboxLane = "submissions" | "partials";
+
 export type SubmissionFilters = {
+  /** Defaults to `submissions`, so every existing link keeps its meaning. */
+  lane: InboxLane;
   endpointPublicId: string | null;
   origin: OriginState[];
   verdict: SubmissionVerdict[];

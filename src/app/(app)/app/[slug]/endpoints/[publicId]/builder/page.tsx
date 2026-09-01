@@ -128,6 +128,7 @@ export default async function BuilderPage({
           draft={draftVersion}
           versions={summaries}
           formUrl={`https://${RENDER_DOMAIN}/f/${encoded}`}
+          renderDomain={RENDER_DOMAIN}
           // The strings the hosted page itself passes to `FormView`, verbatim.
           // A preview that draws a different action is drawing a different form.
           formAction={`/f/${encoded}/submit`}

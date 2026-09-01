@@ -18,6 +18,7 @@ import { recordExposure } from "@/lib/hindsight/store";
 import { VISITOR_COOKIE } from "@/lib/hindsight/visitor";
 import { cookieName, decodeFlash, ERROR_FLAG } from "@/lib/render/flash";
 import { loadForm } from "@/lib/render/form";
+import { resolveStepContext } from "@/lib/steps/serve";
 import { EmbedFrame } from "./embed-frame";
 
 /**
@@ -146,6 +147,23 @@ export default async function FormPage({ params, searchParams }: PageProps) {
    * which is what somebody reloading a prefilled link expects.
    */
   const prefill = flash === null ? prefillFromQuery(document, query) : NO_PREFILL;
+  const values = flash?.values ?? prefill.values;
+
+  /**
+   * Which screen of a multi-step form this is (#37).
+   *
+   * **Null for every form with no steps, and null for every failure** — a
+   * partial key that expired, one naming a visit that already finished, one
+   * somebody typed, a database we could not reach. All of them land on the same
+   * branch, and that branch is the form this page has always rendered: every
+   * field, one screen, one Submit button. Our bookkeeping failing must never be
+   * the reason somebody cannot send a form.
+   *
+   * Answers come back from the partial rather than from the request, because a
+   * 303 turns the step POST into a GET and the body is gone by the time this
+   * runs. `src/lib/steps/plan.ts` explains why that trade was worth making.
+   */
+  const step = await resolveStepContext(formId, document, query, values);
 
   // Carried onto the `action` rather than left on this page's URL: the POST
   // goes to a different path, and `extractAttribution` reads the endpoint URL's
@@ -165,10 +183,21 @@ export default async function FormPage({ params, searchParams }: PageProps) {
         // and stops resizing at the moment the form finally worked.
         redirectTo={withQuery(`/f/${encoded}/thanks`, carried)}
         theme={embed.mode === null ? form.theme : embeddedTheme(form.theme, embed.mode)}
-        errors={flash?.errors ?? []}
-        values={flash?.values ?? prefill.values}
+        // On a stepped form the errors are re-derived from the stored answers
+        // by the same validator, so nothing has to survive the redirect — no
+        // cookie to be blocked inside somebody's iframe, nothing to truncate.
+        errors={
+          step
+            ? step.errors.map((issue) => ({ field: issue.field, code: issue.code }))
+            : (flash?.errors ?? [])
+        }
+        values={step?.values ?? values}
         truncated={flash?.truncated ?? false}
         controlFields={embed.pageUrl === null ? undefined : { _page_url: embed.pageUrl }}
+        step={step}
+        // Every screen posts here, the last one included: the step route
+        // forwards the final screen's identical bytes to `handleSubmission`.
+        stepAction={withQuery(`/f/${encoded}/step`, carried)}
       />
       <EmbedFrame context={embed} />
     </>

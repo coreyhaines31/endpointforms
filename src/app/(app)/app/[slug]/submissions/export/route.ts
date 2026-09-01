@@ -7,6 +7,11 @@ import {
   listSubmissionsForExport,
   parseSubmissionFilters,
 } from "@/lib/workspaces/submissions";
+import {
+  listPartialsForExport,
+  PARTIALS_EXPORT_LIMIT,
+  type PartialListItem,
+} from "@/lib/workspaces/partials";
 import type { SubmissionExportRow } from "@/lib/workspaces/types";
 
 /**
@@ -44,13 +49,45 @@ export async function GET(
   const filters = parseSubmissionFilters(Object.fromEntries(url.searchParams));
   const format = url.searchParams.get("format") === "json" ? "json" : "csv";
 
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  // The partials lane exports too (#37). "Export is never behind anything" is a
+  // promise about the screen somebody is looking at, and a lane you can read
+  // and cannot take away with you is the dashboard-shaped thing this product
+  // spends its positioning arguing against. It is a separate file with separate
+  // columns rather than extra rows in the submissions export, for the same
+  // reason the two are separate tables: a spreadsheet of "submissions" that
+  // silently contained people who never submitted would be worse than no
+  // export at all.
+  if (filters.lane === "partials") {
+    const partials = await listPartialsForExport(access.workspace.id, filters);
+    return download(
+      format === "json" ? toPartialsJson(partials) : toPartialsCsv(partials),
+      format,
+      `${access.workspace.slug}-partials-${stamp}.${format}`,
+      partials.length,
+      PARTIALS_EXPORT_LIMIT,
+    );
+  }
+
   const rows = await listSubmissionsForExport(access.workspace.id, filters);
 
-  const stamp = new Date().toISOString().slice(0, 10);
-  const filename = `${access.workspace.slug}-submissions-${stamp}.${format}`;
+  return download(
+    format === "json" ? toJson(rows) : toCsv(rows),
+    format,
+    `${access.workspace.slug}-submissions-${stamp}.${format}`,
+    rows.length,
+    EXPORT_LIMIT,
+  );
+}
 
-  const body = format === "json" ? toJson(rows) : toCsv(rows);
-
+function download(
+  body: string,
+  format: "csv" | "json",
+  filename: string,
+  count: number,
+  limit: number,
+): Response {
   return new Response(body, {
     status: 200,
     headers: {
@@ -63,10 +100,90 @@ export async function GET(
       "cache-control": "no-store",
       // Says out loud when the export was capped, rather than letting someone
       // discover it by counting rows in a spreadsheet.
-      "x-export-row-count": String(rows.length),
-      ...(rows.length >= EXPORT_LIMIT ? { "x-export-truncated": "true" } : {}),
+      "x-export-row-count": String(count),
+      ...(count >= limit ? { "x-export-truncated": "true" } : {}),
     },
   });
+}
+
+/**
+ * The partials export.
+ *
+ * Deliberately shaped so that nobody reading the file can mistake it for a list
+ * of submissions: the id column is `partial_id`, there is a `step_reached`
+ * column, and there is no verdict of any kind, because a partial has none.
+ */
+function toPartialsJson(rows: PartialListItem[]): string {
+  return `${JSON.stringify(
+    {
+      exportedAt: new Date().toISOString(),
+      count: rows.length,
+      truncated: rows.length >= PARTIALS_EXPORT_LIMIT,
+      note: "These visits were never submitted. They are not counted as submissions and are not part of Yield.",
+      partials: rows.map((row) => ({
+        id: row.publicId,
+        endpoint: { id: row.endpointPublicId, name: row.endpointName },
+        startedAt: row.startedAt.toISOString(),
+        lastSeenAt: row.updatedAt.toISOString(),
+        stepReached: { id: row.stepId, number: row.stepNumber, of: row.stepsTotal },
+        origin: row.origin,
+        values: row.values,
+        attribution: {
+          utmSource: row.utmSource,
+          utmMedium: row.utmMedium,
+          utmCampaign: row.utmCampaign,
+          referrer: row.referrer,
+        },
+      })),
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+const PARTIAL_COLUMNS = [
+  "partial_id",
+  "started_at",
+  "last_seen_at",
+  "endpoint",
+  "endpoint_id",
+  "step_reached",
+  "step_number",
+  "steps_total",
+  "origin",
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "referrer",
+] as const;
+
+function toPartialsCsv(rows: PartialListItem[]): string {
+  const valueKeys = collectValueKeys(rows);
+  const header = [...PARTIAL_COLUMNS, ...valueKeys.map((key) => `field.${key}`)];
+  const lines = [header.map(csvCell).join(",")];
+
+  for (const row of rows) {
+    lines.push(
+      [
+        row.publicId,
+        row.startedAt.toISOString(),
+        row.updatedAt.toISOString(),
+        row.endpointName,
+        row.endpointPublicId,
+        row.stepId ?? "",
+        row.stepNumber === null ? "" : String(row.stepNumber),
+        row.stepsTotal === null ? "" : String(row.stepsTotal),
+        row.origin,
+        row.utmSource ?? "",
+        row.utmMedium ?? "",
+        row.utmCampaign ?? "",
+        row.referrer ?? "",
+        ...valueKeys.map((key) => formatValue(row.values[key])),
+      ].map(csvCell).join(","),
+    );
+  }
+
+  return `\ufeff${lines.join("\r\n")}\r\n`;
 }
 
 /**

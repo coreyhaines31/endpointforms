@@ -568,6 +568,138 @@ export const submissions = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Partial captures (#37)
+// ---------------------------------------------------------------------------
+
+/**
+ * Somebody who filled in three screens of five and left.
+ *
+ * ## Why this is not a row in `submissions`
+ *
+ * It would have been fewer lines. It would also have meant that every count in
+ * the product — the inbox headline, `endpoints.submissionCount`, every
+ * denominator `src/lib/yield/compute.ts` reads — silently changed the day this
+ * shipped, unless every query that has ever been written and every query anyone
+ * writes later remembers to filter partials out. Yield is *wins over everything
+ * that arrived*; quietly enlarging "everything that arrived" would move every
+ * customer's number without anybody choosing to.
+ *
+ * A separate table makes that impossible rather than merely unlikely. No
+ * existing query can see these rows, so none of them changed, and none of them
+ * had to be audited to prove it.
+ *
+ * It is also the honest model. **Nobody pressed submit.** A partial is
+ * something we saw, not something we were sent, and the two do not belong in
+ * one bucket.
+ *
+ * ## What the four stamps on a submission mean here
+ *
+ * - **`origin`** — stamped, identically. Only the hosted form has steps, so a
+ *   partial is always a `form` surface, but the human/unverified split still
+ *   applies and is still worth seeing.
+ * - **`variant_id`** — stamped. A partial belongs to the arm that served it.
+ * - **`verdict`** — deliberately absent. A verdict is a downstream outcome on a
+ *   lead that arrived; a partial did not arrive. Recording one would put a win
+ *   in a numerator whose denominator does not contain it, which is exactly the
+ *   invented arithmetic `compute.ts` refuses to do.
+ * - **`spam_state`** — deliberately absent. Scoring runs on complete
+ *   submissions, and `observeVelocity` in particular would be poisoned by it:
+ *   one visitor stepping through four screens looks, to a velocity signal, like
+ *   four submissions from one IP inside a minute. Partials are unscored, and
+ *   the step route never calls the assessor.
+ */
+export const submissionPartials = pgTable(
+  "submission_partials",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    /** What the inbox links to. Never the `partial_key`, which the visitor holds. */
+    publicId: text("public_id").notNull(),
+    /**
+     * The opaque token the visitor's form carries between screens.
+     *
+     * Server-generated and unguessable, because it is the only thing that says
+     * two step posts are the same visit. Unique per endpoint, which is what
+     * makes the write an upsert and therefore what stops one visitor producing
+     * one row per screen.
+     */
+    partialKey: text("partial_key").notNull(),
+
+    /** The definition this was captured under, so it stays readable later. */
+    schemaVersionId: uuid("schema_version_id").references(() => formSchemas.id, {
+      onDelete: "restrict",
+    }),
+    variantId: uuid("variant_id"),
+
+    /** The last step the visitor completed, by id rather than by position. */
+    stepId: text("step_id"),
+    /** Its 1-based place among the screens they were being shown, and how many. */
+    stepNumber: integer("step_number"),
+    stepsTotal: integer("steps_total"),
+
+    /** Everything answered so far. The same shape as `submissions.values`. */
+    values: jsonb("values").notNull().default({}),
+
+    origin: submissionOrigin("origin").notNull().default("unverified"),
+    originReasons: jsonb("origin_reasons").notNull().default([]),
+
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    utmTerm: text("utm_term"),
+    utmContent: text("utm_content"),
+    clickIds: jsonb("click_ids").notNull().default({}),
+    referrer: text("referrer"),
+    userAgent: text("user_agent"),
+    ipHash: text("ip_hash"),
+
+    /**
+     * When this visit turned into a submission, and which one.
+     *
+     * Set once, from the ingest path, after the submission row is committed.
+     * A resolved partial is kept rather than deleted — "they hesitated on the
+     * pricing screen for six minutes and then finished" is the thing this table
+     * exists to be able to say — but it is never counted or listed as an open
+     * partial again, which is what stops one visitor appearing twice.
+     */
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    submissionId: uuid("submission_id"),
+
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.endpointId],
+      foreignColumns: [endpoints.workspaceId, endpoints.id],
+      name: "submission_partials_endpoint_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("submission_partials_public_id_key").on(t.publicId),
+    unique("submission_partials_workspace_id_id_key").on(t.workspaceId, t.id),
+    // The upsert target. Not partial: `partial_key` is never null here, because
+    // a row without one could not be written to a second time.
+    uniqueIndex("submission_partials_endpoint_key").on(t.endpointId, t.partialKey),
+    index("submission_partials_workspace_updated_at_idx").on(
+      t.workspaceId,
+      t.updatedAt.desc(),
+    ),
+    index("submission_partials_endpoint_updated_at_idx").on(
+      t.endpointId,
+      t.updatedAt.desc(),
+    ),
+    // The list the inbox actually shows, and the count in its header: the ones
+    // that never finished.
+    index("submission_partials_open_idx")
+      .on(t.endpointId, t.updatedAt.desc())
+      .where(sql`${t.completedAt} is null and ${t.deletedAt} is null`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Destinations and delivery
 // ---------------------------------------------------------------------------
 
@@ -907,6 +1039,7 @@ export const workspaceScopedTables = [
   splitTests,
   splitTestVariants,
   splitTestExposures,
+  submissionPartials,
 ] as const;
 
 export const workspaceScopedTableNames = [
@@ -922,6 +1055,7 @@ export const workspaceScopedTableNames = [
   "split_tests",
   "split_test_variants",
   "split_test_exposures",
+  "submission_partials",
 ] as const;
 
 export type Workspace = typeof workspaces.$inferSelect;
@@ -934,6 +1068,7 @@ export type FormSchema = typeof formSchemas.$inferSelect;
 export type Submission = typeof submissions.$inferSelect;
 export type Destination = typeof destinations.$inferSelect;
 export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;
+export type SubmissionPartial = typeof submissionPartials.$inferSelect;
 export type SpamListEntry = typeof spamListEntries.$inferSelect;
 export type EndpointSpamPolicy = typeof endpointSpamPolicies.$inferSelect;
 export type SubmissionSpamState = (typeof submissionSpamState.enumValues)[number];
