@@ -108,6 +108,20 @@ Two independent guards now exist so this cannot recur silently:
   `DATABASE_URL` during the build step**, so it proves a stranger can clone and build the repo.
   Vercel's check only proves it builds with Vercel's env vars set.
 
+**A test that asserts an absence proves nothing until you have shown it can be non-empty.**
+An empty result set is equally consistent with "the guard works" and "the fixture wrote nothing",
+and those are not the same finding. The fix is cheap — about fifteen lines: break the thing the
+test depends on, confirm the assertion goes red, restore it in a `finally`. This is how the
+row-level-security tests are written, and it is why their passing means anything. The same shape
+applies to any assertion of the form "X does not appear": a leak test, a drift test, an
+SSRF guard, a check that a placeholder never reaches an agent tool.
+
+The general version: **when a check passes, ask what else would produce that same green.** Every
+verification failure in this project has been a check measuring the wrong thing rather than a
+missing check — `Compiled successfully` printed before the failing step, an SSRF test calling a
+guard with a spelling the URL parser never emits, `$?` reading a pipe's last command, a
+clean-clone test silently reusing an already-migrated database.
+
 One more trap, because it produced a check that reported clean while missing a file: a
 repo-wide `grep --include="*.ts" --include="*.tsx"` **does not match `.mts`**. This project runs
 its seed, its migrator and its entire test suite from `.mts` files, so a TypeScript include list
