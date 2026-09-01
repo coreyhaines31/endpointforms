@@ -38,6 +38,7 @@ import {
   readPageUrl,
   withQuery,
 } from "../src/lib/embed/params.ts";
+import { embeddedTheme } from "../src/lib/embed/layout.ts";
 import { prefillFromQuery } from "../src/lib/embed/prefill.ts";
 import {
   cspDirectives,
@@ -412,6 +413,113 @@ function prefillTests() {
 }
 
 // ---------------------------------------------------------------------------
+// The embedded layout
+// ---------------------------------------------------------------------------
+
+function layoutTests() {
+  console.log("\nembedded layout — the host's spacing, the form's colours");
+
+  const bare = { vars: {}, fontFamily: null, custom: false };
+
+  t(
+    "inline gives the host back its padding and its width",
+    embeddedTheme(bare, "inline").vars,
+    { "--form-page": "transparent", "--form-pad": "0px", "--form-pad-x": "0px", "--form-width": "none" },
+  );
+
+  t(
+    "a popup keeps padding, because the dialog is the container",
+    embeddedTheme(bare, "popup").vars,
+    { "--form-pad": "1.75rem", "--form-pad-x": "1.5rem", "--form-width": "none" },
+  );
+
+  // A popup that went transparent would show the dialog's colour through the
+  // form, which is unreadable the moment a visitor prefers dark.
+  ok("and never goes transparent", embeddedTheme(bare, "popup").vars["--form-page"] === undefined);
+
+  console.log("\n  what a theme wins, and what the host wins");
+
+  const themed = {
+    vars: { "--form-page": "#101014", "--form-pad": "3rem", "--form-accent": "#1d4ed8" },
+    fontFamily: null,
+    custom: true,
+  };
+  const inline = embeddedTheme(themed, "inline");
+
+  // Colour is the form owner's decision and survives. A form forcing its own
+  // dark palette needs the ground that palette was built against; dropping it
+  // leaves dark text on whatever the host page happens to be.
+  t("a named background beats the transparent default", inline.vars["--form-page"], "#101014");
+  t("and every other colour is untouched", inline.vars["--form-accent"], "#1d4ed8");
+  // Width and padding are the host's, however the form is themed.
+  t("but the host still decides the padding", inline.vars["--form-pad"], "0px");
+  t("and the width", inline.vars["--form-width"], "none");
+
+  console.log("\n  the key that is not a custom property");
+
+  // The trap this test exists for, from `theme.ts`'s own contract: `vars`
+  // carries `colorScheme`, which is NOT a `--` property. It has to be there —
+  // forcing light or dark needs the real `color-scheme` declaration, which is
+  // what draws the scrollbar, the date picker and the `<select>` menu, and what
+  // `light-dark()` resolves against. Filter this bag to keys starting with `--`
+  // and forced dark mode silently stops affecting native controls: nothing
+  // errors, nothing fails, it just quietly stops working for the people who
+  // chose it. That is precisely the failure this project keeps having — a green
+  // check measuring the wrong thing — so it is a test rather than a comment.
+  const forced = {
+    vars: { colorScheme: "dark", "--form-page": "#101014" },
+    fontFamily: null,
+    custom: true,
+  };
+  t(
+    "colorScheme survives embedding",
+    embeddedTheme(forced, "inline").vars.colorScheme,
+    "dark",
+  );
+  t("in a popup too", embeddedTheme(forced, "popup").vars.colorScheme, "dark");
+  ok(
+    "nothing in the result was dropped for not starting with --",
+    Object.keys(forced.vars).every((key) => key in embeddedTheme(forced, "inline").vars),
+    embeddedTheme(forced, "inline").vars,
+  );
+
+  // The source of the values, not just the output: a swap that turns a token
+  // back into a Tailwind literal is unreachable from a `style` attribute, and
+  // the theming agent's density and button controls stop working with no error.
+  const view = readFileSync(
+    new URL("../src/components/render/form-view.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const token of [
+    "--form-gap",
+    "--form-control-px",
+    "--form-control-py",
+    "--form-button-bg",
+    "--form-button-ink",
+    "--form-button-edge",
+    "--form-button-min",
+    "--form-pad",
+    "--form-pad-x",
+    "--form-width",
+  ]) {
+    ok(`${token} has a default and is read from the markup`, view.includes(`"${token}"`) && view.includes(`var(${token})`), token);
+  }
+
+  // The button's tokens are separate from the accent on purpose: the checkboxes
+  // are painted with `accent-[var(--form-accent)]`, so a button style driven off
+  // the shared token would hollow every checkbox out along with it.
+  ok(
+    "the submit button does not read the shared accent directly",
+    !/className="mt-9[^"]*var\(--form-accent[^"]*"/.test(view),
+    view.match(/className="mt-9[^"]*"/)?.[0],
+  );
+  ok(
+    "while the checkboxes still do",
+    /accent-\[var\(--form-accent\)\]/.test(view),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Snippets
 // ---------------------------------------------------------------------------
 
@@ -767,6 +875,7 @@ function excerpt(haystack: string, needle: string): string {
 contextTests();
 carryTests();
 prefillTests();
+layoutTests();
 snippetTests();
 scriptTests();
 await liveTests();
