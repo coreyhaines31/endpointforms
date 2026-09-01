@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
+import { after } from "next/server";
 
 import { FormView } from "@/components/render/form-view";
+import { readVisitorKey } from "@/lib/hindsight/assign";
+import { resolveVariant } from "@/lib/hindsight/serve";
+import { recordExposure } from "@/lib/hindsight/store";
+import { VISITOR_COOKIE } from "@/lib/hindsight/visitor";
 import { cookieName, decodeFlash, ERROR_FLAG } from "@/lib/render/flash";
 import { loadForm } from "@/lib/render/form";
 
@@ -72,13 +77,36 @@ export default async function FormPage({ params, searchParams }: PageProps) {
   // plain reload of this URL is always a clean form. See `flash.ts`.
   const query = await searchParams;
   const retrying = query[ERROR_FLAG] === "1";
-  const flash = retrying
-    ? decodeFlash((await cookies()).get(cookieName(formId))?.value)
-    : null;
+  const jar = await cookies();
+  const flash = retrying ? decodeFlash(jar.get(cookieName(formId))?.value) : null;
+
+  // Hindsight (#45). Null for most visitors most of the time — no running test,
+  // or no visitor cookie because the browser refused one, in which case they are
+  // deliberately not enrolled rather than fingerprinted into the test. Either
+  // way the endpoint's own form renders and nothing downstream changes.
+  const served = await resolveVariant(
+    formId,
+    readVisitorKey(jar.get(VISITOR_COOKIE)?.value),
+  );
+
+  if (served) {
+    // `after()` rather than an awaited write or a floating promise. A view
+    // count is a denominator, and the page a visitor is waiting on — traffic
+    // somebody paid for — must not wait on it. If the write fails, one exposure
+    // is missed and the panel reports a marginally lower completion rate; if it
+    // were awaited, a slow database would cost the lead itself.
+    after(async () => {
+      try {
+        await recordExposure(served.workspaceId, served.testId, served.variantId);
+      } catch (error) {
+        console.error(`[hindsight] exposure not recorded for ${served.variantId}`, error);
+      }
+    });
+  }
 
   return (
     <FormView
-      document={form.document}
+      document={served?.document ?? form.document}
       title={form.title}
       action={`/f/${encodeURIComponent(form.publicId)}/submit`}
       redirectTo={`/f/${encodeURIComponent(form.publicId)}/thanks`}

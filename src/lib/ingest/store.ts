@@ -109,6 +109,22 @@ export async function resolveEndpoint(publicId: string): Promise<ResolvedEndpoin
 }
 
 export type SubmissionRecord = {
+  /**
+   * Which Hindsight arm served the form (#45), or null when the submission is
+   * not in a test. Stamped once and never rewritten, exactly like
+   * `schemaVersionId` above it — a test has to stay readable months later
+   * against arms that may since have been superseded.
+   */
+  variantId: string | null;
+  /**
+   * The definition this submission arrived under.
+   *
+   * Normally the endpoint's active version, but a Hindsight arm serving its own
+   * form (#45) supplies that arm's version instead — the submission has to stay
+   * readable against the form the visitor was actually shown, not the one the
+   * endpoint happened to have live.
+   */
+  schemaVersionId: string | null;
   values: Record<string, JsonValue>;
   rawBody: string;
   rawContentType: string | null;
@@ -184,7 +200,11 @@ export async function storeSubmission(
         // is also what lets the issues on a submission be re-derived later
         // instead of frozen into a column that could disagree with the values
         // beside it.
-        schemaVersionId: endpoint.activeSchemaVersionId,
+        schemaVersionId: record.schemaVersionId,
+        // Stamped, never rewritten, for the same reason as the line above. This
+        // is the only place a submission is attributed to a split test arm, and
+        // nothing recomputes it afterwards.
+        variantId: record.variantId,
         values: record.values,
         rawBody: record.rawBody,
         rawContentType: record.rawContentType,

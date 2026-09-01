@@ -31,6 +31,7 @@ import {
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
+import type { FormSchemaDocument } from "../schema/format.ts";
 
 /**
  * The submission endpoint (#50, #29).
@@ -89,6 +90,29 @@ export type SubmissionOptions = {
   surface?: OriginSurface;
   /** What a manifest caller said it was. Recorded, not trusted. */
   agentDeclaration?: string | null;
+  /**
+   * Which Hindsight arm served this form (#45), or null for a submission that
+   * is not in a test — which is most of them.
+   *
+   * Passed by the caller rather than read from the request body for the same
+   * reason `surface` is: a value the submitter can type is a value the
+   * submitter can choose, and a split test whose arm assignment can be chosen
+   * by the person being tested is not one. `/f/{id}/submit` re-derives it from
+   * the visitor cookie with the same pure function that served the page; see
+   * `src/lib/hindsight/serve.ts`.
+   */
+  variantId?: string | null;
+  /**
+   * The form definition that arm actually served, when it has one of its own.
+   *
+   * A submission has to stay readable against the exact definition it arrived
+   * under — that is what `submissions.schema_version_id` is for — and for a
+   * visitor in a variant arm that definition is the **arm's**, not the
+   * endpoint's active schema. Without this the inbox renders a variant's
+   * submission against a form it was never shown, and `strict` mode rejects a
+   * submission for omitting fields the visitor was never given.
+   */
+  variantSchema?: { id: string; document: FormSchemaDocument | null } | null;
 };
 
 export async function handleSubmission(
@@ -113,6 +137,13 @@ export async function handleSubmission(
     if (!limit.allowed) throw rateLimitError(limit);
 
     const endpoint = await resolveEndpoint(endpointPublicId);
+
+    // What this visitor was actually shown. The Hindsight arm's definition when
+    // one served them (#45), the endpoint's active schema otherwise — and the
+    // difference matters everywhere a document is read below, because a form
+    // the visitor never saw is the wrong thing to judge their answers against.
+    const servedDocument =
+      options.variantSchema?.document ?? endpoint.activeSchema?.document ?? null;
 
     const bytes = await readBodyCapped(request);
     const parsed = await parseBody(request, bytes);
@@ -188,7 +219,7 @@ export async function handleSubmission(
       token:
         firstField(parsed.values, ORIGIN_TOKEN_FIELD_KEYS) ??
         request.headers.get(ORIGIN_TOKEN_HEADER),
-      realFieldNames: endpoint.activeSchema?.document?.fields.map((field) => field.key) ?? [],
+      realFieldNames: servedDocument?.fields.map((field) => field.key) ?? [],
       velocity: observeVelocity({
         endpointId: endpoint.id,
         values,
@@ -205,7 +236,7 @@ export async function handleSubmission(
     // decides what to *say*, not whether to keep the submission. A schema row
     // this build cannot parse yields a null document, which validates as
     // "nothing to say" rather than as a refusal.
-    const validation = validateSubmission(endpoint.activeSchema?.document ?? null, values);
+    const validation = validateSubmission(servedDocument, values);
 
     if (endpoint.activeSchema?.mode === "strict" && !validation.valid) {
       throw new IngestError("schema_validation_failed", strictMessage(validation.errors));
@@ -215,6 +246,10 @@ export async function handleSubmission(
       explicitKey ?? deriveIdempotencyKey(endpoint.id, ipHash, values, submittedAt.getTime());
 
     const stored = await storeSubmission(endpoint, {
+      variantId: options.variantId ?? null,
+      // The arm's version when it served its own form, so the submission stays
+      // readable against the definition it actually arrived under.
+      schemaVersionId: options.variantSchema?.id ?? endpoint.activeSchemaVersionId,
       values,
       rawBody: parsed.rawBody,
       rawContentType: parsed.rawContentType,

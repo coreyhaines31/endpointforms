@@ -3,6 +3,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   boolean,
   char,
+  date,
   foreignKey,
   index,
   integer,
@@ -124,6 +125,23 @@ export const deliveryStatus = pgEnum("delivery_status", [
   "pending",
   "succeeded",
   "failed",
+]);
+
+/**
+ * Hindsight (#45). Three states, and the transitions are one-way.
+ *
+ * `draft` is the only state in which a test's arms may be edited. Adding or
+ * reweighting a variant moves the bucket boundaries every visitor was hashed
+ * into, which silently reassigns some of them — their views counted under one
+ * arm and their submissions land under another. There is no hash that avoids
+ * that, so it is prevented instead: a running test's arms are frozen and
+ * changing them means a new test. `src/lib/hindsight/assign.ts` explains why at
+ * length.
+ */
+export const splitTestStatus = pgEnum("split_test_status", [
+  "draft",
+  "running",
+  "stopped",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -540,6 +558,12 @@ export const submissions = pgTable(
     index("submissions_endpoint_verdict_idx").on(t.endpointId, t.verdict),
     // Searching inside submitted values is plausible enough to pay for up front.
     index("submissions_values_gin_idx").using("gin", t.values),
+    // Hindsight's per-variant tallies group on this column (#45). Partial,
+    // because every submission written before any test existed has it NULL and
+    // there is no reason for all of them to share one index entry.
+    index("submissions_variant_id_idx")
+      .on(t.variantId)
+      .where(sql`${t.variantId} is not null`),
   ],
 );
 
@@ -709,6 +733,160 @@ export const endpointSpamPolicies = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Hindsight — split tests scored on outcomes (#45)
+// ---------------------------------------------------------------------------
+
+/**
+ * One split test on one endpoint.
+ *
+ * `started_at` is not decoration. The decision rule in
+ * `src/lib/hindsight/compare.ts` refuses to declare a winner on a test that has
+ * run for less than one median time-to-verdict, because a window shorter than
+ * that cannot have decided the median lead and everything that *has* resolved
+ * is the fast tail — the small deals and the quick disqualifications. That
+ * comparison needs a clock, and this is the clock.
+ *
+ * Soft-deleted rather than removed, like endpoints and destinations: the
+ * submissions stamped with this test's variants stay readable, and "I deleted
+ * the test and lost which variant produced the good leads" is a support
+ * disaster of exactly the kind `endpoints.deleted_at` exists to prevent.
+ */
+export const splitTests = pgTable(
+  "split_tests",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    /** What appears in the app URL. Never the primary key, same as everywhere else. */
+    publicId: text("public_id").notNull(),
+    name: text("name").notNull(),
+    status: splitTestStatus("status").notNull().default("draft"),
+    /** When traffic started splitting. Null while the test is a draft. */
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    /** Stops the split. The report keeps working; it just stops moving. */
+    stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.endpointId],
+      foreignColumns: [endpoints.workspaceId, endpoints.id],
+      name: "split_tests_endpoint_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("split_tests_public_id_key").on(t.publicId),
+    unique("split_tests_workspace_id_id_key").on(t.workspaceId, t.id),
+    index("split_tests_endpoint_id_idx").on(t.endpointId, t.createdAt.desc()),
+    // The serving path's only query: "is a test running on this endpoint?".
+    // Partial, because at most one row per endpoint is ever in this state and
+    // the index should be the size of that answer rather than of the table.
+    index("split_tests_running_idx")
+      .on(t.endpointId)
+      .where(sql`${t.status} = 'running' and ${t.deletedAt} is null`),
+  ],
+);
+
+/**
+ * One arm of a test. `id` is what lands in `submissions.variant_id`.
+ *
+ * A variant does **not** carry its own copy of a form. It points at an existing
+ * `form_schemas` row — immutable, versioned, already the thing a submission is
+ * read against — so running a test introduces no second definition of what a
+ * form is. Null means "whatever the endpoint's active schema is", which is the
+ * ordinary shape of a control: the arm that changes nothing.
+ *
+ * Append-only in practice. Nothing deletes a variant, because a deleted variant
+ * would orphan every submission stamped with it and there is no way to say
+ * afterwards which arm those leads belonged to.
+ */
+export const splitTestVariants = pgTable(
+  "split_test_variants",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    testId: uuid("test_id").notNull(),
+    /** The form this arm serves, or null for the endpoint's active schema. */
+    schemaVersionId: uuid("schema_version_id").references(() => formSchemas.id, {
+      onDelete: "restrict",
+    }),
+    name: text("name").notNull(),
+    /**
+     * The arm everything else is compared against. Exactly one per test.
+     *
+     * Without one, "B beat A" and "A beat B" are the same sentence read from
+     * opposite ends, and which variant a workspace keeps when the test never
+     * resolves stops being defined.
+     */
+    isControl: boolean("is_control").notNull().default(false),
+    /** Relative traffic share. Two arms at 1 and 3 split 25/75. */
+    weight: integer("weight").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.testId],
+      foreignColumns: [splitTests.workspaceId, splitTests.id],
+      name: "split_test_variants_test_fk",
+    }).onDelete("cascade"),
+    unique("split_test_variants_workspace_id_id_key").on(t.workspaceId, t.id),
+    uniqueIndex("split_test_variants_test_name_key").on(t.testId, t.name),
+    index("split_test_variants_test_id_idx").on(t.testId),
+    // At most one control per test, enforced by the database rather than by the
+    // code that happens to write it.
+    uniqueIndex("split_test_variants_one_control")
+      .on(t.testId)
+      .where(sql`${t.isControl}`),
+  ],
+);
+
+/**
+ * How many times each arm was actually rendered, by day.
+ *
+ * A rollup rather than a row per view: a form page is the hottest read in the
+ * product and one insert per render is a write amplification nobody asked for.
+ * By day rather than a single running counter so the row being contended on
+ * rotates, and so a future surface can draw the split over time without a
+ * schema change.
+ *
+ * The count is **server renders, not people** — a reload, a prefetch and a
+ * crawler each add one. `VariantExposure` in `src/lib/hindsight/types.ts` says
+ * why that is reported rather than corrected for, and why the absence of a row
+ * has to read as "we were not watching" instead of "shown nought times".
+ */
+export const splitTestExposures = pgTable(
+  "split_test_exposures",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    testId: uuid("test_id").notNull(),
+    variantId: uuid("variant_id").notNull(),
+    /** UTC date. The bucket, not a timestamp. */
+    day: date("day").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.variantId],
+      foreignColumns: [splitTestVariants.workspaceId, splitTestVariants.id],
+      name: "split_test_exposures_variant_fk",
+    }).onDelete("cascade"),
+    // The upsert target. One row per arm per day, by construction.
+    uniqueIndex("split_test_exposures_variant_day_key").on(t.variantId, t.day),
+    index("split_test_exposures_test_id_idx").on(t.testId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 
 /**
  * Tables that carry `workspace_id` and are therefore both scoped by
@@ -726,6 +904,9 @@ export const workspaceScopedTables = [
   deliveryAttempts,
   spamListEntries,
   endpointSpamPolicies,
+  splitTests,
+  splitTestVariants,
+  splitTestExposures,
 ] as const;
 
 export const workspaceScopedTableNames = [
@@ -738,6 +919,9 @@ export const workspaceScopedTableNames = [
   "delivery_attempts",
   "spam_list_entries",
   "endpoint_spam_policies",
+  "split_tests",
+  "split_test_variants",
+  "split_test_exposures",
 ] as const;
 
 export type Workspace = typeof workspaces.$inferSelect;
@@ -755,3 +939,7 @@ export type EndpointSpamPolicy = typeof endpointSpamPolicies.$inferSelect;
 export type SubmissionSpamState = (typeof submissionSpamState.enumValues)[number];
 export type SpamListKind = (typeof spamListKind.enumValues)[number];
 export type SpamListEffect = (typeof spamListEffect.enumValues)[number];
+export type SplitTest = typeof splitTests.$inferSelect;
+export type SplitTestVariant = typeof splitTestVariants.$inferSelect;
+export type SplitTestExposure = typeof splitTestExposures.$inferSelect;
+export type SplitTestStatus = (typeof splitTestStatus.enumValues)[number];

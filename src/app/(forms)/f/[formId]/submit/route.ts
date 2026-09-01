@@ -1,3 +1,6 @@
+import { readVisitorKey } from "@/lib/hindsight/assign";
+import { resolveVariant } from "@/lib/hindsight/serve";
+import { VISITOR_COOKIE } from "@/lib/hindsight/visitor";
 import { parseBody, readBodyCapped, type JsonValue } from "@/lib/ingest/body";
 import { IngestError, isIngestError } from "@/lib/ingest/errors";
 import { handleSubmission } from "@/lib/ingest/handler";
@@ -69,6 +72,25 @@ export async function POST(
     return refuse(request, error);
   }
 
+  // Hindsight (#45). Re-derived from the visitor's cookie rather than read out
+  // of the posted body, so the arm a submission is attributed to cannot be
+  // chosen by the person being tested. `assignVariant` is pure, so this returns
+  // the same arm the page rendered — see `src/lib/hindsight/serve.ts`.
+  //
+  // Resolved before anything can return, so the rejected-and-retried path below
+  // is attributed identically to the accepted one. Failing here must never cost
+  // the lead: an unattributed submission is a submission, and a 500 is not.
+  let served: Awaited<ReturnType<typeof resolveVariant>> = null;
+  try {
+    served = await resolveVariant(
+      formId,
+      readVisitorKey(cookieValue(request, VISITOR_COOKIE)),
+    );
+  } catch (error) {
+    console.error(`[hindsight] could not resolve a variant for ${JSON.stringify(formId)}`, error);
+  }
+  const variantId = served?.variantId ?? null;
+
   // Replayed as a `Buffer` rather than the raw `Uint8Array` only because that
   // is the shape `BodyInit` is typed for; the bytes are the ones that arrived.
   const forward = () =>
@@ -79,6 +101,15 @@ export async function POST(
         body: Buffer.from(bytes),
       }),
       formId,
+      {
+        variantId,
+        // Both, so the ingest path judges and stamps against the same form the
+        // visitor was shown rather than the endpoint's active schema.
+        variantSchema:
+          served?.schemaVersionId && served.document
+            ? { id: served.schemaVersionId, document: served.document }
+            : null,
+      },
     );
 
   let form: Awaited<ReturnType<typeof loadForm>>;
@@ -103,13 +134,26 @@ export async function POST(
     return forward();
   }
 
+  // The definition the visitor was actually shown, which is the variant's when
+  // a Hindsight test served one (#45) and the endpoint's active schema
+  // otherwise.
+  //
+  // **Not `form.document`.** Validating a submission against a form the visitor
+  // never saw is how an arm with fewer fields gets its leads rejected for
+  // omitting fields it did not render — every submission bounced back to a form
+  // showing errors on inputs that are not on the page, which is both unfixable
+  // by the visitor and invisible in testing until a variant actually differs.
+  // Caught end to end rather than by review: the shorter arm's submissions were
+  // silently 303ing back to the form and never reaching the database.
+  const document = served?.document ?? form.document;
+
   // Only `errors` gate anything. Warnings — an unknown field, a value posted
   // twice — describe drift for whoever owns the form and are never something to
   // stop a visitor with.
-  const { errors } = validateSubmission(form.document, values);
+  const { errors } = validateSubmission(document, values);
   if (errors.length === 0) return forward();
 
-  const keys = form.document.fields.map((field) => field.key);
+  const keys = document.fields.map((field) => field.key);
   const cookie = flashCookie(
     formId,
     encodeFlash(errors, retainable(values, keys), keys),
@@ -190,6 +234,25 @@ function refuse(request: Request, error: unknown): Response {
 
   const build = responseMode(request) === "redirect" ? errorHtml : errorJson;
   return build(request, ingest.status, ingest.code, ingest.message, ingest.headers);
+}
+
+/**
+ * One cookie out of the request header.
+ *
+ * Read from the raw header rather than through `next/headers`, because this is
+ * a Route Handler holding a `Request` and `cookies()` would be a second, less
+ * direct route to the same string.
+ */
+function cookieValue(request: Request, name: string): string | null {
+  const header = request.headers.get("cookie");
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    return decodeURIComponent(part.slice(separator + 1).trim());
+  }
+  return null;
 }
 
 /**

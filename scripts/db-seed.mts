@@ -32,6 +32,7 @@ import {
   users,
   workspaces,
 } from "../src/db/schema.ts";
+import { seedHindsightTests } from "./seed-hindsight.mts";
 import { seedWaitlistEndpoint } from "./seed-waitlist.mts";
 import { assessSpam } from "../src/lib/spam/assess.ts";
 import type { SpamAssessment } from "../src/lib/spam/types.ts";
@@ -496,6 +497,17 @@ async function main() {
   console.log(`  verdict ${JSON.stringify(byVerdict)}`);
   console.log(`  8 submissions predate the schema and have schema_version_id = null`);
   console.log(`  4 destinations: one delivering, one failing on an expired token, one email, one paused`);
+
+  // Hindsight (#45). A second endpoint with two split tests on it: one stopped
+  // and mature where the variant that collects more submissions closes fewer
+  // deals, and one nine days old that refuses to say anything at all. Both are
+  // needed — a demo where every test has concluded would hide the feature,
+  // because the refusal is the feature.
+  const hindsight = await seedHindsightTests(unsafeDb, { workspaceId, userId, now });
+  console.log(`  1 more endpoint (${hindsight.endpointPublicId}) with ${hindsight.tests.length} Hindsight tests:`);
+  for (const test of hindsight.tests) {
+    console.log(`    ${test.name} — /app/${WORKSPACE_SLUG}/endpoints/${hindsight.endpointPublicId}/tests/${test.publicId}`);
+  }
 
   // Our own waitlist form (#33). Additive and idempotent — unlike everything
   // above it, this endpoint holds real signups and is never torn down.

@@ -1,4 +1,4 @@
-import { eq, gte, lte, sql } from "drizzle-orm";
+import { eq, gte, lte, sql, type SQL } from "drizzle-orm";
 
 import { withWorkspace, type WorkspaceScope } from "../../db/scoped.ts";
 import { submissions } from "../../db/schema.ts";
@@ -82,6 +82,21 @@ export type TimeToOutcomeMeasurement = {
 
 export type MeasureOptions = {
   windowDays?: number;
+  /**
+   * Extra predicate, ANDed into every query here. Rows it excludes are not
+   * measured at all.
+   *
+   * Added for Hindsight (#45), which needs the disposition lag of the business
+   * *excluding the submissions belonging to the test it is about to judge*. A
+   * split test large enough to dominate its own workspace would otherwise set
+   * the median it is then measured against, and since nothing inside a test can
+   * take longer to decide than the test has been running, that median would be
+   * bounded by the test's own age — which is precisely the self-measurement the
+   * maturity gate exists to avoid. The test must not grade its own homework.
+   *
+   * Nothing else passes this, and the default is unchanged behaviour.
+   */
+  exclude?: SQL;
   /** Relative improvement the projection should be able to detect, as a percent. */
   detectableLiftPct?: number;
   /** Variants in a hypothetical test, including the control. */
@@ -127,7 +142,7 @@ export async function measureTimeToOutcomeIn(
       >`extract(epoch from (now() - min(${submissions.submittedAt})))`,
     })
     .from(submissions)
-    .where(ws.where(submissions, gte(submissions.submittedAt, since)));
+    .where(ws.where(submissions, gte(submissions.submittedAt, since), options.exclude));
 
   const total = row?.total ?? 0;
   const graded = row?.graded ?? 0;
@@ -146,6 +161,7 @@ export async function measureTimeToOutcomeIn(
           gte(submissions.submittedAt, since),
           eq(submissions.verdict, "awaiting"),
           lte(submissions.submittedAt, cutoff),
+          options.exclude,
         ),
       );
     awaitingOlderThanMedian = censored?.count ?? 0;

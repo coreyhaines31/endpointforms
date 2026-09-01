@@ -17,6 +17,7 @@ import { requireWorkspace } from "@/lib/workspaces/server";
 import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 import { listSubmissions, parseSubmissionFilters } from "@/lib/workspaces/submissions";
 import { summariseValues } from "@/lib/submission-values";
+import { listSplitTests } from "@/lib/hindsight/query";
 import { readYield } from "@/lib/yield/query";
 
 /**
@@ -49,6 +50,12 @@ export default async function EndpointDetailPage({
   // `src/lib/yield/query.ts` opens a database connection, and the eslint rule
   // in `eslint.config.mjs` exists to keep that out of `src/components`.
   const yieldReport = await readYield(workspace.id, { endpointPublicId: endpoint.publicId });
+
+  // Definitions only — no tallies. Reading a full Hindsight report per test
+  // here would put a handful of aggregate queries on a page that is already
+  // showing three other panels, for a summary line that names the tests and
+  // deliberately does not say which is winning.
+  const splitTests = await listSplitTests(workspace.id, endpoint.publicId);
 
   return (
     <Container className="max-w-[60rem] pt-10">
@@ -105,6 +112,44 @@ export default async function EndpointDetailPage({
       </Panel>
 
       <YieldPanel className="mt-6" report={yieldReport} />
+
+      {/* Hindsight (#45). Under Yield and not beside it: a split test compares
+          Yield rates, so the number above has to make sense before the
+          comparison does. The description says what the tests are for without
+          claiming any of them has an answer — which most of the time none of
+          them does, and that is the feature rather than an omission. */}
+      <Panel className="mt-6">
+        <PanelHeader
+          title="Hindsight"
+          description={
+            splitTests.length > 0
+              ? `${splitTests.length} split ${splitTests.length === 1 ? "test" : "tests"} on this endpoint, ranked on Yield rather than on completion rate. A test here will not name a winner until the outcomes have landed.`
+              : "Split tests that rank variants on what their submissions turned out to be worth, instead of on how many of them arrived. No tests on this endpoint yet."
+          }
+          action={
+            <Link
+              href={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/tests`}
+              className="shrink-0 rounded-md border border-border-control px-2.5 py-1.5 text-sm font-medium text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              {splitTests.length > 0 ? "Open Hindsight" : "About Hindsight"}
+            </Link>
+          }
+        />
+        {splitTests.length > 0 ? (
+          <PanelBody className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground">
+            {splitTests.map((test) => (
+              <Link
+                key={test.publicId}
+                href={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/tests/${test.publicId}`}
+                className="rounded-sm underline decoration-border-control underline-offset-4 hover:text-foreground hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              >
+                {test.name}
+                <span className="ml-2 font-mono text-label uppercase">{test.status}</span>
+              </Link>
+            ))}
+          </PanelBody>
+        ) : null}
+      </Panel>
 
       <Panel className="mt-6">
         <PanelHeader
