@@ -229,6 +229,7 @@ async function main() {
     await abandonedClaims(fixture, receiver);
     await concurrentClaimsTakeItOnce(fixture, receiver);
     await claimsWhoseDestinationGoesAway(fixture, receiver);
+    await supersededClaims(fixture, receiver);
   } finally {
     await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
   }
@@ -789,6 +790,9 @@ async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
   //
   // A pending row nobody will ever finish. Written by hand because the only
   // honest way to produce one is to kill the process that owned it.
+  //
+  // Note this is the *same* submission that just succeeded above, which is what
+  // makes the assertion below what it is.
   const abandonedId = newId();
   await unsafeDb.insert(deliveryAttempts).values({
     id: abandonedId,
@@ -823,20 +827,51 @@ async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
     /started and never finished/i.test(afterReap?.error ?? ""),
     afterReap?.error,
   );
-  ok("and a retry scheduled, so the lead still gets its chances", afterReap?.nextRetryAt !== null);
+  // No retry, and that is the point: this destination already delivered *this*
+  // submission successfully a few lines above. Rescheduling would put a second
+  // copy of the same lead in front of a receiver that may not dedupe.
+  //
+  // This assertion used to require the opposite, and it was wrong — it encoded a
+  // duplicate delivery as the expected behaviour. Found by an independent review
+  // of the #60 fix, then reproduced: the resend really happened, and the sweep
+  // sent a third request for a lead already delivered twice.
+  //
+  // The other half — an abandoned row on a submission that has NOT arrived does
+  // still get its retry — is asserted in `abandonedClaims`.
+  ok(
+    "and no retry, because this submission already reached this destination",
+    afterReap?.nextRetryAt === null,
+    { status: afterReap?.status, nextRetryAt: afterReap?.nextRetryAt },
+  );
+  ok(
+    "with a sentence saying nothing is missing",
+    /already been delivered/i.test(afterReap?.error ?? ""),
+    afterReap?.error,
+  );
 
   health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
   // It does NOT bump `consecutiveFailures`, and that is right rather than a
   // gap: this row is older than the last successful delivery, and the count is
   // deliberately "failures since the last success". Nor is it dead-lettered —
-  // a retry is scheduled, so the lead is in flight, not lost. What changed is
+  // the lead reached this destination, so nothing is missing. What changed is
   // that it is now visible in the log as a failure with a reason on it instead
   // of sitting `pending` forever, looking like nothing happened.
   t("it does not count against a destination that has succeeded since", health?.health.consecutiveFailures, 0);
-  t("and it is not dead-lettered, because a retry is scheduled", health?.health.deadLetterCount, 0);
+  t("and it is not dead-lettered, because the lead did arrive", health?.health.deadLetterCount, 0);
   t("but it is no longer pending", health?.health.pendingCount, 0);
 
   // --- The sweep, end to end through the HTTP handler.
+  //
+  // It needs real work to do. The reaped row above no longer supplies any — its
+  // submission had already been delivered, so scheduling a retry for it would
+  // have been a duplicate — so make a delivery that genuinely fails and is still
+  // owed its next attempt.
+  receiver.reply.status = 503;
+  const owedResponse = await submit(fixture.endpointPublicId, { email: "owed@test.example" });
+  await owedResponse.json();
+  await drainDispatch();
+  receiver.reply.status = 200;
+
   const previousSecret = process.env.CRON_SECRET;
   process.env.CRON_SECRET = "sweep-test-secret";
   const url = "https://endpointforms.test/api/v1/deliveries/sweep";
@@ -859,11 +894,11 @@ async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
     delivered: number;
   };
   ok("and reports what it did", summary.ok === true && summary.workspaces >= 1, summary);
-  ok("including delivering the retry the reaper scheduled", summary.delivered >= 1, summary);
+  ok("including delivering a retry that was genuinely owed", summary.delivered >= 1, summary);
 
   const finalLog = await listDeliveryAttempts(fixture.workspaceId, created.id);
   const delivered = finalLog.filter((row) => row.status === "succeeded");
-  ok("so the abandoned delivery did eventually arrive", delivered.length >= 2, finalLog.length);
+  ok("so the failed delivery did eventually arrive", delivered.length >= 2, finalLog.length);
 
   // Idempotent: the first sweep cleared `next_retry_at` on everything it took,
   // so a second one — a cron whose previous run overran — finds nothing.
@@ -1145,3 +1180,99 @@ main()
     await cleanup();
     await sqlClient.end();
   });
+
+
+/**
+ * A claim abandoned, and then overtaken by a delivery that succeeded.
+ *
+ * Found by an independent review of the #60 fix rather than by writing this
+ * test first — worth recording, because it is an interleaving the fix itself
+ * made reachable. Opening a `pending` row at claim time means an abandoned
+ * claim can now outlive a success on a different attempt:
+ *
+ *   attempt 1 fails and schedules a retry
+ *   a sweep claims it, opening pending attempt 2 — that worker dies
+ *   someone redelivers by hand and it SUCCEEDS as attempt 3
+ *   the reaper finds attempt 2 stale and schedules a retry anyway
+ *   a later sweep sends attempt 4 — a second copy of a lead already delivered
+ *
+ * The lead is not lost. It arrives twice, at a receiver that may not dedupe —
+ * which is precisely what the lease design was rejected for, so it must not
+ * come back in by the side door.
+ *
+ * Runs last: it claims every due retry on the endpoint, so placed earlier it
+ * would eat retries the other cases are waiting for.
+ */
+async function supersededClaims(fixture: Fixture, receiver: Receiver) {
+  console.log("\nan abandoned claim overtaken by a success (#60 follow-up)");
+
+  const dest = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Superseded claim target",
+    config: { url: `${receiver.url}/superseded`, secret: SECRET },
+  });
+  if (!dest) return;
+
+  const sent = () => receiver.received.filter((row) => row.path === "/superseded").length;
+
+  receiver.reply.status = 503;
+  await submit(fixture.endpointPublicId, { email: "superseded@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+
+  const base = new Date(Date.now() + 6 * 3_600_000);
+  const took = await claimDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: base,
+  });
+  const mine = took.filter((row) => row.destinationId === dest.id);
+  t("the superseded case claims its own retry", mine.length, 1);
+  if (mine.length !== 1) return;
+
+  // The claim is abandoned — nothing is attempted. Then a manual redelivery
+  // succeeds on a fresh attempt.
+  const before = sent();
+  await deliverSubmission(fixture.workspaceId, mine[0]!.submissionPublicId, {
+    destinationId: dest.id,
+    force: true,
+    now: new Date(base.getTime() + 1_000),
+    timeoutMs: 3_000,
+  });
+  t("a manual redelivery sends one request", sent(), before + 1);
+
+  const afterSuccess = await listDeliveryAttempts(fixture.workspaceId, dest.id);
+  ok(
+    "and it succeeded",
+    afterSuccess.some((row) => row.status === "succeeded"),
+    afterSuccess.map((row) => row.status),
+  );
+
+  // The reaper now meets the abandoned claim, after the success.
+  const late = new Date(base.getTime() + STALE_ATTEMPT_MS + 60_000);
+  await reapStaleAttempts(fixture.workspaceId, { now: late });
+
+  const reaped = (await listDeliveryAttempts(fixture.workspaceId, dest.id)).find(
+    (row) => row.id === mine[0]!.attemptId,
+  );
+  ok(
+    "the abandoned claim is closed rather than left pending",
+    reaped !== undefined && reaped.status !== "pending",
+    reaped?.status,
+  );
+  ok(
+    "and NOT rescheduled, because the lead already arrived",
+    reaped !== undefined && reaped.nextRetryAt === null,
+    { status: reaped?.status, nextRetryAt: reaped?.nextRetryAt },
+  );
+
+  // Sweep *after* whatever the reaper scheduled, not 60s after the reap — the
+  // first version of this assertion passed only because the rescheduled retry
+  // was not due yet, which is the same vacuous-pass this suite already caught
+  // once. Ask at a time when the retry would actually fire.
+  const settled = sent();
+  const afterDue = reaped?.nextRetryAt
+    ? new Date(new Date(reaped.nextRetryAt).getTime() + 60_000)
+    : new Date(late.getTime() + 60_000);
+  await runSweep({ now: afterDue, timeoutMs: 3_000 });
+  t("so no later sweep re-sends a lead that already arrived", sent(), settled);
+}

@@ -907,7 +907,20 @@ export async function reapStaleAttempts(
 
   return withWorkspace(workspaceId, async (ws) => {
     const stale = await ws.tx
-      .select({ id: deliveryAttempts.id, attempt: deliveryAttempts.attempt })
+      .select({
+        id: deliveryAttempts.id,
+        attempt: deliveryAttempts.attempt,
+        // Whether this delivery already arrived by some other attempt. A manual
+        // redeliver can succeed while an abandoned claim is still sitting here
+        // pending, and rescheduling that claim would send the same lead twice.
+        superseded: sql<boolean>`exists (
+          select 1 from ${deliveryAttempts} s
+          where s.workspace_id = ${deliveryAttempts.workspaceId}
+            and s.destination_id = ${deliveryAttempts.destinationId}
+            and s.submission_id = ${deliveryAttempts.submissionId}
+            and s.status = 'succeeded'
+        )`,
+      })
       .from(deliveryAttempts)
       .where(
         ws.where(
@@ -919,6 +932,27 @@ export async function reapStaleAttempts(
       .limit(options.limit ?? 50);
 
     for (const row of stale) {
+      // Already delivered by another attempt. Close the row honestly and
+      // schedule nothing: the lead is not missing, and retrying would put a
+      // second copy in front of a receiver that may not dedupe. Trading silent
+      // loss for silent duplication is what the lease design was rejected for,
+      // and it must not come back by this door.
+      if (row.superseded) {
+        await ws.tx
+          .update(deliveryAttempts)
+          .set({
+            status: "failed",
+            completedAt: now,
+            nextRetryAt: null,
+            error:
+              "This delivery was started and never finished — the process handling it went away. " +
+              "No retry was scheduled, because the submission had already been delivered to this " +
+              "destination by another attempt. Nothing is missing.",
+          })
+          .where(ws.where(deliveryAttempts, eq(deliveryAttempts.id, row.id)));
+        continue;
+      }
+
       // `network` rather than `unknown`: the delivery was started and never came
       // back, which is what a dropped connection looks like, and it is retryable.
       const retry = decideRetry({ attempt: row.attempt, failure: "network", now });
