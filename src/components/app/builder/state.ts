@@ -8,6 +8,13 @@ import {
   type SchemaField,
 } from "../../../lib/schema/format.ts";
 import { isReservedFieldName } from "../../../lib/schema/reserved.ts";
+import {
+  previewRules,
+  ruleIssues,
+  rulesFromDocument,
+  toRules,
+  type DraftRule,
+} from "./rules-state.ts";
 
 /**
  * The builder's editing state, and the only place it is turned back into a
@@ -99,6 +106,8 @@ export type DraftField = {
 export type DraftDocument = {
   name: string;
   fields: DraftField[];
+  /** Conditional logic (#36). Edited in `rules-panel.tsx`; shaped in `rules-state.ts`. */
+  rules: DraftRule[];
 };
 
 export type IssueSeverity = "error" | "warning";
@@ -106,6 +115,15 @@ export type IssueSeverity = "error" | "warning";
 export type BuilderIssue = {
   /** The `DraftField.id` this is about, or null for the document as a whole. */
   fieldId: string | null;
+  /**
+   * The `DraftRule.id` this is about (#36), when it is about a rule.
+   *
+   * Optional and separate from `fieldId` rather than a single "owner" field,
+   * because a rule issue is not a field issue: it must not turn a field's card
+   * red and must not be counted among the fields that have errors. Absent on
+   * everything that predates conditional logic.
+   */
+  ruleId?: string | null;
   severity: IssueSeverity;
   message: string;
 };
@@ -199,7 +217,7 @@ export function newDraftOption(id: string, seed: Partial<DraftOption> = {}): Dra
 }
 
 export function emptyDraft(): DraftDocument {
-  return { name: "", fields: [] };
+  return { name: "", fields: [], rules: [] };
 }
 
 /** A stored document, opened for editing. Ids are positional and stable. */
@@ -207,6 +225,7 @@ export function fromDocument(document: FormSchemaDocument): DraftDocument {
   return {
     name: document.name ?? "",
     fields: document.fields.map((field, index) => fromField(field, `f${index}`)),
+    rules: rulesFromDocument(document),
   };
 }
 
@@ -348,6 +367,10 @@ export function toSchemaDocument(draft: DraftDocument): unknown {
     fields: draft.fields.map(toSchemaField),
   };
   if (draft.name.trim() !== "") out.name = draft.name.trim();
+  // Omitted entirely when there are none, so a form with no conditional logic
+  // serialises to exactly the bytes it did before #36 — which is what the
+  // unsaved-changes comparison in `builder.tsx` is measured against.
+  if (draft.rules.length > 0) out.rules = toRules(draft.rules);
   return out;
 }
 
@@ -383,11 +406,19 @@ export function previewDocument(draft: DraftDocument): {
     fields.push(parsed.document.fields[0]);
   }
 
+  // Rules are carried into the preview deliberately *without* being checked
+  // against the fields that survived. A rule naming a field that does not parse
+  // is skipped by the evaluator, which says so — and the preview showing the
+  // same thing the hosted form would show, skip included, is the only reason to
+  // have a preview. See `previewRules`.
+  const rules = previewRules(draft.rules);
+
   return {
     document: {
       formatVersion: 1,
       ...(draft.name.trim() === "" ? {} : { name: draft.name.trim() }),
       fields,
+      ...(rules.length === 0 ? {} : { rules }),
     },
     skipped,
   };
@@ -420,6 +451,11 @@ export function draftIssues(
   }
 
   issues.push(...removedKeyIssues(draft, publishedKeys));
+
+  // Conditional logic (#36). Analysed against the fields that currently parse,
+  // so deleting a field and seeing "there is no field named X" on the rule that
+  // used it happens on the keystroke rather than at publish time.
+  issues.push(...ruleIssues(previewDocument(draft).document.fields, draft.rules));
 
   return issues;
 }

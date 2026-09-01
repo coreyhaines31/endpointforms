@@ -8,6 +8,13 @@ import {
   nativeConstraints,
 } from "@/lib/render/controls";
 import { summaryTitle, visitorMessage } from "@/lib/render/messages";
+import { summarizeFieldRules } from "@/lib/rules/describe";
+import {
+  FIELD_ATTRIBUTE,
+  FORM_ATTRIBUTE,
+  REQUIRED_MARK_ATTRIBUTE,
+} from "@/lib/rules/attributes";
+import { FormRules } from "./form-rules";
 import { endpointHoneypotFields, honeypotInputProps } from "@/lib/spam/honeypot";
 import { DEFAULT_FONT_STACK, type FormTheme } from "@/lib/render/theme";
 
@@ -16,10 +23,11 @@ import { DEFAULT_FONT_STACK, type FormTheme } from "@/lib/render/theme";
  *
  * ## The property everything else is subordinate to
  *
- * **This page submits with JavaScript disabled.** It is a Server Component with
- * no client boundary anywhere beneath it, a real `<form method="post">`, real
- * `<input>`s, real `required`, and errors that arrive as a re-rendered page
- * rather than as a state update. A lead-capture page that needs scripting is a
+ * **This page submits with JavaScript disabled.** A real `<form method="post">`,
+ * real `<input>`s, real `required`, and errors that arrive as a re-rendered
+ * page rather than as a state update. There is exactly one Client Component
+ * beneath this file — see the note on conditional logic below — it renders no
+ * markup, and nothing on the page depends on it having run. A lead-capture page that needs scripting is a
  * page that quietly loses the leads of everyone whose script did not run — a
  * blocked CDN, a corporate proxy, a flaky connection on a phone — and those
  * leads were paid for at the same price as the ones that worked.
@@ -39,6 +47,24 @@ import { DEFAULT_FONT_STACK, type FormTheme } from "@/lib/render/theme";
  * `text-h2`) as *colours* and drops one when a colour class sits beside it. See
  * `src/components/prose.tsx`. Class strings in this file are therefore written
  * out literally and never merged.
+ *
+ * ## Conditional logic, and the one client component below this file
+ *
+ * A form with rules (#36) renders `<FormRules>`, which is a Client Component
+ * that draws **nothing**. It hides rows whose rules say they are not being
+ * asked, and it never removes a value: the controls stay in the DOM and are
+ * still submitted, so the payload the server receives is identical whether or
+ * not the script ran. With scripting off the page is exactly what it always
+ * was — every field visible, every answer postable — and the rules run where
+ * they always run, on the server. See `form-rules.tsx`.
+ *
+ * The `required` attribute is emitted **only for fields that are required
+ * whatever anybody answers**. A field a rule can stop asking for carries no
+ * `required` in the markup, because with scripting off it is on screen and the
+ * browser would demand an answer the server does not want. That same predicate
+ * — `summarizeFieldRules(...).alwaysRequired` — decides whether the field
+ * appears in the agent tool's `required` array, and it has to: it is one
+ * question, and asking it in two places is how two surfaces drift.
  */
 
 export type FieldError = { field: string | null; code: IssueCode };
@@ -122,12 +148,20 @@ export function FormView({
     }
   }
 
-  const rendered = document.fields.map((field, index) => ({
-    field,
-    index,
-    id: `ef-f${index}`,
-    error: errorByKey.get(field.key),
-  }));
+  const rendered = document.fields.map((field, index) => {
+    const summary = summarizeFieldRules(document, field);
+    return {
+      field,
+      index,
+      id: `ef-f${index}`,
+      error: errorByKey.get(field.key),
+      // Required in the markup only when nothing can make it optional.
+      alwaysRequired: summary.alwaysRequired,
+      // Required under *some* answers: the mark exists but starts hidden, and
+      // the enhancement turns it on when the rule that requires it fires.
+      conditionallyRequired: !summary.alwaysRequired && (field.required || summary.requiredWhen.length > 0),
+    };
+  });
 
   // Any decoy whose name collides with a field this form really collects is
   // dropped rather than rendered: a trap that eats a customer's own data is
@@ -156,7 +190,7 @@ export function FormView({
         </p>
       ) : null}
 
-      <form method="post" action={action} className="mt-8">
+      <form method="post" action={action} className="mt-8" {...{ [FORM_ATTRIBUTE]: "" }}>
         {/* `_redirect` is the ingest path's own field for naming where a browser
             lands afterwards (`src/lib/ingest/respond.ts`). Setting it rather
             than relying on the fallback is what keeps a customer's hosted form
@@ -189,6 +223,8 @@ export function FormView({
                 field={entry.field}
                 error={entry.error}
                 values={values}
+                alwaysRequired={entry.alwaysRequired}
+                conditionallyRequired={entry.conditionallyRequired}
               />
             ),
           )}
@@ -200,6 +236,10 @@ export function FormView({
         >
           Submit
         </button>
+
+        {/* Renders nothing. Present only when there is logic to run, so a form
+            without rules ships not one byte of it. */}
+        {(document.rules?.length ?? 0) > 0 ? <FormRules schema={document} /> : null}
       </form>
     </main>
   );
@@ -267,7 +307,12 @@ function HiddenField({
   // Still rendered rather than dropped: the owner declared the field, and a
   // form that silently stops posting a declared name is a broken integration.
   const value = first(values[field.key]) ?? "";
-  return <input type="hidden" name={field.key} value={value} />;
+  // The `data-ef-field` hook goes on the input itself: a hidden input is
+  // `display: none` already, so wrapping it in a row would add an empty cell to
+  // the grid and a gap nobody asked for.
+  return (
+    <input type="hidden" name={field.key} value={value} {...{ [FIELD_ATTRIBUTE]: field.key }} />
+  );
 }
 
 function FieldRow({
@@ -275,11 +320,17 @@ function FieldRow({
   field,
   error,
   values,
+  alwaysRequired,
+  conditionallyRequired,
 }: {
   id: string;
   field: SchemaField;
   error: IssueCode | undefined;
   values: Record<string, string | string[]>;
+  /** Required under every set of answers. The only case that earns the attribute. */
+  alwaysRequired: boolean;
+  /** Required under some answers. The mark is rendered, and starts hidden. */
+  conditionallyRequired: boolean;
 }) {
   const kind = controlKind(field);
   const helpId = field.help ? `${id}-help` : undefined;
@@ -292,7 +343,7 @@ function FieldRow({
   // it into a heading and a box says the same words twice.
   if (kind === "checkbox") {
     return (
-      <div className="min-w-0">
+      <div className="min-w-0" {...{ [FIELD_ATTRIBUTE]: field.key }}>
         {error ? (
           <p id={errorId} className="mb-2 text-sm font-medium text-[var(--form-danger)]">
             <span className="sr-only">Error: </span>
@@ -305,7 +356,7 @@ function FieldRow({
             id={id}
             name={field.key}
             type="checkbox"
-            required={field.required || undefined}
+            required={alwaysRequired || undefined}
             defaultChecked={list(values[field.key]).length > 0}
             aria-describedby={describedBy}
             aria-invalid={error !== undefined || undefined}
@@ -314,7 +365,10 @@ function FieldRow({
           <div className="min-w-0">
             <label htmlFor={id} className="text-base text-[var(--form-fg)]">
               {field.label}
-              {field.required ? <RequiredMark /> : null}
+              <RequiredMark
+                shown={alwaysRequired}
+                conditional={conditionallyRequired}
+              />
             </label>
             {field.help ? (
               <p id={helpId} className="mt-1 text-sm text-[var(--form-muted)]">
@@ -330,12 +384,16 @@ function FieldRow({
   const heading = grouped ? (
     <legend className="text-base font-medium text-[var(--form-fg)]">
       {field.label}
-      {field.required ? <RequiredMark spoken /> : null}
+      <RequiredMark
+        spoken
+        shown={alwaysRequired}
+        conditional={conditionallyRequired}
+      />
     </legend>
   ) : (
     <label htmlFor={id} className="text-base font-medium text-[var(--form-fg)]">
       {field.label}
-      {field.required ? <RequiredMark /> : null}
+      <RequiredMark shown={alwaysRequired} conditional={conditionallyRequired} />
     </label>
   );
 
@@ -364,6 +422,7 @@ function FieldRow({
           invalid={error !== undefined}
           describedBy={describedBy}
           values={values}
+          alwaysRequired={alwaysRequired}
         />
       </div>
     </>
@@ -380,9 +439,13 @@ function FieldRow({
   // agent parsing attributes alone will read the question as optional; #32's
   // tool definition has to carry `required` itself, because the DOM cannot.
   return grouped ? (
-    <fieldset className="min-w-0 border-0 p-0">{body}</fieldset>
+    <fieldset className="min-w-0 border-0 p-0" {...{ [FIELD_ATTRIBUTE]: field.key }}>
+      {body}
+    </fieldset>
   ) : (
-    <div className="min-w-0">{body}</div>
+    <div className="min-w-0" {...{ [FIELD_ATTRIBUTE]: field.key }}>
+      {body}
+    </div>
   );
 }
 
@@ -400,14 +463,44 @@ function FieldRow({
  * question as optional. So the legend says the word instead, out loud and on
  * screen, and it is the only honest way to state it.
  */
-function RequiredMark({ spoken = false }: { spoken?: boolean }) {
+function RequiredMark({
+  spoken = false,
+  shown,
+  conditional,
+}: {
+  spoken?: boolean;
+  /** Required whatever anybody answers. Drawn plainly. */
+  shown: boolean;
+  /** Required only under some answers. Drawn, but hidden until a rule fires. */
+  conditional: boolean;
+}) {
+  if (!shown && !conditional) return null;
+
+  // A conditional mark is rendered into the HTML and starts hidden, so the
+  // enhancement can turn it on without inventing markup — and so a page with
+  // scripting off shows no asterisk on a field that is not, right now,
+  // required of the person reading it. The server still enforces the rule and
+  // still names it if the field comes back empty.
+  const hidden = !shown;
+
   if (spoken) {
     return (
-      <span className="ml-1 text-sm font-normal text-[var(--form-danger)]">(required)</span>
+      <span
+        hidden={hidden}
+        {...(conditional ? { [REQUIRED_MARK_ATTRIBUTE]: "" } : {})}
+        className="ml-1 text-sm font-normal text-[var(--form-danger)]"
+      >
+        (required)
+      </span>
     );
   }
   return (
-    <span aria-hidden="true" className="text-[var(--form-danger)]">
+    <span
+      aria-hidden="true"
+      hidden={hidden}
+      {...(conditional ? { [REQUIRED_MARK_ATTRIBUTE]: "" } : {})}
+      className="text-[var(--form-danger)]"
+    >
       {" *"}
     </span>
   );
@@ -420,6 +513,7 @@ function Control({
   invalid,
   describedBy,
   values,
+  alwaysRequired,
 }: {
   id: string;
   field: SchemaField;
@@ -427,8 +521,16 @@ function Control({
   invalid: boolean;
   describedBy: string | undefined;
   values: Record<string, string | string[]>;
+  alwaysRequired: boolean;
 }) {
-  const constraints = nativeConstraints(field);
+  // `nativeConstraints` decides `required` from the field alone, which is right
+  // for every constraint but this one: whether an answer can be omitted is a
+  // question about the *document*, because a rule can stop the field being
+  // asked. So the attribute is overridden here, in the one direction that is
+  // safe — off. A field only a rule can require gets it from `form-rules.tsx`
+  // at the moment the rule fires, and never with scripting off, where every
+  // field is on screen and the server is the only honest judge.
+  const constraints = { ...nativeConstraints(field), required: alwaysRequired || undefined };
   const shared = {
     id,
     name: field.key,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { JsonValue } from "../ingest/body.ts";
+import { evaluateRules, readAnswer, type FieldOutcome } from "../rules/evaluate.ts";
 import {
   compilePattern,
   findField,
@@ -27,6 +28,22 @@ import {
  * defaults; this is the code half of it.
  *
  * ## Why some mismatches can never be errors
+ *
+ * ## Conditional logic is enforced here, and only here
+ *
+ * A `required` rule that only ran in a browser would not exist: a raw POST has
+ * no browser, and neither does an agent. So `evaluateRules` runs on this path
+ * for every submission, from every surface, and it is the same function the
+ * page's enhancement calls — see `src/lib/rules/evaluate.ts`.
+ *
+ * Two consequences follow, and both are load-bearing:
+ *
+ *   - **A field the rules did not ask for is never required.** It is not
+ *     checked at all. A conditional requirement that could refuse a submission
+ *     whose condition is false would be a schema that started dropping leads,
+ *     which is the one thing this file exists to prevent.
+ *   - **An answer to a hidden field is kept and named.** Never dropped, never
+ *     an error. `answered_hidden_field` is a warning in every mode.
  *
  * A field in the payload that the schema does not mention is always a
  * **warning**, in every mode. Adding a hidden input to your HTML is a routine,
@@ -61,7 +78,9 @@ export type IssueCode =
   | "too_short"
   | "too_long"
   | "pattern_mismatch"
-  | "out_of_range";
+  | "out_of_range"
+  | "answered_hidden_field"
+  | "rules_ignored";
 
 export type ValidationIssue = {
   /** The payload key, or null for an issue about the submission as a whole. */
@@ -99,8 +118,46 @@ export function validateSubmission(
 
   const issues: ValidationIssue[] = [];
 
+  // Conditional logic (#36). The same evaluator the browser runs, on the same
+  // answers, so a rule cannot fire on one surface and not the other. A document
+  // with no rules skips it entirely and validates exactly as it did before.
+  const evaluation =
+    (document.rules?.length ?? 0) > 0 ? evaluateRules(document, values) : null;
+
+  if (evaluation?.degraded) {
+    // Said out loud rather than swallowed. A form whose logic we could not run
+    // is a form behaving differently from the one its owner published, and the
+    // owner finding that out from a warning on a submission is the whole
+    // difference between this product and the category it is arguing with.
+    issues.push({
+      field: null,
+      code: "rules_ignored",
+      severity: "warning",
+      message: `This form's conditional logic could not be evaluated, so it was ignored: every field was treated as shown and none as conditionally required. ${evaluation.degraded}`,
+    });
+  }
+
   for (const field of document.fields) {
-    validateField(field, values[field.key], issues);
+    const outcome = evaluation?.fields[field.key];
+
+    if (outcome && !outcome.visible) {
+      // The field was not being asked, so there is nothing to check. What there
+      // *is*, sometimes, is an answer — from a visitor who filled it in before
+      // a rule hid it, or from a caller that sent it anyway. It is stored, and
+      // it is named. Never an error, in any mode: a rule must not be able to
+      // turn a lead into a 422, and the answer is not lost either way.
+      if (readAnswer(values, field.key).length > 0) {
+        issues.push({
+          field: field.key,
+          code: "answered_hidden_field",
+          severity: "warning",
+          message: `"${field.label}" carries an answer, but this form's rules do not ask for it under these answers (${outcome.visibility.note.replace(/\.$/, "")}). It is stored as-is and left out of the checks.`,
+        });
+      }
+      continue;
+    }
+
+    validateField(field, values[field.key], issues, outcome);
   }
 
   for (const key of Object.keys(values)) {
@@ -143,16 +200,27 @@ function validateField(
   field: SchemaField,
   raw: JsonValue | undefined,
   issues: ValidationIssue[],
+  outcome: FieldOutcome | undefined,
 ): void {
   const present = extract(field, raw, issues);
 
+  // A rule can only ever *add* a requirement (`format.ts` in `src/lib/rules`
+  // explains why there is no `optional` action), and a field the rules did not
+  // ask for never reaches here at all. So this is the declared requirement, or
+  // a rule's, and the message says which.
+  const required = outcome?.required ?? field.required;
+
   if (present.values.length === 0) {
-    if (field.required) {
+    if (required) {
+      const because =
+        outcome && outcome.requirement.ruleIndex !== null
+          ? ` ${outcome.requirement.note}`
+          : "";
       issues.push({
         field: field.key,
         code: "missing_required",
         severity: "error",
-        message: `"${field.label}" is required and arrived empty.`,
+        message: `"${field.label}" is required and arrived empty.${because}`,
       });
     }
     // An optional field left blank is the single most common thing a form

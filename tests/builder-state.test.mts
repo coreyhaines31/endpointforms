@@ -229,6 +229,7 @@ const RICH = doc({
   for (const { name, field } of cases) {
     const draft: DraftDocument = {
       name: "",
+      rules: [],
       fields: [newDraftField("f0", field)],
     };
     ok(`${name} is an error in the builder`, errorsFor(draft).length > 0);
@@ -239,6 +240,7 @@ const RICH = doc({
 {
   const draft: DraftDocument = {
     name: "",
+    rules: [],
     fields: [
       newDraftField("f0", { key: "email", type: "email" }),
       newDraftField("f1", { key: "email", type: "text" }),
@@ -261,6 +263,7 @@ const RICH = doc({
   // schema field of that name would read as permanently missing.
   const draft: DraftDocument = {
     name: "",
+    rules: [],
     fields: [newDraftField("f0", { key: "gclid", label: "Click ID", type: "text" })],
   };
   ok("a reserved name is an error", errorsFor(draft).some((message) => message.includes("gclid")));
@@ -273,6 +276,7 @@ const RICH = doc({
 {
   const draft: DraftDocument = {
     name: "",
+    rules: [],
     fields: [
       newDraftField("f0", {
         key: "interests",
@@ -296,6 +300,7 @@ const RICH = doc({
 {
   const blank: DraftDocument = {
     name: "",
+    rules: [],
     fields: [
       newDraftField("f0", {
         key: "note",
@@ -323,6 +328,7 @@ const RICH = doc({
   for (const partial of ["-", "1e", "e5", "+", "."]) {
     const draft: DraftDocument = {
       name: "",
+      rules: [],
       fields: [newDraftField("f0", { key: "budget", label: "Budget", type: "number", min: partial })],
     };
     const parsed = parseDraft(draft);
@@ -338,6 +344,7 @@ const RICH = doc({
   // strings is so that "" and "0" stay different.
   const draft: DraftDocument = {
     name: "",
+    rules: [],
     fields: [newDraftField("f0", { key: "qty", label: "Qty", type: "number", min: "0" })],
   };
   const parsed = parseDraft(draft);
@@ -351,6 +358,7 @@ const RICH = doc({
   // then refuses to emit.
   const draft: DraftDocument = {
     name: "",
+    rules: [],
     fields: [
       newDraftField("f0", { key: "when", label: "When", type: "date", min: "2026-03-01" }),
     ],
@@ -368,6 +376,7 @@ const RICH = doc({
   // email and phone.
   const draft: DraftDocument = {
     name: "",
+    rules: [],
     fields: [
       newDraftField("f0", {
         key: "note",
@@ -395,6 +404,7 @@ const RICH = doc({
 {
   const draft: DraftDocument = {
     name: "",
+    rules: [],
     fields: [
       newDraftField("f0", {
         key: "size",
@@ -421,6 +431,7 @@ const RICH = doc({
 {
   const draft: DraftDocument = {
     name: "",
+    rules: [],
     fields: [
       newDraftField("f0", {
         key: "size",
@@ -452,7 +463,7 @@ const RICH = doc({
 
   // Order is not decoration: it is the order of the controls on the page and
   // the order of the columns in an export.
-  const draft: DraftDocument = { name: "", fields: moveField(fields, 2, 0) };
+  const draft: DraftDocument = { name: "", rules: [], fields: moveField(fields, 2, 0) };
   const parsed = parseDraft(draft);
   if (parsed.ok) t("the document keeps the new order", parsed.document.fields.map((f) => f.key), ["c", "a", "b"]);
 }
@@ -526,7 +537,7 @@ const RICH = doc({
 }
 
 {
-  const draft: DraftDocument = { name: "", fields: [newDraftField("f0")] };
+  const draft: DraftDocument = { name: "", rules: [], fields: [newDraftField("f0")] };
   ok("a brand-new field with no name is an error", errorsFor(draft).length > 0);
   ok("the error does not mention an array index", !errorsFor(draft)[0].startsWith("fields."));
 }
@@ -534,6 +545,7 @@ const RICH = doc({
 {
   const draft: DraftDocument = {
     name: "  Request a quote  ",
+    rules: [],
     fields: [newDraftField("f0", { key: "email", label: "Email", type: "email" })],
   };
   const parsed = parseDraft(draft);

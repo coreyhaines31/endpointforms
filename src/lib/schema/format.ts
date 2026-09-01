@@ -1,6 +1,9 @@
 import { z } from "zod";
 
 import { MAX_FIELD_NAME_CHARS } from "../ingest/limits.ts";
+import { ruleErrorMessages } from "../rules/analyze.ts";
+import { type Rule } from "../rules/algebra.ts";
+import { rulesSchema } from "../rules/format.ts";
 
 /**
  * The optional form schema (#51).
@@ -218,6 +221,23 @@ const documentShape = z.strictObject({
   /** Optional human name, e.g. the `<form id>` we imported it from. */
   name: z.string().max(MAX_LABEL_CHARS).optional(),
   fields: z.array(fieldSchema).max(MAX_FIELDS_IN_SCHEMA),
+  /**
+   * Conditional logic (#36). Optional, and additive in the strictest sense: a
+   * document written before it existed has no `rules` key, reads exactly as it
+   * always did, and produces the same form, the same tool definition and the
+   * same validation result byte for byte.
+   *
+   * The rules live *in* the document rather than in a table of their own
+   * because they are part of the definition the three surfaces are projections
+   * of. A version published on Tuesday carries the logic it was published with,
+   * so a submission from Tuesday stays readable against the rules it actually
+   * arrived under — the same reason the fields live here.
+   *
+   * `src/lib/rules` holds the algebra, the evaluator and the analyser. What is
+   * enforced *here* is only what makes a ruleset meaningless rather than
+   * merely unwise; see the document-level refinement below.
+   */
+  rules: rulesSchema.optional(),
 });
 
 /**
@@ -247,6 +267,17 @@ const documentSchema = documentShape.superRefine((doc, ctx) => {
       });
     }
     seen.add(field.key);
+  }
+
+  // Conditional logic, checked here rather than in the builder so that every
+  // producer of a document gets it: the editor, a committed JSON file, an
+  // import. A ruleset that cannot be ordered, names a field nobody collects, or
+  // contains a rule no answer could ever satisfy is not a schema with a
+  // questionable rule in it — it is a schema whose behaviour cannot be stated.
+  // Anything merely unwise is a warning, lives in `analyzeRules`, and does not
+  // reach this refinement. See `src/lib/rules/analyze.ts`.
+  for (const message of ruleErrorMessages(doc)) {
+    ctx.addIssue({ code: "custom", path: ["rules"], message });
   }
 });
 
@@ -327,6 +358,19 @@ export function readStoredDocument(stored: unknown): FormSchemaDocument | null {
   const parsed = lenient.safeParse(record);
   if (!parsed.success) return null;
 
+  // Rules are all-or-nothing, unlike fields.
+  //
+  // A field this build cannot read is dropped and the rest of the schema still
+  // stands, because the fields are independent of each other. Rules are not: a
+  // ruleset with one rule missing is a form behaving in a way nobody authored —
+  // the rule that hid a field is gone and the field appears, or the rule that
+  // showed it is gone and it never does. So an unreadable ruleset is discarded
+  // entirely, which puts the form back exactly where it was before #36: every
+  // field shown, nothing conditionally required, nothing refused.
+  const storedRules = rulesSchema.safeParse(record.rules);
+  const rules: Rule[] | undefined =
+    record.rules === undefined ? undefined : storedRules.success ? storedRules.data : undefined;
+
   const fields: SchemaField[] = [];
   const seen = new Set<string>();
   for (const entry of parsed.data.fields) {
@@ -347,6 +391,7 @@ export function readStoredDocument(stored: unknown): FormSchemaDocument | null {
     formatVersion: parsed.data.formatVersion,
     ...(parsed.data.name === undefined ? {} : { name: parsed.data.name }),
     fields,
+    ...(rules === undefined || rules.length === 0 ? {} : { rules }),
   };
 }
 
@@ -395,6 +440,20 @@ export function serializeSchemaDocument(document: FormSchemaDocument): FormSchem
       ...(field.options === undefined ? {} : { options: field.options }),
       ...(field.validation === undefined ? {} : { validation: field.validation }),
     })),
+    // Omitted entirely when there are none, so a form with no conditional logic
+    // serialises to exactly the bytes it did before #36. The builder compares
+    // the serialised document against what the server echoed back to decide
+    // whether there are unsaved changes, and an always-present `rules: []`
+    // would have made every stored schema look edited on first open.
+    ...(document.rules === undefined || document.rules.length === 0
+      ? {}
+      : {
+          rules: document.rules.map((rule) => ({
+            ...(rule.label === undefined ? {} : { label: rule.label }),
+            when: rule.when,
+            then: rule.then.map((action) => ({ action: action.action, field: action.field })),
+          })),
+        }),
   };
 }
 

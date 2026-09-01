@@ -10,6 +10,8 @@ import { FieldCard } from "./field-card";
 import { ImportPanel } from "./import-panel";
 import { CheckboxField, IssueLine, QuietButton, TextField } from "./inputs";
 import { PreviewPane } from "./preview-pane";
+import { RulesInspector } from "./rules-inspector";
+import { RulesPanel } from "./rules-panel";
 import { VersionsPanel, type VersionSummary } from "./versions-panel";
 import {
   draftIssues,
@@ -56,6 +58,13 @@ import { cn } from "@/lib/utils";
  * a renamed key, a deleted key. That is a decision the person is entitled to
  * make, and a builder that refuses to let somebody rename their own field is a
  * builder they will work around.
+ *
+ * Conditional logic (#36) joins on exactly those terms. A ruleset whose
+ * behaviour cannot be stated — a circle, a rule naming a field nobody collects,
+ * a rule no answer could ever satisfy — is an error and blocks Publish. A rule
+ * that is merely redundant is a warning and does not. The judgement is made by
+ * `analyzeRules`, which is the same function `parseSchemaDocument` runs, so
+ * this screen and the format cannot disagree about what is publishable.
  */
 
 export type BuilderVersion = {
@@ -151,11 +160,22 @@ export function SchemaBuilder({
 
   const errors = issues.filter((issue) => issue.severity === "error");
   const errorCount = errors.length;
+  const ruleErrors = errors.filter((issue) => issue.ruleId !== undefined).length;
   // Counted as *fields*, not as issues: one field can be wrong in three ways at
   // once, and "3 fields have errors" when one card is red sends somebody
   // hunting for two problems that do not exist.
-  const brokenFields = new Set(errors.map((issue) => issue.fieldId)).size;
-  const documentIssues = issues.filter((issue) => issue.fieldId === null);
+  //
+  // A rule issue is not a field issue and must never turn a field's card red,
+  // so the two are counted apart everywhere below. `ruleId` is present on
+  // exactly the issues `rules-state.ts` produced and absent on everything else,
+  // which is why the test is `=== undefined` rather than a truthiness check —
+  // a document-level rule issue carries `ruleId: null`.
+  const fieldErrors = errors.filter((issue) => issue.ruleId === undefined);
+  const brokenFields = new Set(fieldErrors.map((issue) => issue.fieldId)).size;
+  const documentIssues = issues.filter(
+    (issue) => issue.fieldId === null && issue.ruleId === undefined,
+  );
+  const ruleIssueList = issues.filter((issue) => issue.ruleId !== undefined);
   const dirty = fingerprint !== saved;
 
   // Publishing what is already live writes an identical version and moves the
@@ -237,7 +257,7 @@ export function SchemaBuilder({
                     index={index}
                     total={doc.fields.length}
                     issues={issues.filter(
-                      (issue) => issue.fieldId === field.id,
+                      (issue) => issue.ruleId === undefined && issue.fieldId === field.id,
                     )}
                     expanded={expanded.has(field.id)}
                     onToggle={() =>
@@ -280,6 +300,20 @@ export function SchemaBuilder({
             ) : null}
           </PanelBody>
         </Panel>
+
+        <div className="mt-6">
+          <RulesPanel
+            rules={doc.rules}
+            fields={doc.fields}
+            issues={ruleIssueList}
+            onChange={(rules) => setDoc((current) => ({ ...current, rules }))}
+            mintId={mintId}
+          />
+        </div>
+
+        <div className="mt-6">
+          <RulesInspector document={preview.document} />
+        </div>
 
         <Panel className="mt-6">
           <PanelHeader
@@ -367,6 +401,7 @@ export function SchemaBuilder({
                 <Status
                   dirty={dirty}
                   brokenFields={brokenFields}
+                  ruleErrors={ruleErrors}
                   published={published}
                   draft={draft}
                   archived={archived}
@@ -442,6 +477,7 @@ export function SchemaBuilder({
 function Status({
   dirty,
   brokenFields,
+  ruleErrors,
   published,
   draft,
   archived,
@@ -449,6 +485,7 @@ function Status({
 }: {
   dirty: boolean;
   brokenFields: number;
+  ruleErrors: number;
   published: BuilderVersion | null;
   draft: BuilderVersion | null;
   archived: boolean;
@@ -504,6 +541,14 @@ function Status({
           {brokenFields === 1
             ? "One field has an error. Publishing is blocked until it is fixed."
             : `${brokenFields} fields have errors. Publishing is blocked until they are fixed.`}
+        </p>
+      ) : null}
+
+      {ruleErrors > 0 ? (
+        <p className="mt-2 text-sm text-destructive">
+          {ruleErrors === 1
+            ? "One rule has an error. Publishing is blocked until it is fixed."
+            : `${ruleErrors} rules have errors. Publishing is blocked until they are fixed.`}
         </p>
       ) : null}
     </div>

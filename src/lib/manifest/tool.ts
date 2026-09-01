@@ -1,3 +1,8 @@
+import {
+  summarizeFieldRules,
+  toolNotesForField,
+  toolRulesSentence,
+} from "../rules/describe.ts";
 import type { FormSchemaDocument, SchemaField } from "../schema/format.ts";
 
 /**
@@ -27,6 +32,14 @@ import type { FormSchemaDocument, SchemaField } from "../schema/format.ts";
  * warning in every mode. Declaring the tool stricter than the endpoint would be
  * exactly the drift this file exists to prevent, and an agent that trusted the
  * declaration would refuse to send something we would happily have stored.
+ *
+ * The same reasoning decides what happens to a **conditional** requirement
+ * (#36). JSON Schema cannot say "required when `budget` is `50k+`" in the
+ * subset published here, so it is said in prose in the field's `description`
+ * and enforced when the submission is read — never encoded into `required`,
+ * which would be the stricter-than-the-endpoint mistake in its most expensive
+ * form. The long version of that argument is inside `buildToolDefinition`, and
+ * `docs/29-conditional-logic.md` §3 records why the alternatives lose.
  */
 
 /** The subset of JSON Schema this module emits. Draft 2020-12 compatible. */
@@ -128,8 +141,45 @@ export function buildToolDefinition(
   const required: string[] = [];
 
   for (const field of document.fields) {
-    properties[field.key] = fieldToJsonSchema(field);
-    if (field.required) required.push(field.key);
+    const schema = fieldToJsonSchema(field);
+
+    // Conditional logic (#36), and the one place the three surfaces genuinely
+    // could have disagreed.
+    //
+    // JSON Schema can express "required" and it cannot express "required when
+    // `budget` is `50k+`" — not in the subset published here, and not in any
+    // subset an arbitrary agent's validator is guaranteed to understand. There
+    // were three options and only one of them is honest:
+    //
+    //   1. Put the field in `required` anyway. That publishes a rule we do not
+    //      enforce. An agent that cannot supply the value has two choices, and
+    //      the likelier one is to invent it — a fabricated lead, caused by us.
+    //   2. Say nothing and enforce it server-side. The agent discovers the rule
+    //      as a rejection, which costs a round trip it may not take.
+    //   3. Say it in prose, in the same `description` that already carries
+    //      `help`, and enforce it server-side.
+    //
+    // Three it is. The prose is generated from the ruleset by
+    // `src/lib/rules/describe.ts`, so it cannot fall out of step with what
+    // `validate.ts` actually does, and it names fields by key because a key is
+    // what the caller can address.
+    const notes = toolNotesForField(document, field);
+    if (notes.length > 0) {
+      schema.description = [schema.description, ...notes].filter(Boolean).join(" ");
+    }
+
+    properties[field.key] = schema;
+
+    // `required` means "this submission is refused without it", and that has to
+    // stay true under every set of answers — otherwise an agent's own schema
+    // validation refuses a call we would have accepted. A field the rules can
+    // stop asking for is therefore never listed here, however it was declared;
+    // the prose above says what actually governs it.
+    //
+    // This is deliberately the same predicate the hosted page uses to decide
+    // whether to emit the HTML `required` attribute. They are one question, and
+    // asking it twice is how the two surfaces would drift.
+    if (summarizeFieldRules(document, field).alwaysRequired) required.push(field.key);
   }
 
   const inputSchema: JsonSchema = {
@@ -192,9 +242,12 @@ function describeTool(
     ? ` The same form is posted to ${context.submitUrl} by a browser; this tool is the machine-callable half of that one definition.`
     : "";
 
+  const rules = toolRulesSentence(document);
+
   return [
     `${what} (endpoint ${context.endpointPublicId}).`,
     fieldSentence,
+    ...(rules === null ? [] : [rules]),
     "A submission made through this tool is recorded with origin \"agent\": using this surface is itself the declaration, so there is nothing to gain by imitating a browser.",
     "On acceptance the result carries the submission id. On rejection it carries a reason per field, so a corrected call can be retried.",
   ].join(" ") + where;
