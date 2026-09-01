@@ -1,0 +1,875 @@
+/**
+ * Destinations, against a real database (#41, #42).
+ *
+ * The pure half is in `tests/destinations.test.mts`. This half is for the
+ * claims that are only true if the rows are right, and the load-bearing one is
+ * the first section: **a destination that fails, throws, or hangs must not cost
+ * anyone a lead.** That is asserted through the real ingest handler rather than
+ * by calling the dispatcher directly, because the thing being tested is the
+ * relationship between the two.
+ *
+ * Also here: that retries append rows instead of overwriting them, that the
+ * health numbers count failures *since the last success* rather than for all
+ * time, and that a soft-deleted destination keeps its history.
+ *
+ * Needs a database: `npm run db:up && npm run db:migrate`.
+ */
+
+process.env.SUBMISSION_IP_SALT = "test-salt";
+process.env.INGEST_RATE_LIMIT_ENDPOINT_PER_MINUTE = "1000000";
+process.env.INGEST_RATE_LIMIT_IP_PER_MINUTE = "1000000";
+process.env.INGEST_RATE_LIMIT_ENDPOINT_IP_PER_MINUTE = "1000000";
+// The delivery guard blocks loopback, and the fixture below delivers to a
+// loopback server on purpose. Nothing outside the tests sets this.
+process.env.ALLOW_PRIVATE_DESTINATIONS = "1";
+process.env.ALLOW_INSECURE_DESTINATIONS = "1";
+
+import { createServer, type Server } from "node:http";
+import { eq } from "drizzle-orm";
+
+import { sqlClient, unsafeDb } from "../src/db/client.ts";
+import { describeDatabase } from "../src/db/env.ts";
+import { newEndpointPublicId, newId } from "../src/db/ids.ts";
+import {
+  deliveryAttempts,
+  destinations,
+  endpoints,
+  submissions,
+  users,
+  workspaces,
+} from "../src/db/schema.ts";
+import { handleSubmission } from "../src/lib/ingest/handler.ts";
+import {
+  createDestination,
+  deleteDestination,
+  deliverSubmission,
+  drainDispatch,
+  getDestination,
+  handleSweep,
+  listDeliveryAttempts,
+  listDestinations,
+  newDestinationSecret,
+  reapStaleAttempts,
+  sendTestDelivery,
+  sweepDueRetries,
+  updateDestination,
+  verifySignature,
+  HEADER_ATTEMPT,
+  HEADER_DELIVERY_ID,
+  HEADER_SIGNATURE,
+  HEADER_TIMESTAMP,
+} from "../src/lib/destinations/index.ts";
+
+let pass = 0;
+let fail = 0;
+
+const t = (name: string, got: unknown, want: unknown) => {
+  const isOk = JSON.stringify(got) === JSON.stringify(want);
+  if (isOk) pass++;
+  else fail++;
+  console.log(`  ${isOk ? "PASS" : "FAIL"}  ${name}`);
+  if (!isOk) {
+    console.log(`        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`);
+  }
+};
+
+const ok = (name: string, condition: boolean, detail?: unknown) => {
+  if (condition) pass++;
+  else fail++;
+  console.log(`  ${condition ? "PASS" : "FAIL"}  ${name}`);
+  if (!condition && detail !== undefined) console.log(`        ${JSON.stringify(detail)}`);
+};
+
+// ---------------------------------------------------------------------------
+// A receiver we control
+// ---------------------------------------------------------------------------
+
+type Received = {
+  path: string;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+};
+
+type Receiver = {
+  server: Server;
+  url: string;
+  received: Received[];
+  /** Set to change what the next requests answer with. */
+  reply: { status: number; body: string; delayMs?: number };
+};
+
+async function startReceiver(): Promise<Receiver> {
+  const received: Received[] = [];
+  const reply = { status: 200, body: '{"ok":true}', delayMs: 0 };
+
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      received.push({ path: request.url ?? "", headers: request.headers, body });
+      const send = () => {
+        response.writeHead(reply.status, { "content-type": "application/json" });
+        response.end(reply.body);
+      };
+      if (reply.delayMs) setTimeout(send, reply.delayMs);
+      else send();
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+
+  return { server, url: `http://127.0.0.1:${port}`, received, reply };
+}
+
+// ---------------------------------------------------------------------------
+// Fixture
+// ---------------------------------------------------------------------------
+
+const SLUG = "destinations-test-workspace";
+const EMAIL = "destinations@test.invalid";
+const BASE = "https://acme.endpointforms.test";
+const SECRET = newDestinationSecret();
+
+async function cleanup() {
+  await unsafeDb.delete(workspaces).where(eq(workspaces.slug, SLUG));
+  await unsafeDb.delete(users).where(eq(users.email, EMAIL));
+}
+
+type Fixture = { workspaceId: string; endpointId: string; endpointPublicId: string };
+
+async function createFixture(): Promise<Fixture> {
+  const workspaceId = newId();
+  const endpointId = newId();
+  const endpointPublicId = newEndpointPublicId();
+
+  await unsafeDb.insert(workspaces).values({ id: workspaceId, slug: SLUG, name: SLUG });
+  await unsafeDb.insert(users).values({ id: newId(), email: EMAIL });
+  await unsafeDb
+    .insert(endpoints)
+    .values({ id: endpointId, workspaceId, publicId: endpointPublicId, name: "Contact form" });
+
+  return { workspaceId, endpointId, endpointPublicId };
+}
+
+/**
+ * Posts a form to the real ingest handler and returns its response.
+ *
+ * Note what this does NOT do: wait for delivery. `handleSubmission` dispatches
+ * fire-and-forget, so the response comes back before anything has been sent —
+ * which is the property being tested, and also why every caller below has to
+ * `await drainDispatch()` before asserting on rows.
+ */
+async function submit(endpointPublicId: string, values: Record<string, string>) {
+  return handleSubmission(
+    new Request(`${BASE}/e/${endpointPublicId}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      body: new URLSearchParams(values).toString(),
+    }),
+    endpointPublicId,
+  );
+}
+
+async function attemptsFor(destinationId: string) {
+  return unsafeDb
+    .select()
+    .from(deliveryAttempts)
+    .where(eq(deliveryAttempts.destinationId, destinationId));
+}
+
+// ---------------------------------------------------------------------------
+
+async function main() {
+  console.log(`\ndestinations against ${describeDatabase()}`);
+
+  await cleanup();
+  const fixture = await createFixture();
+  const receiver = await startReceiver();
+
+  try {
+    await theSubmissionSurvivesAnything(fixture, receiver);
+    await deliveryWritesRows(fixture, receiver);
+    await retriesAppend(fixture, receiver);
+    await health(fixture, receiver);
+    await crud(fixture);
+    await testDelivery(fixture, receiver);
+    await pendingRowsAndTheSweep(fixture, receiver);
+  } finally {
+    await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The one that matters
+// ---------------------------------------------------------------------------
+
+/**
+ * A destination failure is never a submission failure.
+ *
+ * Three ways a destination can be broken, and all three must produce a 200 with
+ * a stored lead. This is asserted through `handleSubmission` — the real entry
+ * point — rather than by calling the dispatcher, because what is being checked
+ * is that the ingest path does not await, does not catch too late, and does not
+ * let an exception escape into the response.
+ */
+async function theSubmissionSurvivesAnything(fixture: Fixture, receiver: Receiver) {
+  console.log("\na broken destination cannot cost a lead");
+
+  const broken: {
+    name: string;
+    kind?: "webhook" | "hubspot";
+    config: Record<string, unknown>;
+  }[] = [
+    // Answers 500 to everything.
+    { name: "always 500", config: { url: `${receiver.url}/boom`, secret: SECRET } },
+    // Nothing is listening on this port at all.
+    { name: "nothing listening", config: { url: "http://127.0.0.1:1/hook", secret: SECRET } },
+    // Config so broken the adapter refuses before it opens a socket.
+    { name: "no secret at all", config: { url: `${receiver.url}/x` } },
+    // A kind this build has no adapter for. Unreachable through the UI, but a
+    // row could arrive from a seed or an older release, and it must produce a
+    // visibly broken destination rather than a quiet one.
+    { name: "unbuilt kind", kind: "hubspot", config: {} },
+  ];
+
+  // Deliberately NOT including `http://169.254.169.254/` here. The guard that
+  // blocks it is switched off in this file so the fixture can deliver to a
+  // loopback receiver, so the case would not test the guard — it would really
+  // dial the cloud metadata service and block for the full 10s timeout, and
+  // that hang once outlived the fixture teardown and produced a foreign-key
+  // error on a workspace that had already been dropped. The guard is tested
+  // properly in `tests/destinations.test.mts`, with the guard on.
+  const created: string[] = [];
+  for (const entry of broken) {
+    const row = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+      kind: entry.kind ?? "webhook",
+      name: entry.name,
+      config: entry.config,
+    });
+    if (row) created.push(row.id);
+  }
+  t("four broken destinations created", created.length, 4);
+
+  receiver.reply.status = 500;
+  receiver.reply.body = "kaboom";
+
+  const response = await submit(fixture.endpointPublicId, {
+    name: "Priya Raman",
+    email: "priya@dorsetmetal.example",
+  });
+  const ack = (await response.json()) as { ok: boolean; id: string };
+
+  t("the submitter still gets a 200", response.status, 200);
+  ok("and an acknowledgement with an id", ack.ok === true && typeof ack.id === "string", ack);
+
+  const [stored] = await unsafeDb
+    .select({ id: submissions.id, publicId: submissions.publicId })
+    .from(submissions)
+    .where(eq(submissions.publicId, ack.id));
+  ok("and the lead is in the database", stored !== undefined);
+
+  // The ingest path dispatched on its own — nothing in this test called the
+  // dispatcher. Waiting for it here is what turns "it returned before
+  // delivering" into an observable fact rather than a race.
+  await drainDispatch();
+
+  for (const destinationId of created) {
+    const rows = await attemptsFor(destinationId);
+    t(
+      `the ingest path delivered here without being asked (${destinationId.slice(0, 8)})`,
+      rows.length,
+      1,
+    );
+    t("and it failed", rows[0]?.status, "failed");
+    ok(
+      "and the row says something a person could act on",
+      (rows[0]?.error ?? "").length > 30,
+      rows[0]?.error,
+    );
+  }
+
+  // Clean up so the later sections start from a known state.
+  for (const destinationId of created) {
+    await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, destinationId));
+    await unsafeDb.delete(destinations).where(eq(destinations.id, destinationId));
+  }
+  await unsafeDb.delete(submissions).where(eq(submissions.id, stored.id));
+
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+}
+
+// ---------------------------------------------------------------------------
+
+async function deliveryWritesRows(fixture: Fixture, receiver: Receiver) {
+  console.log("\na successful delivery");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "CRM intake",
+    config: { url: `${receiver.url}/hooks/leads`, secret: SECRET },
+  });
+  ok("destination created", created !== null);
+  if (!created) return;
+
+  receiver.received.length = 0;
+
+  const response = await submit(fixture.endpointPublicId, {
+    name: "Meera Shah",
+    email: "meera@axelrodparts.example",
+    utm_source: "google",
+    utm_campaign: "brand-exact",
+  });
+  const ack = (await response.json()) as { id: string };
+  await drainDispatch();
+
+  t("the receiver got exactly one request", receiver.received.length, 1);
+  const request = receiver.received[0];
+  t("at the configured path", request.path, "/hooks/leads");
+
+  const body = JSON.parse(request.body) as {
+    submission: { values: Record<string, string>; origin: string; verdict: string; attribution: Record<string, unknown> };
+    endpoint: { id: string; name: string };
+  };
+  t("carrying the submitted values", body.submission.values.email, "meera@axelrodparts.example");
+  t("and the origin stamp", body.submission.origin, "unverified");
+  t("and the verdict", body.submission.verdict, "awaiting");
+  t("and the attribution lifted off the payload", body.submission.attribution.utmSource, "google");
+  t("and the endpoint's name", body.endpoint.name, "Contact form");
+  ok(
+    "and the utm fields are not left in the customer's values",
+    body.submission.values.utm_source === undefined,
+    body.submission.values,
+  );
+
+  // End to end: the signature a real receiver would check, over the real bytes.
+  ok(
+    "the signature verifies at the receiver",
+    verifySignature({
+      secret: SECRET,
+      rawBody: request.body,
+      signature: String(request.headers[HEADER_SIGNATURE]),
+      timestamp: String(request.headers[HEADER_TIMESTAMP]),
+    }),
+  );
+  ok("and a delivery id is present", typeof request.headers[HEADER_DELIVERY_ID] === "string");
+  t("on attempt 1", String(request.headers[HEADER_ATTEMPT]), "1");
+
+  const log = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  t("one attempt in the log", log.length, 1);
+  t("marked succeeded", log[0].status, "succeeded");
+  t("with the response status", log[0].responseStatus, 200);
+  t("and the response body", log[0].responseBody, '{"ok":true}');
+  ok("and the request body it sent", (log[0].requestBody ?? "").includes("meera@"), log[0].requestBody);
+  ok("and the submission it belongs to", log[0].submissionPublicId === ack.id);
+
+  // Redelivering the same submission is attempt 2 with the SAME delivery id —
+  // which is the only thing that lets a receiver dedupe.
+  receiver.received.length = 0;
+  await deliverSubmission(fixture.workspaceId, ack.id, { timeoutMs: 3_000 });
+  t("a redelivery is attempt 2", String(receiver.received[0].headers[HEADER_ATTEMPT]), "2");
+  t(
+    "but carries the same delivery id, so a receiver can dedupe",
+    String(receiver.received[0].headers[HEADER_DELIVERY_ID]),
+    String(request.headers[HEADER_DELIVERY_ID]),
+  );
+  t("and appends rather than overwriting", (await listDeliveryAttempts(fixture.workspaceId, created.id)).length, 2);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+// ---------------------------------------------------------------------------
+
+async function retriesAppend(fixture: Fixture, receiver: Receiver) {
+  console.log("\nretries");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Flaky CRM",
+    config: { url: `${receiver.url}/flaky`, secret: SECRET },
+  });
+  if (!created) return;
+
+  receiver.reply.status = 503;
+  receiver.reply.body = "upstream unavailable";
+
+  await submit(fixture.endpointPublicId, { email: "flaky@test.example" });
+  await drainDispatch();
+
+  let log = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  t("the first attempt failed", log[0].status, "failed");
+  t("with the target's status", log[0].responseStatus, 503);
+  ok("a retry is scheduled", log[0].nextRetryAt !== null);
+  ok("and the log says when", /Retrying in/.test(log[0].error ?? ""), log[0].error);
+  ok("and keeps the target's own response", log[0].responseBody === "upstream unavailable");
+
+  // Nothing is due yet, so a sweep now must not fire anything — otherwise the
+  // backoff is decorative.
+  const early = await sweepDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    timeoutMs: 3_000,
+  });
+  t("a sweep before the backoff elapses does nothing", early.delivered + early.failed, 0);
+  t("and adds no rows", (await listDeliveryAttempts(fixture.workspaceId, created.id)).length, 1);
+
+  // Now let it succeed, and sweep with a clock far enough forward that the
+  // retry is due. `now` is injected rather than slept for — an hour is a long
+  // time to wait for a test.
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  const swept = await sweepDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: new Date(Date.now() + 2 * 3_600_000),
+    timeoutMs: 3_000,
+  });
+  t("a sweep after the backoff delivers it", swept.delivered, 1);
+
+  log = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  t("two rows now, not one overwritten", log.length, 2);
+  const succeeded = log.filter((row) => row.status === "succeeded");
+  const failed = log.filter((row) => row.status === "failed");
+  t("one succeeded", succeeded.length, 1);
+  t("and the failed one is still there, with its evidence", failed.length, 1);
+  t("the retry is attempt 2", succeeded[0].attempt, 2);
+  ok("and the failed row's schedule was cleared when it was claimed", failed[0].nextRetryAt === null);
+
+  // A second sweep must not re-deliver something already claimed and done.
+  const again = await sweepDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: new Date(Date.now() + 4 * 3_600_000),
+    timeoutMs: 3_000,
+  });
+  t("sweeping again does not re-send a settled delivery", again.delivered, 0);
+
+  // A failure that will never fix itself schedules nothing at all.
+  receiver.reply.status = 401;
+  receiver.reply.body = '{"error":"token expired"}';
+  await submit(fixture.endpointPublicId, { email: "auth@test.example" });
+  await drainDispatch();
+
+  const authLog = (await listDeliveryAttempts(fixture.workspaceId, created.id)).filter(
+    (row) => row.responseStatus === 401,
+  );
+  t("a 401 is recorded", authLog.length, 1);
+  ok("and schedules no retry", authLog[0].nextRetryAt === null);
+  ok(
+    "and says the credentials are the problem",
+    /credentials/i.test(authLog[0].error ?? ""),
+    authLog[0].error,
+  );
+
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+// ---------------------------------------------------------------------------
+
+async function health(fixture: Fixture, receiver: Receiver) {
+  console.log("\nhealth (#42)");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Health check",
+    config: { url: `${receiver.url}/health`, secret: SECRET },
+  });
+  if (!created) return;
+
+  const fresh = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("a destination with no history is untested, not healthy", fresh?.health.state, "untested");
+  t("and not failing", fresh?.health.consecutiveFailures, 0);
+
+  receiver.reply.status = 500;
+  receiver.reply.body = "down";
+
+  const response = await submit(fixture.endpointPublicId, { email: "health@test.example" });
+  const ack = (await response.json()) as { id: string };
+  await drainDispatch();
+
+  let row = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("one failure is degraded, not failing", row?.health.state, "degraded");
+  t("and counted", row?.health.consecutiveFailures, 1);
+  ok("with a last-failure time", row?.health.lastFailureAt !== null);
+  ok("and no last-success time", row?.health.lastSuccessAt === null);
+
+  // Three in a row is the point at which it is said in red — the step exists so
+  // one 502 during a deploy does not train people to ignore the banner.
+  await deliverSubmission(fixture.workspaceId, ack.id, { timeoutMs: 3_000 });
+  await deliverSubmission(fixture.workspaceId, ack.id, { timeoutMs: 3_000 });
+  row = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("three in a row is failing", row?.health.state, "failing");
+  t("and the count is three", row?.health.consecutiveFailures, 3);
+
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+  await deliverSubmission(fixture.workspaceId, ack.id, { timeoutMs: 3_000 });
+
+  row = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("one success clears it", row?.health.state, "healthy");
+  // The whole reason the count is "since the last success": the three failures
+  // are still in the log, and they no longer mean anything.
+  t("the earlier failures stop counting", row?.health.consecutiveFailures, 0);
+  ok("but they are still in the log", (await listDeliveryAttempts(fixture.workspaceId, created.id)).length === 4);
+  ok("and there is a last-success time", row?.health.lastSuccessAt !== null);
+
+  await updateDestination(fixture.workspaceId, created.id, { enabled: false });
+  row = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("a disabled destination reads as paused, not broken", row?.health.state, "paused");
+
+  await updateDestination(fixture.workspaceId, created.id, { enabled: true });
+
+  // The dead-letter count is about leads that never arrived, not attempts that
+  // failed. This destination has four attempts on one submission, three of them
+  // failures — and the last one worked. Nothing is stuck.
+  row = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("a failure a later retry recovered is not dead-lettered", row?.health.deadLetterCount, 0);
+
+  // Now one that really is stuck: a 401, which schedules no retry and never
+  // succeeds. One submission, one stuck delivery — however many attempts.
+  receiver.reply.status = 401;
+  receiver.reply.body = '{"error":"token expired"}';
+  const stuckResponse = await submit(fixture.endpointPublicId, { email: "stuck@test.example" });
+  const stuckAck = (await stuckResponse.json()) as { id: string };
+  await drainDispatch();
+  await deliverSubmission(fixture.workspaceId, stuckAck.id, { timeoutMs: 3_000 });
+
+  row = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("a delivery that gave up is dead-lettered", row?.health.deadLetterCount, 1);
+  t("counted once per lead, not once per attempt", row?.health.deadLetterCount, 1);
+
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+  await deliverSubmission(fixture.workspaceId, stuckAck.id, { timeoutMs: 3_000 });
+  row = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("and stops being dead-lettered once it is sent again", row?.health.deadLetterCount, 0);
+
+  // A paused destination gets nothing. Pausing has to actually stop delivery,
+  // or the button is a lie.
+  await updateDestination(fixture.workspaceId, created.id, { enabled: false });
+  receiver.received.length = 0;
+  const skipped = await deliverSubmission(fixture.workspaceId, ack.id, { timeoutMs: 3_000 });
+  t("a paused destination receives nothing", skipped.delivered + skipped.failed, 0);
+  t("and no request was made", receiver.received.length, 0);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+// ---------------------------------------------------------------------------
+
+async function crud(fixture: Fixture) {
+  console.log("\nmanaging destinations");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "CRUD test",
+    config: { url: "https://crm.example.com/hook", secret: SECRET },
+  });
+  if (!created) return;
+
+  const listed = await listDestinations(fixture.workspaceId, fixture.endpointPublicId);
+  t("it appears in the list", listed.length, 1);
+
+  // The read path a page uses must never carry a secret. This is the assertion
+  // that would catch someone adding a raw `config` field to the list item.
+  const serialised = JSON.stringify(listed);
+  ok("and the listed shape contains no secret", !serialised.includes(SECRET), serialised.slice(0, 300));
+  ok("but says one exists", listed[0].config.hasSecret === true);
+  ok("and shows the URL", listed[0].config.url === "https://crm.example.com/hook");
+
+  const single = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  ok("reading one is also redacted", !JSON.stringify(single).includes(SECRET));
+
+  await updateDestination(fixture.workspaceId, created.id, { name: "Renamed" });
+  t(
+    "renaming works",
+    (await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id))?.name,
+    "Renamed",
+  );
+
+  // Another workspace's id must not reach this row, and must not error either —
+  // it simply is not there.
+  const otherWorkspace = newId();
+  await unsafeDb
+    .insert(workspaces)
+    .values({ id: otherWorkspace, slug: `${SLUG}-other`, name: "other" });
+  try {
+    t(
+      "another workspace cannot read it",
+      await getDestination(otherWorkspace, fixture.endpointPublicId, created.id),
+      null,
+    );
+    t(
+      "and cannot rename it",
+      await updateDestination(otherWorkspace, created.id, { name: "stolen" }),
+      false,
+    );
+    t(
+      "and cannot delete it",
+      await deleteDestination(otherWorkspace, created.id),
+      false,
+    );
+    t(
+      "and it is still called what we called it",
+      (await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id))?.name,
+      "Renamed",
+    );
+  } finally {
+    await unsafeDb.delete(workspaces).where(eq(workspaces.id, otherWorkspace));
+  }
+
+  t("a malformed id is not a query", await getDestination(fixture.workspaceId, fixture.endpointPublicId, "not-a-uuid"), null);
+
+  // Soft delete: the row survives so the delivery history stays readable, which
+  // is the schema's own stated reason for the column.
+  t("deleting works", await deleteDestination(fixture.workspaceId, created.id), true);
+  t("and it leaves the list", (await listDestinations(fixture.workspaceId, fixture.endpointPublicId)).length, 0);
+
+  const [raw] = await unsafeDb
+    .select({ deletedAt: destinations.deletedAt })
+    .from(destinations)
+    .where(eq(destinations.id, created.id));
+  ok("but the row is still there — nothing was actually deleted", raw?.deletedAt !== null);
+
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+// ---------------------------------------------------------------------------
+
+async function testDelivery(fixture: Fixture, receiver: Receiver) {
+  console.log("\ntest delivery");
+
+  receiver.received.length = 0;
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"received":true}';
+
+  // Counted rather than asserted as zero: earlier sections leave rows behind on
+  // purpose, and what matters is that a test delivery adds none.
+  const before = (await unsafeDb.select().from(deliveryAttempts)).length;
+  const testDestinationId = newId();
+
+  const result = await sendTestDelivery(
+    { publicId: fixture.endpointPublicId, name: "Contact form" },
+    { id: testDestinationId, kind: "webhook", name: "Test target" },
+    { url: `${receiver.url}/test`, secret: SECRET },
+    { timeoutMs: 3_000 },
+  );
+
+  ok("a test delivery reports success", result.ok);
+  t("and the real status code, not a green tick", result.responseStatus, 200);
+  t("and the real response body", result.responseBody, '{"received":true}');
+  ok("and the exact bytes it sent", (result.requestBody ?? "").includes("submission.created"));
+
+  const sent = JSON.parse(receiver.received[0].body) as { delivery: { test: boolean }; submission: { id: string; origin: string } };
+  ok("the payload is marked as a test", sent.delivery.test === true);
+  ok("with an obviously fake submission id", sent.submission.id.startsWith("sub_test"));
+  ok("and does not claim a human filled it in", sent.submission.origin === "unverified");
+
+  // No row: the delivery log is the record of real leads, and a test in it
+  // would make the health numbers lie.
+  const after = (await unsafeDb.select().from(deliveryAttempts)).length;
+  t("and nothing was written to the delivery log", after, before);
+
+  receiver.reply.status = 500;
+  receiver.reply.body = "nope";
+  const failed = await sendTestDelivery(
+    { publicId: fixture.endpointPublicId, name: "Contact form" },
+    { id: newId(), kind: "webhook", name: "Test target" },
+    { url: `${receiver.url}/test`, secret: SECRET },
+    { timeoutMs: 3_000 },
+  );
+  ok("a failing test says it failed", !failed.ok);
+  t("and shows the status it got", failed.responseStatus, 500);
+  t("and the body, which is where the reason usually is", failed.responseBody, "nope");
+
+  const unavailable = await sendTestDelivery(
+    { publicId: fixture.endpointPublicId, name: "Contact form" },
+    { id: newId(), kind: "hubspot", name: "HubSpot" },
+    {},
+    { timeoutMs: 3_000 },
+  );
+  ok("testing a kind we have not built refuses honestly", !unavailable.ok);
+  ok("and says why", /not available yet/.test(unavailable.error ?? ""), unavailable.error);
+}
+
+// ---------------------------------------------------------------------------
+// The attempt row's lifecycle, and the scheduled sweep (#42)
+// ---------------------------------------------------------------------------
+
+/**
+ * The row exists before the request does.
+ *
+ * This is the property that stops the delivery log developing silent holes. A
+ * delivery whose process is torn down mid-flight — a serverless function frozen
+ * once the response is flushed, a connection dropped under load — must still
+ * leave a trace, or a destination that has been failing for three weeks reads
+ * as "no failures recorded", which is the dashboard this product is named
+ * against.
+ */
+async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
+  console.log("\npending rows and the sweep");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Sweep target",
+    config: { url: `${receiver.url}/sweep`, secret: SECRET },
+  });
+  if (!created) return;
+
+  // A receiver that never answers, so the attempt is observably in flight while
+  // we look at the row. `delayMs` outlives the adapter timeout we pass below.
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+  receiver.reply.delayMs = 3_000;
+
+  const response = await submit(fixture.endpointPublicId, { email: "pending@test.example" });
+  const ack = (await response.json()) as { id: string };
+
+  // Deliberately not drained yet: the point is what is on disk *during* the
+  // request, not after it.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const inFlight = await attemptsFor(created.id);
+  t("a row exists before the request has come back", inFlight.length, 1);
+  t("and it is pending", inFlight[0]?.status, "pending");
+  ok("with a start time", inFlight[0]?.startedAt !== null);
+  ok("and no completion time yet", inFlight[0]?.completedAt === null);
+  ok(
+    "and the bytes it is sending, so a torn-down delivery still says what it tried",
+    (inFlight[0]?.requestBody ?? "").includes("pending@test.example"),
+  );
+
+  await drainDispatch();
+  receiver.reply.delayMs = 0;
+
+  const settled = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  t("the same row settles rather than a second one appearing", settled.length, 1);
+  t("as succeeded", settled[0].status, "succeeded");
+  ok("with a completion time", settled[0].completedAt !== null);
+
+  // --- The reaper.
+  //
+  // A pending row nobody will ever finish. Written by hand because the only
+  // honest way to produce one is to kill the process that owned it.
+  const abandonedId = newId();
+  await unsafeDb.insert(deliveryAttempts).values({
+    id: abandonedId,
+    workspaceId: fixture.workspaceId,
+    destinationId: created.id,
+    submissionId: (
+      await unsafeDb
+        .select({ id: submissions.id })
+        .from(submissions)
+        .where(eq(submissions.publicId, ack.id))
+    )[0].id,
+    attempt: 2,
+    status: "pending",
+    requestBody: "{}",
+    // Older than STALE_ATTEMPT_MS, i.e. the process that opened it is long gone.
+    startedAt: new Date(Date.now() - 30 * 60_000),
+    createdAt: new Date(Date.now() - 30 * 60_000),
+  });
+
+  let health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("an abandoned pending row does not count as a failure on its own", health?.health.consecutiveFailures, 0);
+
+  const reaped = await reapStaleAttempts(fixture.workspaceId);
+  t("the reaper finds it", reaped, 1);
+
+  const afterReap = (await listDeliveryAttempts(fixture.workspaceId, created.id)).find(
+    (row) => row.id === abandonedId,
+  );
+  t("and calls it a failure rather than leaving it pending", afterReap?.status, "failed");
+  ok(
+    "with a sentence saying what actually happened",
+    /started and never finished/i.test(afterReap?.error ?? ""),
+    afterReap?.error,
+  );
+  ok("and a retry scheduled, so the lead still gets its chances", afterReap?.nextRetryAt !== null);
+
+  health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  // It does NOT bump `consecutiveFailures`, and that is right rather than a
+  // gap: this row is older than the last successful delivery, and the count is
+  // deliberately "failures since the last success". Nor is it dead-lettered —
+  // a retry is scheduled, so the lead is in flight, not lost. What changed is
+  // that it is now visible in the log as a failure with a reason on it instead
+  // of sitting `pending` forever, looking like nothing happened.
+  t("it does not count against a destination that has succeeded since", health?.health.consecutiveFailures, 0);
+  t("and it is not dead-lettered, because a retry is scheduled", health?.health.deadLetterCount, 0);
+  t("but it is no longer pending", health?.health.pendingCount, 0);
+
+  // --- The sweep, end to end through the HTTP handler.
+  const previousSecret = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = "sweep-test-secret";
+  const url = "https://endpointforms.test/api/v1/deliveries/sweep";
+
+  const refused = await handleSweep(new Request(url, { method: "GET" }));
+  t("an unauthenticated sweep does no work", refused.status, 401);
+
+  const swept = await handleSweep(
+    new Request(url, {
+      method: "GET",
+      headers: { authorization: "Bearer sweep-test-secret" },
+    }),
+    // Far enough forward that the reaped row's backoff has elapsed.
+    { now: new Date(Date.now() + 2 * 3_600_000), timeoutMs: 3_000 },
+  );
+  t("an authorised sweep runs", swept.status, 200);
+  const summary = (await swept.json()) as {
+    ok: boolean;
+    workspaces: number;
+    delivered: number;
+  };
+  ok("and reports what it did", summary.ok === true && summary.workspaces >= 1, summary);
+  ok("including delivering the retry the reaper scheduled", summary.delivered >= 1, summary);
+
+  const finalLog = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  const delivered = finalLog.filter((row) => row.status === "succeeded");
+  ok("so the abandoned delivery did eventually arrive", delivered.length >= 2, finalLog.length);
+
+  // Idempotent: the first sweep cleared `next_retry_at` on everything it took,
+  // so a second one — a cron whose previous run overran — finds nothing.
+  const again = await handleSweep(
+    new Request(url, {
+      method: "GET",
+      headers: { authorization: "Bearer sweep-test-secret" },
+    }),
+    { now: new Date(Date.now() + 4 * 3_600_000), timeoutMs: 3_000 },
+  );
+  const secondSummary = (await again.json()) as { delivered: number };
+  t("sweeping again delivers nothing — it is safe to run twice", secondSummary.delivered, 0);
+
+  if (previousSecret === undefined) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = previousSecret;
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+// ---------------------------------------------------------------------------
+
+main()
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    // A fire-and-forget delivery still running when `sqlClient.end()` fires
+    // produces a CONNECTION_ENDED that has nothing to do with the code under
+    // test. Drain before tearing the connection down.
+    await drainDispatch();
+    console.log(`\n${pass} passed, ${fail} failed`);
+    if (fail > 0) process.exitCode = 1;
+    await cleanup();
+    await sqlClient.end();
+  });

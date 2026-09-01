@@ -646,9 +646,12 @@ shrunk lockup.
 
 1. `docs/design-tokens.css` replaces the `@theme inline`, `:root` and `.dark` blocks in
    `src/app/globals.css`. Merge notes are at the top of that file.
-2. `src/app/layout.tsx` swaps `Geist`/`Geist_Mono` for `IBM_Plex_Sans`/`IBM_Plex_Mono` from
+2. `src/lib/fonts.ts` swaps `Geist`/`Geist_Mono` for `IBM_Plex_Sans`/`IBM_Plex_Mono` from
    `next/font/google`, exposing them as `--font-plex-sans` and `--font-plex-mono`.
-   Weights needed: Sans 400, 500, 600; Mono 400, 500.
+   Weights needed: Sans 400, 500, 600; Mono 400, 500. The three root layouts that want
+   the face — `(site)`, `(app)`, `(auth)` — put `FONT_VARIABLES` on their `<html>`.
+   `(forms)` deliberately does not: a hosted form uses the system stack, and
+   `globals.css` gives `--font-plex-sans` a `var()` fallback so it can.
 3. Provenance components must ship glyph + label + colour together, as a single component.
    Do not build a bare `<ProvenanceDot />`.
 4. Any Signal fill uses the `.signal-fill` utility, which carries the required hairline.

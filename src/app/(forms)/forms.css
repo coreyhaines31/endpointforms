@@ -1,0 +1,18 @@
+/*
+ * The hosted form's stylesheet entry. Same tokens, different chunk.
+ *
+ * This file looks pointless and is not. Turbopack emits one CSS chunk per
+ * distinct entry module, and `next/font`'s generated CSS gets merged into
+ * whichever chunk the roots that use it share. With all four roots importing
+ * `globals.css` directly there was exactly one chunk for the whole app, so
+ * `/f` linked a stylesheet containing IBM Plex's `@font-face` rules — and
+ * Next's font manifest, which is keyed by page, then emitted preload hints for
+ * all three woff2 subsets on a page that uses none of them. 60 KB of webfont,
+ * fetched on a customer's enquiry form, for type that never renders.
+ *
+ * Importing the same tokens through a second module gives `(forms)` its own
+ * chunk with no `@font-face` in it and drops the page out of the font manifest
+ * entirely. Nothing about the design system diverges: this is `globals.css`,
+ * one indirection away.
+ */
+@import "../globals.css";

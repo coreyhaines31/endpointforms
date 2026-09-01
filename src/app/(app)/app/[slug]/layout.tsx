@@ -1,4 +1,3 @@
-import { WorkspaceTabs } from "@/components/app/nav";
 import { requireWorkspace } from "@/lib/workspaces/server";
 
 /**
@@ -22,12 +21,10 @@ export default async function WorkspaceLayout({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const { workspace } = await requireWorkspace(slug);
+  // The membership check is the whole job. Nothing is rendered around the
+  // children any more: the workspace nav is the sidebar in `(app)/layout.tsx`,
+  // which reads the active slug from the path rather than taking it as a prop.
+  await requireWorkspace(slug);
 
-  return (
-    <>
-      <WorkspaceTabs slug={workspace.slug} />
-      {children}
-    </>
-  );
+  return <>{children}</>;
 }

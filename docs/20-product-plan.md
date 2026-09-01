@@ -125,6 +125,15 @@ Self-host, billing, docs.
 until that is real, the page is a promise. The test is a stranger, a cold machine, and a
 stopwatch — **if it takes more than ten minutes, the page should change until it's true.**
 
+**Both are now landed.** `#46` is `scripts/setup.sh` plus `.env.example`, written up in
+[`24-self-hosting.md`](./24-self-hosting.md) and verified on a clean tree: `bash
+scripts/setup.sh` then `npm run dev`, with a build that needs no `DATABASE_URL` and a role check
+that refuses to continue if the app could bypass row-level security. `#48` is three documents —
+the public Manifest protocol spec ([`25`](./25-manifest-spec.md)), the HTTP API
+([`26`](./26-api.md)), and the provenance model ([`27`](./27-provenance.md)) — plus
+`CONTRIBUTING.md`. `27` is the one to read before writing copy: it is the honest, asymmetric
+version of the claim, and `23` is the evidence behind it.
+
 `#47` is the most dangerous surface in the plan. Pricing is the #1 complaint in the category
 at ~45 independent sources, and the free tier must be genuinely usable forever with exports
 never paywalled.

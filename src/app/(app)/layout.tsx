@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 
-import { AppBar } from "@/components/app/shell";
+import { AppShell } from "@/components/app/shell";
+import { RootShell } from "@/components/root-shell";
+import { FONT_VARIABLES } from "@/lib/fonts";
+import "../globals.css";
 import { requireUser } from "@/lib/auth/session";
 import { listWorkspacesForUser } from "@/lib/workspaces/queries";
 
@@ -15,11 +18,18 @@ import { listWorkspacesForUser } from "@/lib/workspaces/queries";
  * The *workspace* is resolved one level down, in `app/[slug]/layout.tsx`, because
  * two routes in here deliberately have no workspace: creating your first one, and
  * accepting an invitation to someone else's.
+ *
+ * It is also a root layout now: it renders its own `<html>` and `<body>` rather
+ * than inheriting the marketing site's. It keeps IBM Plex — the dashboard is our
+ * own surface and the type is part of it — but not the marketing header, footer
+ * or Open Graph, which it used to carry and hide with a client-side path check.
+ * See `src/components/root-shell.tsx`.
  */
 
 export const metadata: Metadata = {
   // Nothing in the app belongs in an index. docs/05 §4.4.
   robots: { index: false, follow: false },
+  icons: { icon: "/favicon.ico" },
 };
 
 /** One tenant's data behind one person's session: never static, never cached. */
@@ -30,9 +40,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const workspaces = await listWorkspacesForUser(user.id);
 
   return (
-    <div className="flex flex-1 flex-col">
-      <AppBar user={user} workspaces={workspaces} />
-      <main className="flex-1 pb-16">{children}</main>
-    </div>
+    // `group/app` is what the sidebar's collapsed state hangs off: an inline
+    // script writes `data-nav` onto <html> before paint, and every rule that
+    // changes with the collapse is a `group-data-[nav=collapsed]/app:` variant.
+    // See `src/components/app/sidebar.tsx`.
+    <RootShell htmlClassName={`${FONT_VARIABLES} group/app`}>
+      <AppShell user={user} workspaces={workspaces}>
+        {children}
+      </AppShell>
+    </RootShell>
   );
 }

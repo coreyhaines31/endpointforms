@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { trustedClientIp } from "../net/client-ip.ts";
+
 /**
  * What we can tell about the caller, and how to answer them.
  *
@@ -13,20 +15,6 @@ import { createHash } from "node:crypto";
  *     visitor staring at a JSON blob or a script following a redirect to an
  *     HTML page it cannot read.
  */
-
-/**
- * In header order of trust. On Vercel the platform sets `x-forwarded-for` and
- * strips any client-supplied copy, so the first entry is the real client.
- * Self-hosted behind a proxy, this is only as trustworthy as that proxy — which
- * is why the value is used for rate limiting and correlation, and never for
- * anything that grants access.
- */
-const IP_HEADERS = [
-  "x-vercel-forwarded-for",
-  "x-forwarded-for",
-  "cf-connecting-ip",
-  "x-real-ip",
-] as const;
 
 const DEFAULT_SALT = "endpointforms-ip-hash-v1";
 
@@ -48,14 +36,16 @@ function ipSalt(): string {
   return DEFAULT_SALT;
 }
 
+/**
+ * Who is calling, for rate limiting only.
+ *
+ * Delegates to `trustedClientIp`, which believes a forwarded header only when
+ * something upstream is known to sanitise it. Null means "cannot tell these
+ * callers apart" — not "one caller" — so a null must never become a shared
+ * bucket that lets one visitor exhaust everyone's budget.
+ */
 export function clientIp(headers: Headers): string | null {
-  for (const header of IP_HEADERS) {
-    const value = headers.get(header);
-    if (!value) continue;
-    const first = value.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return null;
+  return trustedClientIp(headers);
 }
 
 /** `sha256:<hex>` of a salted IP, matching the format the seed writes. */

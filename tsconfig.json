@@ -1,6 +1,12 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    // create-next-app's default. Raised because the app targets Node 22 and
+    // modern browsers, and ES2017 refuses BigInt literals — which money
+    // arithmetic wants, since verdict_value is numeric(18,2) and parsing it
+    // through a float is how a product about what a lead was worth gets it
+    // wrong. Next transpiles output via SWC and browserslist, so this governs
+    // type checking rather than what ships.
+    "target": "ES2022",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,

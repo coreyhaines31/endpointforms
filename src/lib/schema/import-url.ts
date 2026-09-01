@@ -201,16 +201,7 @@ export function isPrivateHost(hostname: string): boolean {
   }
   if (host === "metadata.google.internal") return true;
 
-  if (host.includes(":")) {
-    // IPv6: loopback, unspecified, unique-local (fc00::/7) and link-local.
-    if (host === "::1" || host === "::") return true;
-    if (/^f[cd][0-9a-f]{2}:/.test(host)) return true;
-    if (/^fe[89ab][0-9a-f]:/.test(host)) return true;
-    // IPv4-mapped, e.g. ::ffff:127.0.0.1
-    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(host);
-    if (mapped) return isPrivateHost(mapped[1]);
-    return false;
-  }
+  if (host.includes(":")) return isPrivateIpv6(host);
 
   const octets = parseIpv4(host);
   if (octets === null) return false;
@@ -224,6 +215,95 @@ export function isPrivateHost(hostname: string): boolean {
   if (a >= 224) return true; // multicast and reserved
 
   return false;
+}
+
+/**
+ * IPv6, parsed numerically rather than matched as text.
+ *
+ * The previous version of this check tested for `::ffff:127.0.0.1` with a
+ * regex over the dotted-quad spelling, and never fired. `new URL()` applies
+ * WHATWG normalisation, which rewrites the embedded IPv4 as hex before this
+ * function ever sees it:
+ *
+ *   new URL("https://[::ffff:169.254.169.254]/").hostname  //  "[::ffff:a9fe:a9fe]"
+ *
+ * `a9fe:a9fe` is 169.254.169.254 — the cloud instance metadata service. So the
+ * one spelling the guard tested for was the one spelling that could not reach
+ * it, and three different ways of writing loopback and link-local addresses
+ * were fetchable. Anything that embeds an IPv4 address in its low 32 bits gets
+ * those bits handed back to the IPv4 rules, which already understand octal,
+ * hex and integer forms.
+ */
+function isPrivateIpv6(host: string): boolean {
+  // A zone id (`fe80::1%eth0`) is not part of the address.
+  const groups = parseIpv6(host.split("%")[0]);
+  if (groups === null) return false;
+
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
+
+  // Unspecified (::) and loopback (::1).
+  const highIsZero = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0;
+  if (highIsZero && g5 === 0 && g6 === 0 && (g7 === 0 || g7 === 1)) return true;
+
+  if ((g0 & 0xfe00) === 0xfc00) return true; // unique-local, fc00::/7
+  if ((g0 & 0xffc0) === 0xfe80) return true; // link-local, fe80::/10
+
+  // Prefixes that carry an IPv4 address in the low 32 bits. Hand those bits to
+  // the IPv4 rules rather than duplicating them here.
+  const embedsIpv4 =
+    (highIsZero && g5 === 0xffff) || // IPv4-mapped,      ::ffff:0:0/96
+    (highIsZero && g5 === 0) || //      IPv4-compatible,  ::/96 (deprecated, still resolvable)
+    (g0 === 0x0064 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0); // NAT64, 64:ff9b::/96
+
+  if (embedsIpv4) {
+    const octets = [g6 >> 8, g6 & 0xff, g7 >> 8, g7 & 0xff].join(".");
+    return isPrivateHost(octets);
+  }
+
+  return false;
+}
+
+/** Eight 16-bit groups, or null if this is not an IPv6 literal. */
+function parseIpv6(host: string): number[] | null {
+  let text = host;
+
+  // A trailing dotted quad is legal (`::ffff:127.0.0.1`). Normalise it to two
+  // hex groups so the rest of the parse is uniform. `new URL()` usually does
+  // this for us, but this function is also called directly by tests and by
+  // callers that did not come through a URL.
+  const tail = /^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(text);
+  if (tail) {
+    const parts = tail[2].split(".").map(Number);
+    if (parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+    const hex = (n: number) => n.toString(16).padStart(2, "0");
+    text = `${tail[1]}${hex(parts[0])}${hex(parts[1])}:${hex(parts[2])}${hex(parts[3])}`;
+  }
+
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+
+  const toGroups = (part: string): number[] | null => {
+    if (part === "") return [];
+    const out: number[] = [];
+    for (const piece of part.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/.test(piece)) return null;
+      out.push(Number.parseInt(piece, 16));
+    }
+    return out;
+  };
+
+  const head = toGroups(halves[0]);
+  if (head === null) return null;
+
+  if (halves.length === 1) return head.length === 8 ? head : null;
+
+  const rest = toGroups(halves[1]);
+  if (rest === null) return null;
+
+  const missing = 8 - head.length - rest.length;
+  if (missing < 1) return null; // "::" must stand for at least one zero group
+
+  return [...head, ...Array<number>(missing).fill(0), ...rest];
 }
 
 /** Dotted quad, decimal, octal and hex forms — all of which a resolver accepts. */

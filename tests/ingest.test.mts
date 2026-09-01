@@ -11,6 +11,13 @@
  * The handler is plain Web `Request`/`Response` and no Next APIs, so it is
  * called directly here — no server, no port, no fixtures beyond one workspace.
  *
+ * These fixtures send `x-forwarded-for`, which is only believed when something
+ * upstream is known to sanitise it — so the suite declares itself a
+ * trusted-proxy deployment below. Without that, `clientIp` correctly returns
+ * null and the IP-hash assertions fail, which is exactly what happened when the
+ * trust was made explicit. The assertion being preserved is "an IP is stored
+ * hashed, never raw", not "a forwarded header is believed".
+ *
  * Needs a database: `npm run db:up && npm run db:migrate`.
  */
 
@@ -20,6 +27,9 @@ process.env.SUBMISSION_IP_SALT = "test-salt";
 process.env.INGEST_RATE_LIMIT_ENDPOINT_PER_MINUTE = "1000000";
 process.env.INGEST_RATE_LIMIT_IP_PER_MINUTE = "1000000";
 process.env.INGEST_RATE_LIMIT_ENDPOINT_IP_PER_MINUTE = "1000000";
+
+// See the note above: these fixtures supply a forwarded header on purpose.
+process.env.TRUST_PROXY_HEADERS = "1";
 
 import { and, eq, isNull } from "drizzle-orm";
 

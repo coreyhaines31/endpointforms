@@ -3,6 +3,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   boolean,
   char,
+  date,
   foreignKey,
   index,
   integer,
@@ -64,6 +65,37 @@ export const submissionVerdict = pgEnum("submission_verdict", [
   "awaiting",
 ]);
 
+/**
+ * Spam scoring (#31). **A third axis, and it has to be.**
+ *
+ * Not `origin`: a person in Chrome can send a casino advert and an agent using
+ * Manifest can send the best lead of the quarter. Not `verdict`: that column is
+ * the downstream business outcome reported by a CRM, and it is the input to
+ * Yield's ranking (#44) — a heuristic that could set `disqualified` would be a
+ * regex deciding which form variant wins.
+ *
+ * Note what this enum does not contain. There is no `deleted`, no `rejected`,
+ * no `blocked`. A flagged submission is stored, exported and visible like any
+ * other; the flag is a mark on it. `/spam/honeypot-fields` is live on our own
+ * site calling silent rejection "the thing to fix today", and #31's binding
+ * constraint is that "where did my lead go" is worse than spam.
+ *
+ * `not_spam` and `confirmed_spam` are human decisions and outrank the score
+ * permanently. Rescoring never overwrites either.
+ */
+export const submissionSpamState = pgEnum("submission_spam_state", [
+  "clear",
+  "flagged",
+  "not_spam",
+  "confirmed_spam",
+]);
+
+/** What a workspace list entry matches on (#31). */
+export const spamListKind = pgEnum("spam_list_kind", ["ip", "email_domain", "keyword"]);
+
+/** Whether an entry always flags or always clears. Allow beats block. */
+export const spamListEffect = pgEnum("spam_list_effect", ["block", "allow"]);
+
 /** How a schema came to exist (#51). The builder is one of four, not the foundation. */
 export const schemaSource = pgEnum("schema_source", [
   "html_import",
@@ -93,6 +125,23 @@ export const deliveryStatus = pgEnum("delivery_status", [
   "pending",
   "succeeded",
   "failed",
+]);
+
+/**
+ * Hindsight (#45). Three states, and the transitions are one-way.
+ *
+ * `draft` is the only state in which a test's arms may be edited. Adding or
+ * reweighting a variant moves the bucket boundaries every visitor was hashed
+ * into, which silently reassigns some of them — their views counted under one
+ * arm and their submissions land under another. There is no hash that avoids
+ * that, so it is prevented instead: a running test's arms are frozen and
+ * changing them means a new test. `src/lib/hindsight/assign.ts` explains why at
+ * length.
+ */
+export const splitTestStatus = pgEnum("split_test_status", [
+  "draft",
+  "running",
+  "stopped",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -431,6 +480,27 @@ export const submissions = pgTable(
      */
     originReasons: jsonb("origin_reasons").notNull().default([]),
 
+    /**
+     * Spam scoring (#31). Modelled deliberately on the two columns above,
+     * because they solved the same problem: a stamp nobody can interrogate is a
+     * risk score with better manners.
+     */
+    spamState: submissionSpamState("spam_state").notNull().default("clear"),
+    /** Higher is more spam-like. The sum of the weights in `spam_reasons`. */
+    spamScore: integer("spam_score").notNull().default(0),
+    /**
+     * Every signal that was consulted, including the ones that scored nothing,
+     * each with what was observed and how much it moved the total. The final
+     * entry carries the threshold, so a row read next year is still readable
+     * against the bar it was actually judged by rather than today's.
+     */
+    spamReasons: jsonb("spam_reasons").notNull().default([]),
+    /** When a person overruled the score. Null while the score stands. */
+    spamReviewedAt: timestamp("spam_reviewed_at", { withTimezone: true }),
+    spamReviewedByUserId: uuid("spam_reviewed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+
     verdict: submissionVerdict("verdict").notNull().default("awaiting"),
     /** Exact decimal, not a float. Meaningless without `verdict_currency`. */
     verdictValue: numeric("verdict_value", { precision: 18, scale: 2 }),
@@ -481,9 +551,19 @@ export const submissions = pgTable(
     index("submissions_schema_version_id_idx").on(t.schemaVersionId),
     // The inbox filters on these two constantly, and Yield reports group by them.
     index("submissions_endpoint_origin_idx").on(t.endpointId, t.origin),
+    // The inbox's "hide flagged" toggle and the spam review queue are both this
+    // index. Deliberately not partial: `clear` is the overwhelming majority and
+    // the common query filters *to* it.
+    index("submissions_endpoint_spam_state_idx").on(t.endpointId, t.spamState),
     index("submissions_endpoint_verdict_idx").on(t.endpointId, t.verdict),
     // Searching inside submitted values is plausible enough to pay for up front.
     index("submissions_values_gin_idx").using("gin", t.values),
+    // Hindsight's per-variant tallies group on this column (#45). Partial,
+    // because every submission written before any test existed has it NULL and
+    // there is no reason for all of them to share one index entry.
+    index("submissions_variant_id_idx")
+      .on(t.variantId)
+      .where(sql`${t.variantId} is not null`),
   ],
 );
 
@@ -570,6 +650,243 @@ export const deliveryAttempts = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Spam and abuse (#31)
+// ---------------------------------------------------------------------------
+
+/**
+ * A workspace's own blocklist and allowlist entries.
+ *
+ * The only control in the whole spam feature that is not a heuristic. A
+ * customer who types an address, a domain or a word in here knows something
+ * about their business that no rule in `src/lib/spam/rules.ts` does, so an
+ * `allow` entry ends scoring outright and a `block` entry always flags.
+ *
+ * IP entries store the **hash**, matching `submissions.ip_hash`, so a raw
+ * address is never written down. `label` holds what the person typed, for the
+ * settings screen — an unlabelled `sha256:…` row is a list nobody can maintain.
+ */
+export const spamListEntries = pgTable(
+  "spam_list_entries",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    kind: spamListKind("kind").notNull(),
+    effect: spamListEffect("effect").notNull(),
+    /** The matchable value: an ip hash, a lowercased bare domain, or a phrase. */
+    value: text("value").notNull(),
+    /** What the person typed, shown back to them. For an IP, the address itself. */
+    label: text("label"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One entry per value per kind per effect. Adding the same domain twice is
+    // a no-op rather than an error someone has to think about.
+    uniqueIndex("spam_list_entries_unique").on(t.workspaceId, t.kind, t.effect, t.value),
+    index("spam_list_entries_workspace_idx").on(t.workspaceId, t.createdAt.desc()),
+  ],
+);
+
+/**
+ * Per-endpoint spam policy. **A missing row means the defaults**, which are in
+ * `src/lib/spam/assess.ts` and are all-on.
+ *
+ * Every signal is switchable individually because a form that legitimately
+ * collects URLs should not have to choose between link scoring and no scoring
+ * at all. `threshold` is per endpoint for the same reason: a support form and a
+ * high-value quote form have different tolerances for a false positive, and the
+ * customer is the only one who knows which is which.
+ */
+export const endpointSpamPolicies = pgTable(
+  "endpoint_spam_policies",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    honeypot: boolean("honeypot").notNull().default(true),
+    timing: boolean("timing").notNull().default(true),
+    duplicate: boolean("duplicate").notNull().default(true),
+    velocity: boolean("velocity").notNull().default(true),
+    content: boolean("content").notNull().default(true),
+    disposableEmail: boolean("disposable_email").notNull().default(true),
+    threshold: integer("threshold").notNull().default(5),
+    /** An extra decoy field name this endpoint renders, on top of the built-ins. */
+    honeypotField: text("honeypot_field"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.endpointId],
+      foreignColumns: [endpoints.workspaceId, endpoints.id],
+      name: "endpoint_spam_policies_endpoint_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("endpoint_spam_policies_endpoint_key").on(t.endpointId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Hindsight — split tests scored on outcomes (#45)
+// ---------------------------------------------------------------------------
+
+/**
+ * One split test on one endpoint.
+ *
+ * `started_at` is not decoration. The decision rule in
+ * `src/lib/hindsight/compare.ts` refuses to declare a winner on a test that has
+ * run for less than one median time-to-verdict, because a window shorter than
+ * that cannot have decided the median lead and everything that *has* resolved
+ * is the fast tail — the small deals and the quick disqualifications. That
+ * comparison needs a clock, and this is the clock.
+ *
+ * Soft-deleted rather than removed, like endpoints and destinations: the
+ * submissions stamped with this test's variants stay readable, and "I deleted
+ * the test and lost which variant produced the good leads" is a support
+ * disaster of exactly the kind `endpoints.deleted_at` exists to prevent.
+ */
+export const splitTests = pgTable(
+  "split_tests",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    /** What appears in the app URL. Never the primary key, same as everywhere else. */
+    publicId: text("public_id").notNull(),
+    name: text("name").notNull(),
+    status: splitTestStatus("status").notNull().default("draft"),
+    /** When traffic started splitting. Null while the test is a draft. */
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    /** Stops the split. The report keeps working; it just stops moving. */
+    stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.endpointId],
+      foreignColumns: [endpoints.workspaceId, endpoints.id],
+      name: "split_tests_endpoint_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("split_tests_public_id_key").on(t.publicId),
+    unique("split_tests_workspace_id_id_key").on(t.workspaceId, t.id),
+    index("split_tests_endpoint_id_idx").on(t.endpointId, t.createdAt.desc()),
+    // The serving path's only query: "is a test running on this endpoint?".
+    // Partial, because at most one row per endpoint is ever in this state and
+    // the index should be the size of that answer rather than of the table.
+    index("split_tests_running_idx")
+      .on(t.endpointId)
+      .where(sql`${t.status} = 'running' and ${t.deletedAt} is null`),
+  ],
+);
+
+/**
+ * One arm of a test. `id` is what lands in `submissions.variant_id`.
+ *
+ * A variant does **not** carry its own copy of a form. It points at an existing
+ * `form_schemas` row — immutable, versioned, already the thing a submission is
+ * read against — so running a test introduces no second definition of what a
+ * form is. Null means "whatever the endpoint's active schema is", which is the
+ * ordinary shape of a control: the arm that changes nothing.
+ *
+ * Append-only in practice. Nothing deletes a variant, because a deleted variant
+ * would orphan every submission stamped with it and there is no way to say
+ * afterwards which arm those leads belonged to.
+ */
+export const splitTestVariants = pgTable(
+  "split_test_variants",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    testId: uuid("test_id").notNull(),
+    /** The form this arm serves, or null for the endpoint's active schema. */
+    schemaVersionId: uuid("schema_version_id").references(() => formSchemas.id, {
+      onDelete: "restrict",
+    }),
+    name: text("name").notNull(),
+    /**
+     * The arm everything else is compared against. Exactly one per test.
+     *
+     * Without one, "B beat A" and "A beat B" are the same sentence read from
+     * opposite ends, and which variant a workspace keeps when the test never
+     * resolves stops being defined.
+     */
+    isControl: boolean("is_control").notNull().default(false),
+    /** Relative traffic share. Two arms at 1 and 3 split 25/75. */
+    weight: integer("weight").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.testId],
+      foreignColumns: [splitTests.workspaceId, splitTests.id],
+      name: "split_test_variants_test_fk",
+    }).onDelete("cascade"),
+    unique("split_test_variants_workspace_id_id_key").on(t.workspaceId, t.id),
+    uniqueIndex("split_test_variants_test_name_key").on(t.testId, t.name),
+    index("split_test_variants_test_id_idx").on(t.testId),
+    // At most one control per test, enforced by the database rather than by the
+    // code that happens to write it.
+    uniqueIndex("split_test_variants_one_control")
+      .on(t.testId)
+      .where(sql`${t.isControl}`),
+  ],
+);
+
+/**
+ * How many times each arm was actually rendered, by day.
+ *
+ * A rollup rather than a row per view: a form page is the hottest read in the
+ * product and one insert per render is a write amplification nobody asked for.
+ * By day rather than a single running counter so the row being contended on
+ * rotates, and so a future surface can draw the split over time without a
+ * schema change.
+ *
+ * The count is **server renders, not people** — a reload, a prefetch and a
+ * crawler each add one. `VariantExposure` in `src/lib/hindsight/types.ts` says
+ * why that is reported rather than corrected for, and why the absence of a row
+ * has to read as "we were not watching" instead of "shown nought times".
+ */
+export const splitTestExposures = pgTable(
+  "split_test_exposures",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    testId: uuid("test_id").notNull(),
+    variantId: uuid("variant_id").notNull(),
+    /** UTC date. The bucket, not a timestamp. */
+    day: date("day").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.variantId],
+      foreignColumns: [splitTestVariants.workspaceId, splitTestVariants.id],
+      name: "split_test_exposures_variant_fk",
+    }).onDelete("cascade"),
+    // The upsert target. One row per arm per day, by construction.
+    uniqueIndex("split_test_exposures_variant_day_key").on(t.variantId, t.day),
+    index("split_test_exposures_test_id_idx").on(t.testId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 
 /**
  * Tables that carry `workspace_id` and are therefore both scoped by
@@ -585,6 +902,11 @@ export const workspaceScopedTables = [
   submissions,
   destinations,
   deliveryAttempts,
+  spamListEntries,
+  endpointSpamPolicies,
+  splitTests,
+  splitTestVariants,
+  splitTestExposures,
 ] as const;
 
 export const workspaceScopedTableNames = [
@@ -595,6 +917,11 @@ export const workspaceScopedTableNames = [
   "submissions",
   "destinations",
   "delivery_attempts",
+  "spam_list_entries",
+  "endpoint_spam_policies",
+  "split_tests",
+  "split_test_variants",
+  "split_test_exposures",
 ] as const;
 
 export type Workspace = typeof workspaces.$inferSelect;
@@ -607,3 +934,12 @@ export type FormSchema = typeof formSchemas.$inferSelect;
 export type Submission = typeof submissions.$inferSelect;
 export type Destination = typeof destinations.$inferSelect;
 export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;
+export type SpamListEntry = typeof spamListEntries.$inferSelect;
+export type EndpointSpamPolicy = typeof endpointSpamPolicies.$inferSelect;
+export type SubmissionSpamState = (typeof submissionSpamState.enumValues)[number];
+export type SpamListKind = (typeof spamListKind.enumValues)[number];
+export type SpamListEffect = (typeof spamListEffect.enumValues)[number];
+export type SplitTest = typeof splitTests.$inferSelect;
+export type SplitTestVariant = typeof splitTestVariants.$inferSelect;
+export type SplitTestExposure = typeof splitTestExposures.$inferSelect;
+export type SplitTestStatus = (typeof splitTestStatus.enumValues)[number];

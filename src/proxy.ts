@@ -1,5 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { readVisitorKey } from "@/lib/hindsight/assign";
+import {
+  newVisitorKey,
+  VISITOR_COOKIE,
+  visitorCookieOptions,
+} from "@/lib/hindsight/visitor";
+
 /**
  * Route protection for the authenticated app.
  *
@@ -32,6 +39,13 @@ const SESSION_COOKIES = ["authjs.session-token", "__Secure-authjs.session-token"
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
+  // Hosted forms (#45). Nothing here is a security decision — it mints an
+  // opaque id so a visitor sees the same variant on their second visit as on
+  // their first, and it exists in this file only because a Server Component
+  // cannot set a cookie. See `src/lib/hindsight/visitor.ts` for why this is a
+  // random value rather than a fingerprint, and who it deliberately excludes.
+  if (pathname.startsWith("/f/")) return withVisitorCookie(request);
+
   const signedIn = SESSION_COOKIES.some((name) => request.cookies.has(name));
   if (signedIn) return NextResponse.next();
 
@@ -41,12 +55,57 @@ export function proxy(request: NextRequest) {
 }
 
 /**
- * `/app` only. `/signup` used to be matched here so it could 308 to `/login` —
- * there was no separate sign-up when the first magic link both created the
- * account and signed it in. It is a real page now (`src/app/(auth)/signup`), and
- * it has to be reachable without a session, which is the one thing this file
- * exists to prevent.
+ * Gives a form visitor a stable key, once.
+ *
+ * Deliberately only mints when there is nothing usable there already: rewriting
+ * the cookie on every request would reset the expiry forever, which turns a
+ * twelve-week cookie into a permanent one, and would also hand a fresh key to
+ * anyone whose existing one we merely failed to parse — silently re-randomising
+ * their arm mid-test.
+ *
+ * A visitor whose browser drops it simply arrives without one next time and is
+ * not enrolled. That is the intended behaviour, not a failure to handle.
+ */
+function withVisitorCookie(request: NextRequest) {
+  const existing = readVisitorKey(request.cookies.get(VISITOR_COOKIE)?.value);
+  if (existing) return NextResponse.next();
+
+  const key = newVisitorKey();
+
+  // Set on the **request** as well as the response, and forwarded with
+  // `next({ request })`.
+  //
+  // Without this the page rendering *this* request still sees no cookie — it
+  // only arrives with the response, so the browser has it from the second
+  // pageview onwards. Every visitor's first view of a form would therefore be
+  // unenrolled, which is not a rounding error: for a form most people see
+  // exactly once, it is nearly the whole audience, and the exposure counted at
+  // render would never match the arm their submission was attributed to.
+  request.cookies.set(VISITOR_COOKIE, key);
+
+  const response = NextResponse.next({ request });
+  response.cookies.set(
+    VISITOR_COOKIE,
+    key,
+    visitorCookieOptions(request.nextUrl.protocol === "https:"),
+  );
+  return response;
+}
+
+/**
+ * `/app` and `/f`, and nothing else.
+ *
+ * `/signup` used to be matched here so it could 308 to `/login` — there was no
+ * separate sign-up when the first magic link both created the account and
+ * signed it in. It is a real page now (`src/app/(auth)/signup`), and it has to
+ * be reachable without a session, which is the one thing this file exists to
+ * prevent.
+ *
+ * `/f` was added for Hindsight (#45), and the narrowness is the point: the
+ * per-request cost of minting a visitor cookie is paid by hosted form routes
+ * only. The marketing site, the ingest endpoint at `/e/:id` and the MCP surface
+ * are all untouched, and none of them renders a variant.
  */
 export const config = {
-  matcher: ["/app/:path*"],
+  matcher: ["/app/:path*", "/f/:path*"],
 };
