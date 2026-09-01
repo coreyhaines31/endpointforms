@@ -27,6 +27,21 @@ import { sanitizeString } from "./body.ts";
  * cross-origin. It is a genuine rescue for a form on the same site as the
  * landing page, and not one otherwise — which is why the snippet we hand people
  * should include `_page_url`.
+ *
+ * **And on the hosted form, (3) no longer fires at all.** `/f` is served with
+ * `Referrer-Policy: no-referrer`, because a stepped form carries its partial key
+ * in the query string and that key reads back a visitor's answers — a link or an
+ * image added to a form later would have sent it to whoever owned that resource.
+ * See `next.config.ts`.
+ *
+ * That was a deliberate trade and it narrows this list from three sources to two
+ * for an embedded form, so it is worth knowing rather than discovering: on the
+ * hosted form, **`_page_url` is now the only source of an outside-world
+ * referrer**, and the other remaining source needs the customer to add a hidden
+ * field. The header cost us nothing real — the fallback it removed was our own
+ * form URL, which was never an answer to "where did this lead come from", and
+ * `describeSource()` in the inbox used to render it as the forms domain where it
+ * now correctly reads `direct`.
  */
 
 export type Attribution = {
