@@ -17,7 +17,7 @@
 import { eq } from "drizzle-orm";
 
 import { sqlClient, unsafeDb } from "../src/db/client.ts";
-import { describeDatabase } from "../src/db/env.ts";
+import { databaseUrl, describeDatabase } from "../src/db/env.ts";
 import { newEndpointPublicId, newId, newSubmissionPublicId } from "../src/db/ids.ts";
 import { hashPassword } from "../src/lib/auth/password.ts";
 import { buildPayload, serialisePayload } from "../src/lib/destinations/payload.ts";
@@ -54,6 +54,53 @@ function spamFor(f: { name: string; email: string; company: string; note: string
   });
   spamCache.set(key, assessment);
   return assessment;
+}
+
+/**
+ * Refuses to run against anything but a local database.
+ *
+ * This seed writes a user whose password is a constant in this file and is
+ * printed on every run. On a local database that is the point — the demo data
+ * is unreachable without it. Anywhere else it is a published credential on a
+ * real account.
+ *
+ * The guard exists because a comment here previously *claimed* this protection
+ * without implementing it, which is worse than having neither: the next person
+ * reads the claim and does not check. `db:seed:waitlist` is the additive script
+ * that is safe to point at production, and it writes no user at all.
+ *
+ * `ALLOW_REMOTE_SEED=1` overrides, for the rare case of deliberately rebuilding
+ * a throwaway remote database.
+ */
+function refuseRemoteDatabase(): void {
+  if (process.env.ALLOW_REMOTE_SEED === "1") {
+    console.warn("  ALLOW_REMOTE_SEED=1 — seeding a non-local database on purpose.");
+    return;
+  }
+
+  let host: string;
+  try {
+    host = new URL(databaseUrl()).hostname.toLowerCase();
+  } catch {
+    return; // Unparseable: databaseUrl() will fail loudly on its own.
+  }
+
+  const local =
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "::1" ||
+    host.startsWith("127.");
+
+  if (!local) {
+    console.error(
+      `\nRefusing to seed ${host}.\n\n` +
+        "This seed writes a user whose password is printed on every run, so it is\n" +
+        "for local databases only. To provision the waitlist endpoint on a real\n" +
+        "deployment use `npm run db:seed:waitlist`, which is additive and writes no\n" +
+        "user. If you really mean it: ALLOW_REMOTE_SEED=1.\n",
+    );
+    process.exit(1);
+  }
 }
 
 const WORKSPACE_SLUG = "northwind";
@@ -131,6 +178,7 @@ const SCHEMA_V1_FIELDS = {
 };
 
 async function main() {
+  refuseRemoteDatabase();
   console.log(`seeding ${describeDatabase()}`);
 
   // Cascades through memberships, endpoints, schemas, submissions, destinations
@@ -155,9 +203,9 @@ async function main() {
   // lands you in an empty workspace while all 21 submissions, the verdicts, the
   // spam examples and the destinations sit in this one, invisible.
   //
-  // Development only. `db-seed.mts` refuses to run against anything but a local
-  // database, and the credential is printed rather than hidden because a seed
-  // password nobody can find is the same as no seed password.
+  // Development only, enforced by `refuseRemoteDatabase()` above rather than
+  // merely asserted here. The credential is printed rather than hidden, because
+  // a seed password nobody can find is the same as no seed password.
   await unsafeDb.insert(users).values({
     id: userId,
     email: USER_EMAIL,
