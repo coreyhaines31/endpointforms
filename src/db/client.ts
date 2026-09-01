@@ -1,8 +1,51 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import { LOCAL_DATABASE_URL, databaseUrl, dbTarget, hasDatabaseUrl } from "./env.ts";
+import { LOCAL_DATABASE_URL, databaseUrl, hasDatabaseUrl } from "./env.ts";
 import * as schema from "./schema.ts";
+
+/**
+ * Whether this connection must be encrypted.
+ *
+ * Decided from the URL, not from `DB_TARGET`. The previous rule was
+ * `dbTarget() === "neon"`, which is only true when someone sets `DB_TARGET=neon`
+ * — and production does not: it sets `DATABASE_URL`, so `dbTarget()` returned
+ * "local", TLS was disabled, and Neon closed the connection with
+ * `28000 connection is insecure`. Every DB-backed route 500ed while the
+ * marketing pages, which touch nothing, kept serving 200.
+ *
+ * The old rule also silently mispredicted for every other hosted Postgres —
+ * Supabase, RDS, anything a self-hoster actually uses — because none of them
+ * are "neon" either. Asking where we are connecting is the question that
+ * generalises; asking which vendor flag was set is not.
+ *
+ * An explicit `sslmode` in the URL always wins, so anyone with a specific need
+ * can still say so.
+ */
+function requiresTls(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Not parseable: assume the network is hostile rather than assume it is not.
+    return true;
+  }
+
+  const sslmode = parsed.searchParams.get("sslmode");
+  if (sslmode) return sslmode !== "disable" && sslmode !== "allow";
+
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const local =
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.startsWith("127.") ||
+    // A unix socket path, which is not a network at all.
+    host === "";
+
+  return !local;
+}
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -41,7 +84,7 @@ function connect(): Sql {
     // modest: serverless functions each hold their own.
     max: Number(process.env.DATABASE_POOL_MAX ?? 10),
     // Neon terminates TLS at the edge and refuses plaintext.
-    ssl: dbTarget() === "neon" ? "require" : undefined,
+    ssl: requiresTls(url) ? "require" : undefined,
     prepare: !usesTransactionPooler,
   });
   return cached;
