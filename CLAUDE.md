@@ -128,6 +128,20 @@ its seed, its migrator and its entire test suite from `.mts` files, so a TypeScr
 silently skips all of them. When renaming or auditing across the repo, grep with no `--include`
 filter and exclude `node_modules` instead.
 
+**Never click `button[type=submit]` in an authenticated page.** The sidebar's **Sign out**
+is the first submit button in the DOM on every `/app` screen, so a generic selector signs you
+out and lands you on `/login`. That looks exactly like the feature being broken, and it has
+already cost two separate investigations — one of them a near-miss bug report against
+production auth. Select by the button's text:
+
+```js
+[...document.querySelectorAll('button[type=submit]')]
+  .find(b => b.textContent.trim() === 'Create workspace').click()
+```
+
+The same applies to `form` — scope to the form containing the field you just filled, not the
+first one on the page.
+
 For **frontend-only changes**, passing checks are not enough: open it in `agent-browser`,
 screenshot it, and look at the image in both themes before reporting it done. A computed style
 confirms the code does what you wrote, not what was asked.
