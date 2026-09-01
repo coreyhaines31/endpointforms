@@ -1,4 +1,5 @@
-import { isPrivateHost } from "../schema/import-url.ts";
+import { createPinnedFetch, type PinnedFetchOptions } from "../net/pinned-fetch.ts";
+import { isPrivateHost } from "../net/private-address.ts";
 
 /**
  * Where a delivery is allowed to go.
@@ -6,8 +7,8 @@ import { isPrivateHost } from "../schema/import-url.ts";
  * A destination URL is typed by a user and fetched by our server, which is the
  * textbook shape of server-side request forgery — the same hazard
  * `src/lib/schema/import-url.ts` was written against, and worse, because a
- * destination fires on a schedule rather than once. `isPrivateHost` there
- * already parses every form a resolver accepts (`0x7f.0.0.1`, `2130706433`,
+ * destination fires on a schedule rather than once. `isPrivateHost` in
+ * `../net/private-address.ts` already parses every form a resolver accepts (`0x7f.0.0.1`, `2130706433`,
  * `127.1`, `::ffff:127.0.0.1`, and the `169.254.169.254` metadata address that
  * hands out instance credentials to anything that asks), so this module reuses
  * it rather than growing a second, subtly different list. A guard that exists
@@ -26,10 +27,13 @@ import { isPrivateHost } from "../schema/import-url.ts";
  * Redirects are **not** followed at delivery time (see `./adapters/webhook.ts`),
  * which closes the hop-to-loopback hole differently: there are no hops.
  *
- * The DNS-rebinding caveat from `import-url.ts` applies here too and is stated
- * rather than pretended away — the hostname is checked, not the address it
- * resolves to at connect time. Closing it needs an agent that pins the resolved
- * IP, and it is worth doing before this is exposed to untrusted tenants.
+ * DNS rebinding is closed rather than caveated (#58). `deliveryFetch()` below is
+ * the transport every adapter that posts to a customer-supplied URL uses: it
+ * resolves the name, requires **every** address it answers with to pass
+ * `isPrivateHost`, and connects to those addresses instead of to the name, so
+ * there is no second lookup between the check and the socket. `assertDeliverableUrl`
+ * on its own only checks the hostname — it is the scheme, credential and
+ * hostname half of the guard, and it is not sufficient without the transport.
  */
 
 export class DestinationUrlError extends Error {
@@ -110,4 +114,24 @@ export function isDeliverableUrl(input: string, options: UrlGuardOptions = {}): 
   } catch {
     return false;
   }
+}
+
+/**
+ * The transport a delivery goes out on.
+ *
+ * Kept here rather than in each adapter so "which fetch do deliveries use" has
+ * one answer. `ALLOW_PRIVATE_DESTINATIONS` relaxes the address rules the same
+ * way it relaxes the hostname rules above — the resolution and the pinning still
+ * happen, so a self-hoster posting to their own network still connects to the
+ * address that was resolved, not to whatever a later lookup returns.
+ *
+ * The cap is deliberately larger than the 16 KB an adapter keeps: the adapter's
+ * own truncation stays the thing that decides what gets stored.
+ */
+export function deliveryFetch(options: PinnedFetchOptions = {}): typeof fetch {
+  return createPinnedFetch({
+    maxBytes: 64_000,
+    allowPrivateAddresses: process.env.ALLOW_PRIVATE_DESTINATIONS === "1",
+    ...options,
+  });
 }

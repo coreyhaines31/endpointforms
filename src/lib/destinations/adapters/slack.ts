@@ -1,6 +1,6 @@
 import { parseConfig } from "../config.ts";
 import { classifyStatus, classifyTransportError, describeFailure, transportDetail } from "../retry.ts";
-import { assertDeliverableUrl, DestinationUrlError } from "../url-guard.ts";
+import { assertDeliverableUrl, deliveryFetch, DestinationUrlError } from "../url-guard.ts";
 import type { Adapter, AdapterContext, AdapterResult, SubmissionPayload } from "../types.ts";
 import { readCapped } from "./webhook.ts";
 
@@ -35,7 +35,10 @@ export const slackAdapter: Adapter = {
 };
 
 export async function deliverSlack(context: AdapterContext): Promise<AdapterResult> {
-  const doFetch = context.fetchImpl ?? fetch;
+  // Not the global `fetch`: that resolves the hostname a second time at connect
+  // time, which is the DNS-rebinding hole (#58). `deliveryFetch` connects to the
+  // address the guard checked.
+  const doFetch = context.fetchImpl ?? deliveryFetch();
 
   let config;
   try {
