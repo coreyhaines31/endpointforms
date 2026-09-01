@@ -239,10 +239,22 @@ export function FormView({
   const listed = rendered.filter((entry) => entry.error && entry.field.type !== "hidden");
 
   return (
+    // The themed ground is full-bleed and the content column is a child of it.
+    //
+    // These were one element, so `--form-page` stopped at the 34rem column and
+    // the `<body>` behind it kept following `.dark` on `<html>` — i.e. the
+    // *visitor's* preference. A form pinned to light, opened on a machine set to
+    // dark, was a white column floating on a near-black page, and the inverse
+    // for a pinned-dark form. It never showed at 390px, where the column fills
+    // the viewport, which is why it survived earlier passes.
+    //
+    // The vars are defined *on* this element, so no ancestor can read
+    // `--form-page`. Splitting it is the only place the fix can live.
     <main
       style={style}
-      className="mx-auto flex w-full max-w-[var(--form-width)] flex-1 flex-col bg-[var(--form-page)] px-[var(--form-pad-x)] py-[var(--form-pad)] text-[var(--form-fg)]"
+      className="flex w-full flex-1 flex-col bg-[var(--form-page)] text-[var(--form-fg)]"
     >
+      <div className="mx-auto flex w-full max-w-[var(--form-width)] flex-1 flex-col px-[var(--form-pad-x)] py-[var(--form-pad)]">
       {/* `break-words` because the title is somebody else's string and can be a
           single unbroken token — an imported form is often named after the URL
           it came from. Without it a long one runs off the side of a phone,
@@ -316,6 +328,7 @@ export function FormView({
             without rules ships not one byte of it. */}
         {(document.rules?.length ?? 0) > 0 ? <FormRules schema={document} /> : null}
       </form>
+      </div>
     </main>
   );
 }
