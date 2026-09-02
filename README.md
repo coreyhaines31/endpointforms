@@ -10,6 +10,12 @@ Worse, completion rate cannot tell a buyer from a bot. Both submit. Both get cou
 
 Endpoint Forms is built on a different premise: a submission is not an outcome, and the only honest way to judge a form is by what its submissions turned out to be worth.
 
+## This repo is a course project
+
+Endpoint Forms was built end to end in the [**AI Marketing Masterclass**](https://swipefiles.com/products/ai-marketing-masterclass) — the category research, the naming and domain, the positioning, the site and its SEO, the emails and social, and then the product itself.
+
+The reasoning is all in [`docs/`](docs/), written down as decisions were made rather than reconstructed afterwards — including the research that **falsified** the first wedge we tried, and what each feature still cannot do. If you want to see how a thing like this actually gets built and marketed, that is the course.
+
 ## Two things that make this different
 
 **1. Your form knows which door was used.**
