@@ -28,7 +28,16 @@ Plenty of good marketers already pipe outcomes back to their ad platform. That l
 
 ## Status
 
-**Pre-launch.** The marketing site is built; the product is being built now. Positioning and brand are settled and live in [`docs/`](docs/).
+**Pre-launch, but built.** Not announced yet — the product itself is running.
+
+The submission endpoint, the agent-callable surface, the form builder, conditional logic,
+outcome tracking, Yield, split tests scored on outcomes, spam defenses, destinations with
+signed delivery and retries, and one-command self-host are all shipped and tested. What is
+not done is the commercial side: there is no billing, and email delivery needs a Resend key
+that is deliberately unset, so an email destination says so rather than failing quietly.
+
+Positioning and brand are settled and live in [`docs/`](docs/), along with the decisions
+behind each feature and — deliberately — what each one still cannot do.
 
 ## Run it yourself
 
