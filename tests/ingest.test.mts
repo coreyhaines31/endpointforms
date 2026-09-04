@@ -739,6 +739,42 @@ async function attribution(f: Fixture) {
   ok("user agent recorded", (row.userAgent ?? "").includes("Chrome"), row.userAgent);
   t("attribution fields are not repeated in values", row.values, { email: "rescue@example.test" });
 
+  // A customer's own `url` and `referrer` fields (#72). `normalizeKey` strips
+  // separators, so `_url` used to fold onto a bare `url` and consume it — and
+  // "Website URL" and "How did you hear about us" are ordinary things to ask.
+  await handleSubmission(
+    build(f.plain, {
+      headers: { ...FETCH_HEADERS, referer: "https://acme.example/landing" },
+      contentType: "application/x-www-form-urlencoded",
+      body: "email=keeps%40example.test&url=https%3A%2F%2Ftheirsite.example&referrer=a+friend",
+    }),
+    f.plain,
+  );
+  rows = await rowsFor(f.plain);
+  row = rows[rows.length - 1];
+  // Compared key by key: `t` stringifies, and jsonb does not promise key order.
+  const kept = row.values as Record<string, unknown>;
+  t("a customer's url field stays in values", kept.url, "https://theirsite.example");
+  t("so does their referrer field", kept.referrer, "a friend");
+  t("alongside the rest", kept.email, "keeps@example.test");
+  t("and nothing else was added", Object.keys(kept).sort(), ["email", "referrer", "url"]);
+
+  // The control: our own underscore-prefixed names are still ours, still
+  // consumed, and still lifted onto their columns — so the assertion above is
+  // about a name collision, not about attribution having stopped working.
+  await handleSubmission(
+    build(f.plain, {
+      headers: FETCH_HEADERS,
+      contentType: "application/x-www-form-urlencoded",
+      body: "email=ours%40example.test&_url=https%3A%2F%2Facme.example%2Fpricing",
+    }),
+    f.plain,
+  );
+  rows = await rowsFor(f.plain);
+  row = rows[rows.length - 1];
+  t("but _url is still ours and still consumed", row.values, { email: "ours@example.test" });
+  t("and still lands on the referrer column", row.referrer, "https://acme.example/pricing");
+
   // A populated field beats every fallback.
   await handleSubmission(
     build(f.plain, {
