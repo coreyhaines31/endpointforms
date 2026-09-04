@@ -31,7 +31,7 @@ import {
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
 import { retentionExpiry } from "../uploads/limits.ts";
-import { collectFileRefs, isStoredFileRef } from "../uploads/types.ts";
+import { isStoredFileRef } from "../uploads/types.ts";
 import { PARTIAL_KEY_PATTERN, STEP_FIELD_KEYS, PARTIAL_KEY_FIELD } from "../steps/format.ts";
 import { completePartial } from "../steps/store.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
@@ -190,9 +190,10 @@ export async function handleSubmission(
       // the same treatment as one that sends `_redirect`.
       ...STEP_FIELD_KEYS,
     ]);
-    // ...except when the value is a file. Everything above is our plumbing, and
-    // none of it is ever a file input — so a file arriving on one of these names
-    // is the customer's data wearing a reserved name, not plumbing.
+    // ...except a key that carried a real file part on this request. Everything
+    // above is our plumbing, and none of it is ever a file input — so a file
+    // arriving on one of these names is the customer's data wearing a reserved
+    // name, not plumbing.
     //
     // Stripping it anyway would be a quiet loss of exactly the shape this
     // product is named against: `submission_files` is written from the parsed
@@ -201,7 +202,14 @@ export async function handleSubmission(
     // would carry no link to it. The inbox and the webhook would disagree about
     // whether the lead had an attachment, and the export would silently break
     // the promise that everything is exportable.
-    for (const { key } of collectFileRefs(parsed.values)) reserved.delete(key);
+    //
+    // **Keyed off `parsed.uploads`, never off the shape of `values`.**
+    // `isStoredFileRef` is structural, and a caller can post JSON matching it
+    // exactly — un-reserving on that shape would let a forged object reinstate
+    // any reserved name it liked. `parsed.uploads` is what this request actually
+    // carried, and it is empty for every encoding except multipart, so there is
+    // nothing here for a JSON body to forge.
+    for (const upload of parsed.uploads) reserved.delete(upload.fieldKey);
 
     const values = omit(parsed.values, reserved);
 

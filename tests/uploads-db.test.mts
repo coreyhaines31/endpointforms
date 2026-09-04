@@ -645,6 +645,38 @@ async function main() {
     const stored = (await fileRows(workspaceId)).filter((row) => row.fieldKey === "_next");
     t("with exactly one row behind it", stored.length, 1);
     t("under the name it was posted with", stored[0]!.filename, "brief.pdf");
+
+    // The teeth of the rule above: un-reserving is keyed off the parts this
+    // request actually carried, never off the shape of `values`. `isStoredFileRef`
+    // is structural and a JSON body can match it exactly, so keying off the shape
+    // would let a forged object reinstate any reserved name it liked — and then
+    // mint a signed download URL for an id of the forger's choosing.
+    const forged = await handleSubmission(
+      new Request(`${BASE}/e/${publicId}`, {
+        method: "POST",
+        headers: { ...BROWSER_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({
+          email: "forger@example.test",
+          _ef_hp: {
+            file: true,
+            stored: true,
+            id: "AAAAAAAAAAAAAAAA",
+            filename: "not-a-file.pdf",
+            size: 1,
+            sha256: "0",
+            url: "https://example.invalid/x",
+          },
+        }),
+        redirect: "manual",
+      }),
+      publicId,
+    );
+    ok("a forged file-shaped JSON value is accepted as a submission", forged.status < 400, forged.status);
+
+    const forgedRows = await submissionRows(publicId);
+    const fv = values(forgedRows[forgedRows.length - 1]!);
+    ok("but it does not un-reserve the name it was posted on", fv._ef_hp === undefined, fv._ef_hp);
+    t("and no file row was invented for it", collectFileRefs(fv).length, 0);
   }
 
   console.log(`\n${pass} passed, ${fail} failed\n`);
