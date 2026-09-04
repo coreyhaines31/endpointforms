@@ -148,9 +148,26 @@ class FieldIndex {
    */
   lookup(name: string): { key: string; value: string | null } | null {
     const direct = this.exact.get(name);
-    const found =
-      direct !== undefined ? { key: name, value: direct } : this.normalized.get(normalizeKey(name));
+    if (direct !== undefined) return { key: name, value: scalarToString(direct) };
+
+    const found = this.normalized.get(normalizeKey(name));
     if (!found) return null;
+
+    // An underscore prefix marks one of **our** names, and `normalizeKey` strips
+    // separators — so without this, `_url` folds onto a customer's own `url`
+    // field and `_referrer` onto their `referrer`, and both get consumed out of
+    // `values`. "Website URL" and "How did you hear about us" are ordinary
+    // things to ask, and the answer would vanish from the inbox, the exports and
+    // every destination (#72).
+    //
+    // The referrer branch below already intended this — it consumes only when
+    // the name starts with `_` — but it tested the *pattern* it was looking up
+    // rather than the *key that matched*, so the guard was always true. Fixing
+    // it here fixes it once, for every caller, rather than at each call site.
+    //
+    // An exact match is returned above, so `_url` still finds a literal `_url`.
+    if (name.startsWith("_") && !found.key.startsWith("_")) return null;
+
     return { key: found.key, value: scalarToString(found.value) };
   }
 }
