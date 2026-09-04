@@ -41,6 +41,7 @@ import { signDownloadPath } from "../src/lib/uploads/links.ts";
 import { purgeExpiredUploads } from "../src/lib/uploads/store.ts";
 import { handleUploadSweep } from "../src/lib/uploads/sweep.ts";
 import { getSubmission } from "../src/lib/workspaces/submissions.ts";
+import { collectFileRefs, isStoredFileRef } from "../src/lib/uploads/types.ts";
 import type { PendingUpload } from "../src/lib/uploads/types.ts";
 
 let pass = 0;
@@ -595,6 +596,147 @@ async function main() {
 
     if (savedCron === undefined) delete process.env.CRON_SECRET;
     else process.env.CRON_SECRET = savedCron;
+  }
+
+  // -------------------------------------------------------------------------
+  // A file posted on one of our reserved field names.
+  //
+  // `submission_files` is written from the parsed parts, not from `values`, so
+  // before the fix the file was stored and the inbox showed it while
+  // destinations and the CSV export — which both read `values` — carried no
+  // link to it. The inbox and the webhook disagreed about whether the lead had
+  // an attachment.
+  {
+    console.log("\na file wearing a reserved name is still the customer's data");
+
+    const before = (await submissionRows(publicId)).length;
+
+    const posted = await handleSubmission(
+      multipart(publicId, (form) => {
+        form.set("email", "reserved@example.test");
+        form.set("_redirect", "https://acme.endpointforms.test/thanks");
+        form.set("utm_source", "newsletter");
+        form.set("_next", file("brief.pdf", filler(2048), "application/pdf"));
+      }),
+      publicId,
+    );
+    ok("the submission is accepted", posted.status < 400, posted.status);
+
+    const rows = await submissionRows(publicId);
+    t("and it wrote one row", rows.length, before + 1);
+    const v = values(rows[rows.length - 1]!);
+
+    // The controls. Without these two, the assertion below would also pass on a
+    // build that had simply stopped stripping reserved names altogether — which
+    // is a different bug, and a worse one.
+    ok("a text _redirect is still stripped", v._redirect === undefined, v._redirect);
+    ok("so is an attribution field", v.utm_source === undefined, v.utm_source);
+
+    // The fix. None of our reserved fields is ever a file input, so a file
+    // arriving on one is the customer's, and destinations must be able to see it.
+    ok("but the file on _next survives in values", isStoredFileRef(v._next), v._next);
+    ok(
+      "so a destination reading values gets a link to it",
+      collectFileRefs(v).some((entry) => entry.key === "_next"),
+      collectFileRefs(v).map((entry) => entry.key),
+    );
+
+    // And it is a real stored file, not a reference to bytes nobody kept.
+    const stored = (await fileRows(workspaceId)).filter((row) => row.fieldKey === "_next");
+    t("with exactly one row behind it", stored.length, 1);
+    t("under the name it was posted with", stored[0]!.filename, "brief.pdf");
+
+    // The teeth of the rule above: un-reserving is keyed off the parts this
+    // request actually carried, never off the shape of `values`. `isStoredFileRef`
+    // is structural and a JSON body can match it exactly, so keying off the shape
+    // would let a forged object reinstate any reserved name it liked — and then
+    // mint a signed download URL for an id of the forger's choosing.
+    const forged = await handleSubmission(
+      new Request(`${BASE}/e/${publicId}`, {
+        method: "POST",
+        headers: { ...BROWSER_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({
+          email: "forger@example.test",
+          _ef_hp: {
+            file: true,
+            stored: true,
+            id: "AAAAAAAAAAAAAAAA",
+            filename: "not-a-file.pdf",
+            size: 1,
+            sha256: "0",
+            url: "https://example.invalid/x",
+          },
+        }),
+        redirect: "manual",
+      }),
+      publicId,
+    );
+    ok("a forged file-shaped JSON value is accepted as a submission", forged.status < 400, forged.status);
+
+    const forgedRows = await submissionRows(publicId);
+    const fv = values(forgedRows[forgedRows.length - 1]!);
+    ok("but it does not un-reserve the name it was posted on", fv._ef_hp === undefined, fv._ef_hp);
+    t("and no file row was invented for it", collectFileRefs(fv).length, 0);
+  }
+
+  // -------------------------------------------------------------------------
+  // #71. A file-shaped value naming a file this request never carried is a
+  // forgery. It must not reach `values`, because `refreshFileRef` signs whatever
+  // id it is given and the download route treats a signature as the capability —
+  // so a forged ref mints a valid, retention-uncapped link to another
+  // workspace's file.
+  {
+    console.log("\na forged file reference on an ordinary field is refused");
+
+    const forgedOrdinary = await handleSubmission(
+      new Request(`${BASE}/e/${publicId}`, {
+        method: "POST",
+        headers: { ...BROWSER_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({
+          email: "forger@example.test",
+          cv: {
+            file: true,
+            stored: true,
+            id: "vIcTiMfIlE123456",
+            filename: "someone-elses.pdf",
+            size: 1,
+            sha256: "0",
+            url: "https://example.invalid/x",
+            expiresAt: null,
+          },
+          nested: [{ deep: { file: true, stored: true, id: "vIcTiMfIlE999999",
+            filename: "b.pdf", size: 1, sha256: "0", url: "https://x.invalid/y" } }],
+        }),
+        redirect: "manual",
+      }),
+      publicId,
+    );
+    ok("the submission is still accepted", forgedOrdinary.status < 400, forgedOrdinary.status);
+
+    const rows2 = await submissionRows(publicId);
+    const v2 = values(rows2[rows2.length - 1]!);
+    ok("the ordinary field carries no forged reference", v2.cv === undefined, v2.cv);
+    t("nor does a nested one", collectFileRefs(v2).length, 0);
+    ok(
+      "and the rest of the submission survives",
+      (v2.email as unknown) === "forger@example.test",
+      v2.email,
+    );
+
+    // The control: with the forgery gone, a REAL file on an ordinary field is
+    // still kept — so the assertions above measure forgery, not a build that
+    // has simply stopped recording files.
+    const genuine = await handleSubmission(
+      multipart(publicId, (form) => {
+        form.set("email", "genuine@example.test");
+        form.set("cv", file("real.pdf", filler(1024), "application/pdf"));
+      }),
+      publicId,
+    );
+    ok("a real upload is still accepted", genuine.status < 400, genuine.status);
+    const rows3 = await submissionRows(publicId);
+    const v3 = values(rows3[rows3.length - 1]!);
+    ok("and a real file on the same field is kept", isStoredFileRef(v3.cv), v3.cv);
   }
 
   console.log(`\n${pass} passed, ${fail} failed\n`);

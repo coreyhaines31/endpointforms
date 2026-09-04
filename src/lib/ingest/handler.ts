@@ -31,7 +31,7 @@ import {
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
 import { retentionExpiry } from "../uploads/limits.ts";
-import { isStoredFileRef } from "../uploads/types.ts";
+import { dropForgedFileRefsIn, isStoredFileRef } from "../uploads/types.ts";
 import { PARTIAL_KEY_PATTERN, STEP_FIELD_KEYS, PARTIAL_KEY_FIELD } from "../steps/format.ts";
 import { completePartial } from "../steps/store.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
@@ -190,7 +190,32 @@ export async function handleSubmission(
       // the same treatment as one that sends `_redirect`.
       ...STEP_FIELD_KEYS,
     ]);
-    const values = omit(parsed.values, reserved);
+    // ...except a key that carried a real file part on this request. Everything
+    // above is our plumbing, and none of it is ever a file input — so a file
+    // arriving on one of these names is the customer's data wearing a reserved
+    // name, not plumbing.
+    //
+    // Stripping it anyway would be a quiet loss of exactly the shape this
+    // product is named against: `submission_files` is written from the parsed
+    // parts rather than from `values`, so the file is stored and the inbox shows
+    // it, while destinations and the CSV export — which both read `values` —
+    // would carry no link to it. The inbox and the webhook would disagree about
+    // whether the lead had an attachment, and the export would silently break
+    // the promise that everything is exportable.
+    //
+    // **Keyed off `parsed.uploads`, never off the shape of `values`.**
+    // `isStoredFileRef` is structural, and a caller can post JSON matching it
+    // exactly — un-reserving on that shape would let a forged object reinstate
+    // any reserved name it liked. `parsed.uploads` is what this request actually
+    // carried, and it is empty for every encoding except multipart, so there is
+    // nothing here for a JSON body to forge.
+    for (const upload of parsed.uploads) reserved.delete(upload.fieldKey);
+
+    // A file-shaped value naming a file this request did not carry is a forgery,
+    // not a reference (#71). Dropped here, before anything downstream can be
+    // asked to sign it — see `dropForgedFileRefs`.
+    const storedIds = new Set(parsed.uploads.map((upload) => upload.publicId));
+    const values = dropForgedFileRefsIn(omit(parsed.values, reserved), storedIds);
 
     const submittedAt = new Date();
 

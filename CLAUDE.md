@@ -156,6 +156,27 @@ production auth. Select by the button's text:
 The same applies to `form` — scope to the form containing the field you just filled, not the
 first one on the page.
 
+**A structural type guard is not a trust boundary.** `isStoredFileRef` checks the
+shape of a value because `values` comes back out of `jsonb` with no class to check
+against — and a caller can post JSON matching that shape exactly. Two separate bugs
+came from treating it as proof of provenance: un-reserving a reserved field name on
+it let a forged object reinstate a honeypot, and re-signing on it minted a valid,
+retention-uncapped download link to **another workspace's** file. Both were caught
+only because the shape check was asked "who could also produce this?".
+
+When a value's *origin* matters, key off the thing that knows the origin —
+`parsed.uploads` is the parts this request actually carried, and is empty for every
+encoding except multipart — never off a predicate the payload can satisfy. The
+guard's own doc comment claimed it defended against this; it defended against a
+partial shape and not a complete one, which is the same class of error as a check
+measuring the wrong thing.
+
+One more, from the same fix: **rebuilding a values object with `out[key] = value`
+reintroduces prototype pollution.** A field literally named `__proto__` mutates
+`Object.prototype` instead of being stored. `src/lib/ingest/body.ts` uses
+`Object.defineProperty` for this reason and there is a test that fails loudly when
+it regresses — it caught this one.
+
 For **frontend-only changes**, passing checks are not enough: open it in `agent-browser`,
 screenshot it, and look at the image in both themes before reporting it done. A computed style
 confirms the code does what you wrote, not what was asked.
