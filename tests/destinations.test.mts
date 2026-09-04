@@ -44,6 +44,10 @@ import {
   handleSweep,
   isAuthorisedSweep,
   isAvailableKind,
+  buildDefaultNotification,
+  defaultNotificationName,
+  endpointReach,
+  NOWHERE_GRACE_SECONDS,
 } from "../src/lib/destinations/index.ts";
 import { deliverWebhook } from "../src/lib/destinations/adapters/webhook.ts";
 import { deliverEmail } from "../src/lib/destinations/adapters/email.ts";
@@ -889,6 +893,118 @@ console.log("\nemail adapter");
 
   if (previousKey === undefined) delete process.env.RESEND_API_KEY;
   else process.env.RESEND_API_KEY = previousKey;
+}
+
+// ---------------------------------------------------------------------------
+// The notification an endpoint is created with (#64)
+// ---------------------------------------------------------------------------
+
+console.log("\ndefault notification");
+{
+  const built = buildDefaultNotification("avery@northwind.example");
+  ok("builds one from the owner's address", built !== null);
+  t(
+    "and stores it in the shape the delivery path parses",
+    built?.config,
+    { to: ["avery@northwind.example"] },
+  );
+  // The stored config has to survive `parseConfig`, or the one destination the
+  // customer never touched would be the one that fails as `configuration`.
+  t(
+    "so parseConfig accepts it unchanged",
+    parseConfig("email", built?.config),
+    { to: ["avery@northwind.example"] },
+  );
+  t(
+    "names the address, because the name is what every log line shows",
+    built?.name,
+    defaultNotificationName("avery@northwind.example"),
+  );
+  ok("trims what it is given", buildDefaultNotification("  avery@northwind.example  ") !== null);
+
+  // Creating an endpoint must not fail because a session has no usable address
+  // on it — the endpoint is still worth having, and #65's warning covers it.
+  t("no address means no notification, not an error", buildDefaultNotification(null), null);
+  t("nor does an empty one", buildDefaultNotification("   "), null);
+  t("nor something that is not an address", buildDefaultNotification("avery"), null);
+}
+
+// ---------------------------------------------------------------------------
+// Never silently deaf (#65)
+// ---------------------------------------------------------------------------
+
+console.log("\nendpoint reach");
+{
+  const email = { kind: "email", enabled: true } as const;
+  const webhook = { kind: "webhook", enabled: true } as const;
+
+  t(
+    "no destinations at all is deaf",
+    endpointReach([], { mailConfigured: true }).state,
+    "deaf",
+  );
+  t(
+    "and every destination paused is deaf too — pausing is how you get here",
+    endpointReach([{ kind: "webhook", enabled: false }], { mailConfigured: true }).state,
+    "deaf",
+  );
+  ok(
+    "the deaf sentence states the consequence before the fix",
+    /stored/.test(endpointReach([], { mailConfigured: true }).detail) &&
+      /nothing leaves|no one is notified/i.test(endpointReach([], { mailConfigured: true }).detail),
+    endpointReach([], { mailConfigured: true }).detail,
+  );
+
+  t(
+    "an email destination on a deployment that cannot send mail is unsendable",
+    endpointReach([email], { mailConfigured: false }).state,
+    "unsendable",
+  );
+  ok(
+    "and says why, and that nothing is lost",
+    /not switched on for this deployment/.test(
+      endpointReach([email], { mailConfigured: false }).detail,
+    ) && /nothing is lost/.test(endpointReach([email], { mailConfigured: false }).detail),
+    endpointReach([email], { mailConfigured: false }).detail,
+  );
+  ok(
+    "and still names the variable for a self-hoster",
+    /RESEND_API_KEY/.test(endpointReach([email], { mailConfigured: false }).detail),
+  );
+
+  // The state exists to catch "every way out is email and email is off". One
+  // webhook is a way out, so it is not this state — the email destination's own
+  // health says the rest.
+  t(
+    "a webhook alongside it is not unsendable",
+    endpointReach([email, webhook], { mailConfigured: false }).state,
+    "reachable",
+  );
+  t(
+    "the same email destination is reachable once mail is on",
+    endpointReach([email], { mailConfigured: true }).state,
+    "reachable",
+  );
+  t(
+    "a paused email destination beside a live webhook still reaches",
+    endpointReach([{ kind: "email", enabled: false }, webhook], { mailConfigured: false }).state,
+    "reachable",
+  );
+  t(
+    "a reachable endpoint has nothing to say",
+    endpointReach([webhook], { mailConfigured: true }).title,
+    "",
+  );
+  t("and counts what is switched on", endpointReach([webhook, email], { mailConfigured: true }).enabledCount, 2);
+
+  // The grace window in `submissions.ts`. Delivery runs in `after()` and writes
+  // its attempt row within milliseconds; a value small enough to catch a row
+  // still in flight would report a lead as lost while it is being delivered.
+  ok(
+    "the in-flight grace is long enough to be outside the delivery path",
+    NOWHERE_GRACE_SECONDS >= 30,
+    NOWHERE_GRACE_SECONDS,
+  );
 }
 
 // ---------------------------------------------------------------------------

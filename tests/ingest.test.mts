@@ -209,15 +209,6 @@ function vals(row: SubmissionRow): Record<string, unknown> {
   return row.values as Record<string, unknown>;
 }
 
-/** jsonb round-trips do not preserve key order; comparisons here should not care. */
-function sortKeys(value: unknown): unknown {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) out[key] = sortKeys(record[key]);
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 
 async function main() {
@@ -280,7 +271,11 @@ async function contentTypes(f: Fixture) {
   t("ack is not a duplicate", ack.duplicate, false);
   t("cors header reflects the posting origin", ajax.headers.get("access-control-allow-origin"), "https://acme.example");
 
-  // multipart, with a file part that is described but not stored.
+  // multipart, with a file part. #66 changed what this asserts: the reference
+  // used to say `stored: false` and the bytes were discarded. The rest of the
+  // upload behaviour has its own suite in `tests/uploads.test.mts` and
+  // `tests/uploads-db.test.mts`; what matters here is that an ordinary
+  // multipart post still goes through and still parses its text fields.
   const fd = new FormData();
   fd.set("email", "ruth@camdenworks.example");
   fd.set("resume", new File([new Uint8Array([1, 2, 3, 4, 5])], "cv.pdf", { type: "application/pdf" }));
@@ -294,14 +289,22 @@ async function contentTypes(f: Fixture) {
   rows = await rowsFor(f.plain);
   const withFile = rows[rows.length - 1];
   t("multipart text field parsed", vals(withFile).email, "ruth@camdenworks.example");
-  // jsonb does not preserve key order, so compare sorted.
-  t("file part described, not stored", sortKeys(vals(withFile).resume), {
-    contentType: "application/pdf",
-    file: true,
-    filename: "cv.pdf",
-    size: 5,
-    stored: false,
-  });
+
+  const fileRef = vals(withFile).resume as Record<string, unknown>;
+  t("file part is stored, not merely described", fileRef.stored, true);
+  t("file keeps its name", fileRef.filename, "cv.pdf");
+  t("file keeps its declared type", fileRef.contentType, "application/pdf");
+  t("file keeps its size", fileRef.size, 5);
+  t(
+    "file carries the hash of its bytes",
+    fileRef.sha256,
+    "74f81fe167d99b4cb41d6d0ccda82278caee9f3e2f25d5e5a3936ff3dcec60d0",
+  );
+  ok(
+    "file carries a signed download link",
+    typeof fileRef.url === "string" && /\/api\/v1\/files\/[A-Za-z0-9_-]+\?e=[0-9a-z]+&s=/.test(fileRef.url),
+    fileRef.url,
+  );
 
   // No content-type at all — a broken client, not a lost lead.
   const sniffedForm = await handleSubmission(

@@ -65,6 +65,13 @@ import {
 // call the claim on its own, without the delivery that normally follows it,
 // because that gap *is* the thing under test.
 import { claimDueRetries, workspacesWithDeliveryWork } from "../src/lib/destinations/store.ts";
+// #64 and #65: the notification an endpoint is created with, and the inbox
+// marker for a submission nothing was ever attempted for.
+import { createEndpoint } from "../src/lib/workspaces/endpoints.ts";
+import {
+  listSubmissions,
+  parseSubmissionFilters,
+} from "../src/lib/workspaces/submissions.ts";
 
 let pass = 0;
 let fail = 0;
@@ -230,9 +237,160 @@ async function main() {
     await concurrentClaimsTakeItOnce(fixture, receiver);
     await claimsWhoseDestinationGoesAway(fixture, receiver);
     await supersededClaims(fixture, receiver);
+    await notifiedByDefault(fixture);
+    await wentNowhere(fixture, receiver);
   } finally {
     await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Notified by default (#64)
+// ---------------------------------------------------------------------------
+
+/**
+ * Creating an endpoint creates the notification, in the same transaction.
+ *
+ * Asserted through `createEndpoint` and read back through `listDestinations` —
+ * the function the screen calls — rather than by selecting the row directly,
+ * because what is being claimed is that the notification is an **ordinary
+ * destination**: it appears in the list, it has health, and everything built for
+ * #41 and #42 applies to it without a second code path.
+ */
+async function notifiedByDefault(fixture: Fixture) {
+  console.log("\nnotified by default");
+
+  const created = await createEndpoint(fixture.workspaceId, "Notified form", {
+    notifyEmail: EMAIL,
+  });
+  t("the address it will notify comes back", created.notified, EMAIL);
+
+  const rows = await listDestinations(fixture.workspaceId, created.publicId);
+  t("one destination exists on a brand-new endpoint", rows.length, 1);
+  t("it is an email destination", rows[0]?.kind, "email");
+  t("switched on", rows[0]?.enabled, true);
+  t("and flagged as the one we made", rows[0]?.defaultNotification, true);
+  ok(
+    "named for the address, which is what the delivery log will show",
+    (rows[0]?.name ?? "").includes(EMAIL),
+    rows[0]?.name,
+  );
+  ok(
+    "and the address survives the redaction the screen reads through",
+    JSON.stringify(rows[0]?.config.summary ?? []).includes(EMAIL),
+    rows[0]?.config.summary,
+  );
+  t(
+    "it starts untested, because nothing has been delivered to it",
+    rows[0]?.health.state,
+    "untested",
+  );
+
+  // Switching it off has to be possible, and has to be the customer's act.
+  await updateDestination(fixture.workspaceId, rows[0]!.id, { enabled: false });
+  const afterPause = await listDestinations(fixture.workspaceId, created.publicId);
+  t("it can be switched off", afterPause[0]?.enabled, false);
+  t("and pausing it does not hide where it came from", afterPause[0]?.defaultNotification, true);
+
+  // End to end, without a mail provider and without a network call.
+  //
+  // `deliverEmail` refuses before it opens a socket when there is no key, so
+  // this exercises the whole chain — createEndpoint, dispatch, the delivery log
+  // — and proves the notification is wired to the *real* ingest path rather
+  // than merely existing as a row. The refusal is the point: an unset key must
+  // produce a written-down configuration failure, never a silent success.
+  const previousKey = process.env.RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
+  await updateDestination(fixture.workspaceId, rows[0]!.id, { enabled: true });
+  await submit(created.publicId, { email: "first@dorsetmetal.example" });
+  await drainDispatch();
+
+  const attempts = await listDeliveryAttempts(fixture.workspaceId, rows[0]!.id);
+  t("the first submission produced an attempt against it", attempts.length, 1);
+  t("which failed rather than reporting success", attempts[0]?.status, "failed");
+  ok(
+    "and says the deployment cannot send, not that something broke",
+    /not switched on for this deployment/.test(attempts[0]?.error ?? ""),
+    attempts[0]?.error,
+  );
+  if (previousKey === undefined) delete process.env.RESEND_API_KEY;
+  else process.env.RESEND_API_KEY = previousKey;
+
+  // The falsifying case: without an address there is no row, which is what makes
+  // the assertion above mean "created because we asked for it" rather than
+  // "created by something else on the way past".
+  const without = await createEndpoint(fixture.workspaceId, "Unnotified form");
+  t("no address means no notification", without.notified, null);
+  t(
+    "and the endpoint really is created with nothing on it",
+    (await listDestinations(fixture.workspaceId, without.publicId)).length,
+    0,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A submission that went nowhere (#65)
+// ---------------------------------------------------------------------------
+
+/**
+ * The inbox marker, both ways round.
+ *
+ * An assertion that a flag is true proves nothing on its own — an empty result
+ * and a broken fixture look identical — so this drives the same query to
+ * `false` twice for two different reasons: once because the submission is too
+ * young to judge, and once because an attempt row exists. Only then does the
+ * `true` in the middle mean what it says.
+ */
+async function wentNowhere(fixture: Fixture, receiver: Receiver) {
+  console.log("\nsubmissions that went nowhere");
+
+  const deaf = await createEndpoint(fixture.workspaceId, "Deaf form");
+  const filters = parseSubmissionFilters({ endpoint: deaf.publicId });
+
+  await submit(deaf.publicId, { email: "lead@dorsetmetal.example" });
+  await drainDispatch();
+
+  const fresh = await listSubmissions(fixture.workspaceId, filters);
+  t("the submission was stored regardless", fresh.total, 1);
+  t(
+    "and is not called lost while it could still be in flight",
+    fresh.rows[0]?.deliveredNowhere,
+    false,
+  );
+
+  const publicId = fresh.rows[0]!.publicId;
+  // Older than the grace window. Nothing else about the row changes.
+  await unsafeDb
+    .update(submissions)
+    .set({ submittedAt: new Date(Date.now() - 10 * 60_000) })
+    .where(eq(submissions.publicId, publicId));
+
+  const aged = await listSubmissions(fixture.workspaceId, filters);
+  t(
+    "past the window with no attempt on it, the inbox says it went nowhere",
+    aged.rows[0]?.deliveredNowhere,
+    true,
+  );
+
+  // Now give it somewhere to go and send it. The row is still backdated, so the
+  // only thing that changed is that an attempt exists.
+  const destination = await createDestination(fixture.workspaceId, deaf.publicId, {
+    kind: "webhook",
+    name: "Late arrival",
+    config: { url: `${receiver.url}/late`, secret: SECRET },
+  });
+  ok("a destination was added after the fact", destination !== null);
+  receiver.reply.status = 200;
+  receiver.reply.body = "ok";
+  await deliverSubmission(fixture.workspaceId, publicId, { force: true });
+  await drainDispatch();
+
+  const delivered = await listSubmissions(fixture.workspaceId, filters);
+  t(
+    "and once something was attempted, it no longer says so",
+    delivered.rows[0]?.deliveredNowhere,
+    false,
+  );
 }
 
 // ---------------------------------------------------------------------------
