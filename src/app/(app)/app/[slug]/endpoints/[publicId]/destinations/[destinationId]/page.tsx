@@ -14,6 +14,11 @@ import { HealthChip, HealthLine } from "@/components/app/destinations-health";
 import { Absent, DataTable, Fact, Td, Th } from "@/components/app/table";
 import { AbsoluteTime, RelativeTime } from "@/components/app/time";
 import { ADAPTER_OPTIONS } from "@/lib/destinations/adapters/index";
+import { isMailConfigured } from "@/lib/destinations/mail";
+import {
+  DEFAULT_NOTIFICATION_BLURB,
+  DEFAULT_NOTIFICATION_UNSENDABLE,
+} from "@/lib/destinations/notify";
 import { getDestination, listDeliveryAttempts } from "@/lib/destinations/store";
 import { HEADER_SIGNATURE, HEADER_TIMESTAMP } from "@/lib/destinations/signature";
 import type { DeliveryLogRow } from "@/lib/destinations/types";
@@ -75,6 +80,26 @@ export default async function DestinationDetailPage({
       <p className="mt-3 max-w-[64ch] text-sm text-muted-foreground">
         {kindLabel} · <HealthLine health={destination.health} />
       </p>
+
+      {/* #64. Where this row came from, if the customer did not make it. */}
+      {destination.defaultNotification ? (
+        <p className="mt-2 max-w-[64ch] text-sm text-muted-foreground">
+          {DEFAULT_NOTIFICATION_BLURB}
+        </p>
+      ) : null}
+
+      {/* Said before the first failure rather than after it. An unset
+          RESEND_API_KEY is a deployment fact — the hosted product supplies
+          sending, a self-hoster brings their own key — and finding that out
+          from a delivery log is finding it out too late. */}
+      {destination.kind === "email" && !isMailConfigured() ? (
+        <p
+          role="status"
+          className="mt-4 max-w-[68ch] rounded-lg border border-bot-edge bg-bot-surface px-5 py-4 text-sm text-foreground"
+        >
+          {DEFAULT_NOTIFICATION_UNSENDABLE}
+        </p>
+      ) : null}
 
       <Panel className="mt-8">
         <PanelHeader

@@ -198,6 +198,7 @@ export async function listDestinations(
         enabled: destinations.enabled,
         createdAt: destinations.createdAt,
         config: destinations.config,
+        defaultNotification: destinations.defaultNotification,
         ...healthColumns,
       })
       .from(destinations)
@@ -232,6 +233,7 @@ export async function getDestination(
         enabled: destinations.enabled,
         createdAt: destinations.createdAt,
         config: destinations.config,
+        defaultNotification: destinations.defaultNotification,
         ...healthColumns,
       })
       .from(destinations)
@@ -985,6 +987,7 @@ type HealthRow = {
   enabled: boolean;
   createdAt: Date;
   config: unknown;
+  defaultNotification: boolean;
   consecutiveFailures: number;
   lastSuccessAt: string | Date | null;
   lastFailureAt: string | Date | null;
@@ -1003,6 +1006,7 @@ function toListItem(row: HealthRow): DestinationListItem {
     enabled: row.enabled,
     createdAt: row.createdAt,
     config: redactConfig(row.kind, row.config),
+    defaultNotification: row.defaultNotification,
     health: {
       state: healthState(row.enabled, row.consecutiveFailures, lastAttemptAt, lastSuccessAt),
       consecutiveFailures: row.consecutiveFailures,

@@ -245,6 +245,12 @@ export type DestinationListItem = {
   createdAt: Date;
   config: RedactedConfig;
   health: DestinationHealth;
+  /**
+   * True when this is the notification the endpoint was created with (#64)
+   * rather than something the customer added. Carried so a screen can explain a
+   * row nobody remembers making; it changes nothing about delivery.
+   */
+  defaultNotification: boolean;
 };
 
 /** One attempt, as the delivery log renders it. Both sides of the exchange. */
