@@ -4,7 +4,8 @@ import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 // `./queries.ts` and `src/db/`. Plain `node` does not resolve the alias, and the
 // tests that exercise the tenant boundary load these modules directly.
 import { newEndpointPublicId, newId, withWorkspace } from "../../db/index.ts";
-import { endpoints, submissions } from "../../db/schema.ts";
+import { destinations, endpoints, submissions } from "../../db/schema.ts";
+import { buildDefaultNotification } from "../destinations/notify.ts";
 import type { EndpointDetail, EndpointListItem } from "./types.ts";
 
 /**
@@ -122,16 +123,28 @@ export async function getEndpointByPublicId(
 }
 
 /**
- * Creates an endpoint. Name only — the public ID is generated, never chosen.
+ * Creates an endpoint, and the notification it is created with (#64).
  *
  * A customer-chosen ID would be guessable, and a guessable ID on an unauthenticated
  * POST route means anyone can fill a stranger's inbox. `newEndpointPublicId()` is
  * 12 nanoid characters, roughly 72 bits.
+ *
+ * **`notifyEmail` produces a real destination row, inside this transaction.**
+ * The reasoning for the shape is in `../destinations/notify.ts`; the reason it
+ * is the *same* transaction is narrower: an endpoint that exists without its
+ * notification is precisely the deaf endpoint #65 is about, and a second write
+ * after the commit is a second write that can fail. Either both rows exist or
+ * neither does.
+ *
+ * An address that is missing or unusable creates the endpoint without one rather
+ * than refusing to create it — a session with no email on it is not a reason
+ * somebody cannot have an endpoint, and #65's warning is what covers the gap.
  */
 export async function createEndpoint(
   workspaceId: string,
   name: string,
-): Promise<{ publicId: string }> {
+  options: { notifyEmail?: string | null } = {},
+): Promise<{ publicId: string; notified: string | null }> {
   return withWorkspace(workspaceId, async (ws) => {
     const [row] = await ws.tx
       .insert(endpoints)
@@ -141,9 +154,25 @@ export async function createEndpoint(
         publicId: newEndpointPublicId(),
         name,
       })
-      .returning({ publicId: endpoints.publicId });
+      .returning({ id: endpoints.id, publicId: endpoints.publicId });
 
-    return { publicId: row.publicId };
+    const notification = buildDefaultNotification(options.notifyEmail);
+    if (notification !== null) {
+      await ws.tx.insert(destinations).values({
+        id: newId(),
+        workspaceId,
+        endpointId: row.id,
+        kind: "email",
+        name: notification.name,
+        config: notification.config,
+        defaultNotification: true,
+      });
+    }
+
+    return {
+      publicId: row.publicId,
+      notified: notification === null ? null : (options.notifyEmail ?? "").trim(),
+    };
   });
 }
 

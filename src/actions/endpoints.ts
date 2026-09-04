@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { formError, formSuccess, type FormState } from "@/actions/form-state";
 import { requireMember } from "@/actions/guards";
+import { requireUser } from "@/lib/auth/session";
 import {
   createEndpoint,
   renameEndpointByPublicId,
@@ -37,6 +38,12 @@ const MESSAGES = {
  * The redirect is the point: the thing someone needs next is the snippet, and
  * leaving them on the list to hunt for the row they just made is how a two-step
  * task becomes a three-step one.
+ *
+ * **It also creates the notification (#64).** The address is the session's, read
+ * here rather than taken from the form: an email address in a hidden field is an
+ * attacker's field, and this one decides where a stranger's leads get sent.
+ * `requireUser()` is memoised per request, so asking for it costs a function
+ * call — `requireMember` has already called it.
  */
 export async function createEndpointAction(
   _prev: FormState,
@@ -52,7 +59,10 @@ export async function createEndpointAction(
     return formError(raw.length === 0 ? MESSAGES.nameEmpty : MESSAGES.nameTooLong);
   }
 
-  const created = await createEndpoint(access.workspace.id, name.data);
+  const user = await requireUser();
+  const created = await createEndpoint(access.workspace.id, name.data, {
+    notifyEmail: user.email,
+  });
 
   revalidatePath(`/app/${access.workspace.slug}/endpoints`);
   redirect(`/app/${access.workspace.slug}/endpoints/${created.publicId}`);
