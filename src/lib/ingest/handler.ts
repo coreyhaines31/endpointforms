@@ -31,7 +31,7 @@ import {
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
 import { retentionExpiry } from "../uploads/limits.ts";
-import { dropForgedFileRefs, isStoredFileRef } from "../uploads/types.ts";
+import { dropForgedFileRefsIn, isStoredFileRef } from "../uploads/types.ts";
 import { PARTIAL_KEY_PATTERN, STEP_FIELD_KEYS, PARTIAL_KEY_FIELD } from "../steps/format.ts";
 import { completePartial } from "../steps/store.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
@@ -215,7 +215,7 @@ export async function handleSubmission(
     // not a reference (#71). Dropped here, before anything downstream can be
     // asked to sign it — see `dropForgedFileRefs`.
     const storedIds = new Set(parsed.uploads.map((upload) => upload.publicId));
-    const values = dropForgedFileRefs(omit(parsed.values, reserved), storedIds);
+    const values = dropForgedFileRefsIn(omit(parsed.values, reserved), storedIds);
 
     const submittedAt = new Date();
 

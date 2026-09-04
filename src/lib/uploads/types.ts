@@ -141,34 +141,55 @@ export function isStoredFileRef(value: unknown): value is StoredFileRef {
  * every consumer. `raw_body` keeps the payload verbatim, so nothing is lost —
  * the same treatment reserved field names already get.
  */
-export function dropForgedFileRefs<T>(value: T, storedIds: ReadonlySet<string>): T {
-  if (isStoredFileRef(value)) {
-    return (storedIds.has(value.id) ? value : undefined) as unknown as T;
-  }
+export function dropForgedFileRefsIn<T extends Record<string, unknown>>(
+  values: T,
+  storedIds: ReadonlySet<string>,
+): T {
+  return rebuild(values, storedIds) as T;
+}
+
+/**
+ * The recursive half. **Not the entry point**, because it can return `undefined`
+ * for a value that is itself a forged reference — and the submission's `values`
+ * object must never become `undefined`.
+ *
+ * That is not hypothetical: a JSON body can *be* a file reference rather than
+ * contain one (`{"file":true,"stored":true,"id":…}` as the whole payload), and
+ * an entry point that treated its argument as a candidate would erase the entire
+ * submission. Callers go through `dropForgedFileRefsIn`, which only ever walks
+ * an object's properties.
+ */
+function dropForgedFileRefs(value: unknown, storedIds: ReadonlySet<string>): unknown {
+  if (isStoredFileRef(value)) return storedIds.has(value.id) ? value : undefined;
   if (Array.isArray(value)) {
     return value
       .map((entry) => dropForgedFileRefs(entry, storedIds))
-      .filter((entry) => entry !== undefined) as unknown as T;
+      .filter((entry) => entry !== undefined);
   }
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      const kept = dropForgedFileRefs(entry, storedIds);
-      if (kept === undefined) continue;
-      // `defineProperty`, not `out[key] = kept`: a field literally named
-      // `__proto__` would otherwise walk up to `Object.prototype` and mutate it
-      // instead of being stored. `../ingest/body.ts` guards its own assembly the
-      // same way, and there is a test that fails loudly if this regresses.
-      Object.defineProperty(out, key, {
-        value: kept,
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    }
-    return out as unknown as T;
-  }
+  if (value !== null && typeof value === "object") return rebuild(value as Record<string, unknown>, storedIds);
   return value;
+}
+
+function rebuild(
+  value: Record<string, unknown>,
+  storedIds: ReadonlySet<string>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const kept = dropForgedFileRefs(entry, storedIds);
+    if (kept === undefined) continue;
+    // `defineProperty`, not `out[key] = kept`: a field literally named
+    // `__proto__` would otherwise walk up to `Object.prototype` and mutate it
+    // instead of being stored. `../ingest/body.ts` guards its own assembly the
+    // same way, and there is a test that fails loudly if this regresses.
+    Object.defineProperty(out, key, {
+      value: kept,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return out;
 }
 
 /** Every stored file in a `values` object, in field order, flattening arrays. */

@@ -43,6 +43,7 @@ import {
 } from "../src/lib/uploads/serve.ts";
 import {
   collectFileRefs,
+  dropForgedFileRefsIn,
   formatBytes,
   isStoredFileRef,
   type StoredFileRef,
@@ -384,6 +385,38 @@ console.log("\nsizes, as a person reads them");
   t("megabytes with one decimal while small", formatBytes(1_400_000), "1.4 MB");
   t("and rounded once large", formatBytes(41_000_000), "41 MB");
   t("nonsense is said out loud rather than rendered as NaN", formatBytes(Number.NaN), "unknown size");
+}
+
+{
+  console.log("\ndropForgedFileRefsIn never returns undefined for a values object");
+
+  const REF = {
+    file: true, stored: true, id: "aaaaaaaaaaaaaaaa",
+    filename: "x.pdf", size: 1, sha256: "0", url: "https://x.invalid/y",
+  };
+
+  // The reason the entry point is separate from the recursion. A values object
+  // can itself satisfy `isStoredFileRef` — every one of the seven keys is a
+  // legal form field name — and an entry point that treated its own argument as
+  // a candidate would return `undefined` and erase the whole submission.
+  //
+  // Not currently reachable through ingest: `normalizeKey` folds `_url` onto
+  // `url`, so attribution consumes a plain `url` field before this runs and the
+  // root stops matching. That is a coupling, not a guarantee — this asserts the
+  // function is correct without relying on it.
+  const rootShaped = dropForgedFileRefsIn({ ...REF }, new Set<string>());
+  ok("a root-shaped values object survives", rootShaped !== undefined, rootShaped);
+  t("with its ordinary fields intact", rootShaped.filename, "x.pdf");
+
+  // The control: a forged ref *inside* a values object is still removed, so the
+  // assertion above is not just "this function stopped doing anything".
+  const nested = dropForgedFileRefsIn({ cv: { ...REF }, email: "a@b.test" }, new Set<string>());
+  ok("but a forged reference inside one is dropped", nested.cv === undefined, nested.cv);
+  t("leaving the rest", nested.email, "a@b.test");
+
+  // And a genuine one is kept when its id is among the parts actually stored.
+  const kept = dropForgedFileRefsIn({ cv: { ...REF } }, new Set(["aaaaaaaaaaaaaaaa"]));
+  ok("a reference whose id was stored is kept", isStoredFileRef(kept.cv), kept.cv);
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
