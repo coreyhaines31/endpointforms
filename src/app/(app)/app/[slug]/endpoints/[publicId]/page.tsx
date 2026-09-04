@@ -12,6 +12,7 @@ import { VerdictChip } from "@/components/app/verdict-chip";
 import { YieldPanel } from "@/components/app/yield-panel";
 import { DeliveryAlert, HealthChip } from "@/components/app/destinations-health";
 import { NowhereChip, ReachAlert } from "@/components/app/reach-alert";
+import { ImportUrlPrompt } from "@/components/app/import-prompt";
 import { isMailConfigured } from "@/lib/destinations/mail";
 import { DEFAULT_NOTIFICATION_BLURB } from "@/lib/destinations/notify";
 import { endpointReach } from "@/lib/destinations/reach";
@@ -129,6 +130,17 @@ export default async function EndpointDetailPage({
             </Link>
           }
         />
+        {/* #68. The offer someone at the base tier can actually accept: they do
+            not want to build a form, they have one. Only shown while there is no
+            schema — once there is, the builder's own import panel is the right
+            place and this would be a second door to the same room. */}
+        {endpoint.hasSchema ? null : (
+          <PanelBody>
+            <ImportUrlPrompt
+              action={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/builder`}
+            />
+          </PanelBody>
+        )}
       </Panel>
 
       <YieldPanel className="mt-6" report={yieldReport} />

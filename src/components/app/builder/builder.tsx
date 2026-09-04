@@ -102,6 +102,15 @@ export type SchemaBuilderProps = {
   /** The path the hosted form posts to. What the preview draws, verbatim. */
   formAction: string;
   formRedirect: string;
+  /**
+   * A page address to read a form from, arriving as `?import=` (#68).
+   *
+   * Set when somebody pasted their page on the endpoint screen rather than
+   * coming here to build. It opens the import panel on the URL tab and runs the
+   * fetch, so one paste is one action — the alternative was landing them on a
+   * builder with their address typed into a box they still have to press.
+   */
+  initialImportUrl?: string | null;
 };
 
 export function SchemaBuilder({
@@ -117,6 +126,7 @@ export function SchemaBuilder({
   renderDomain,
   formAction,
   formRedirect,
+  initialImportUrl = null,
 }: SchemaBuilderProps) {
   // Seeded from the draft when there is one, because that is what somebody was
   // last working on; from the live version otherwise. Never from both.
@@ -129,7 +139,7 @@ export function SchemaBuilder({
     draft?.mode ?? published?.mode ?? "warn",
   );
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const [importOpen, setImportOpen] = useState(seed === null);
+  const [importOpen, setImportOpen] = useState(seed === null || initialImportUrl !== null);
 
   const [saveState, save] = useActionState(saveSchemaAction, idleSchemaState);
 
@@ -361,6 +371,7 @@ export function SchemaBuilder({
                 slug={slug}
                 publicId={publicId}
                 submissionCount={submissionCount}
+                initialUrl={initialImportUrl}
                 onAdopt={adopt}
               />
             </PanelBody>
