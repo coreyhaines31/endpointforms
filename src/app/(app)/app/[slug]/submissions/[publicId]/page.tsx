@@ -18,7 +18,9 @@ import {
 } from "@/lib/submission-values";
 import { requireWorkspace } from "@/lib/workspaces/server";
 import { getSubmission } from "@/lib/workspaces/submissions";
-import type { OriginReason } from "@/lib/workspaces/types";
+import { signDownloadPath } from "@/lib/uploads/links";
+import { formatBytes } from "@/lib/uploads/types";
+import type { OriginReason, SubmissionFileRow } from "@/lib/workspaces/types";
 
 /**
  * One submission, in full.
@@ -115,6 +117,8 @@ export default async function SubmissionDetailPage({
           </dl>
         )}
       </Panel>
+
+      <AttachmentsPanel files={submission.files} />
 
       <OriginPanel origin={submission.origin} reasons={submission.originReasons} />
 
@@ -292,6 +296,122 @@ export default async function SubmissionDetailPage({
         </dl>
       </Panel>
     </Container>
+  );
+}
+
+/**
+ * The files somebody attached (#66).
+ *
+ * ## Every link on this screen is minted here, fresh, on every render
+ *
+ * The reference stored in `values` carries a long-lived link for a webhook
+ * receiver that may not fetch it until the weekend. That link is deliberately
+ * not the one a person clicks: this panel signs a new one with a fifteen-minute
+ * life, which only has to survive the click that follows it. A screenshot of
+ * this page, or the URL copied out of it into a ticket, stops working almost
+ * immediately — which is the correct behaviour for a link to somebody's CV.
+ *
+ * ## Why a purged file still has a row
+ *
+ * Retention takes the bytes, not the record. A file whose bytes are gone shows
+ * its name, its size and its hash, and says the date they were removed and why.
+ * The alternative — dropping it from this list — would leave a submission that
+ * used to mention a CV and now does not, which is indistinguishable from us
+ * having lost it. This product does not get to look like that.
+ *
+ * ## Declared against detected
+ *
+ * Both are shown, and they are shown separately rather than reconciled, because
+ * the interesting case is when they disagree. `invoice.pdf` that begins `MZ` is
+ * a Windows executable somebody renamed, and the person reading this screen is
+ * the one who should decide what that means. Neither value affects how the file
+ * is served: downloads always leave as `application/octet-stream`, always as an
+ * attachment. See `src/lib/uploads/serve.ts`.
+ */
+function AttachmentsPanel({ files }: { files: SubmissionFileRow[] }) {
+  if (files.length === 0) return null;
+
+  const now = new Date();
+
+  return (
+    <Panel className="mt-6">
+      <PanelHeader
+        title={files.length === 1 ? "1 attachment" : `${files.length} attachments`}
+        description="The bytes, kept. Links are signed and expire in fifteen minutes — reload this page for a fresh one."
+      />
+      <DataTable
+        caption="Files attached to this submission: the name, the field it arrived in, its size, what it claims to be against what it looks like, and how long it is kept."
+        scrollLabel="Attachments"
+        tableClassName="min-w-[46rem]"
+      >
+        <thead>
+          <tr>
+            <Th>File</Th>
+            <Th>Field</Th>
+            <Th numeric>Size</Th>
+            <Th>Type</Th>
+            <Th>Kept until</Th>
+          </tr>
+        </thead>
+        <tbody className="[&>tr:last-child>td]:border-b-0">
+          {files.map((file) => {
+            const href = file.purgedAt
+              ? null
+              : signDownloadPath(file.publicId, "page", file.expiresAt, now);
+            return (
+              <tr key={file.publicId}>
+                <Td className="align-top">
+                  {href ? (
+                    <a
+                      href={href}
+                      className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    >
+                      {file.filename}
+                    </a>
+                  ) : (
+                    <span className="text-muted-foreground line-through">{file.filename}</span>
+                  )}
+                  <span className="mt-1 block font-mono text-label text-muted-foreground">
+                    sha256 {file.sha256.slice(0, 16)}…
+                  </span>
+                </Td>
+                <Td dim className="align-top font-mono">
+                  {file.fieldKey}
+                </Td>
+                <Td numeric className="align-top">
+                  {formatBytes(file.size)}
+                </Td>
+                <Td className="align-top">
+                  <span className="font-mono">
+                    {file.declaredContentType || <Absent>none declared</Absent>}
+                  </span>
+                  <span className="mt-1 block text-sm text-muted-foreground">
+                    looks like{" "}
+                    <span className="font-mono">
+                      {file.detectedContentType ?? "nothing we recognise"}
+                    </span>
+                  </span>
+                </Td>
+                <Td dim className="align-top">
+                  {file.purgedAt ? (
+                    <>
+                      removed <AbsoluteTime value={file.purgedAt} />
+                      <span className="mt-1 block text-sm">
+                        retention took the bytes; the record stays
+                      </span>
+                    </>
+                  ) : file.expiresAt ? (
+                    <AbsoluteTime value={file.expiresAt} />
+                  ) : (
+                    <Absent>kept indefinitely</Absent>
+                  )}
+                </Td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </DataTable>
+    </Panel>
   );
 }
 

@@ -7,8 +7,12 @@
  * *something* in a table cell, and none of them may throw.
  *
  * Pure and dependency-free so a Client Component can import it without pulling
- * anything server-side into the browser bundle.
+ * anything server-side into the browser bundle. `../uploads/types` is the same
+ * kind of module — types and predicates, no runtime imports — so naming a file
+ * reference here costs the bundle nothing.
  */
+
+import { formatBytes, isStoredFileRef } from "./uploads/types.ts";
 
 /** Fields worth putting first in a one-line summary, in order of preference. */
 const IDENTITY_KEYS = [
@@ -41,11 +45,24 @@ const NOISE_KEYS = new Set([
   "_honey",
 ]);
 
-/** One scalar, as text. Objects and arrays are JSON, because half a JSON blob is a lie. */
+/**
+ * One scalar, as text. Objects and arrays are JSON, because half a JSON blob is
+ * a lie.
+ *
+ * An attached file (#66) is the one object with a shape of our own making, so
+ * it gets a shape of our own writing: `cv.pdf (241 kB)`. Dumping its JSON here
+ * would put a signed download URL into an inbox row, a CSV cell and a summary
+ * line — a credential in three places nobody meant to put one, and a cell of
+ * unreadable noise where a filename belongs.
+ */
 export function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (isStoredFileRef(value)) return `${value.filename} (${formatBytes(value.size)})`;
+  if (Array.isArray(value) && value.some(isStoredFileRef)) {
+    return value.map(formatValue).filter((entry) => entry !== "").join(", ");
+  }
   try {
     return JSON.stringify(value) ?? "";
   } catch {

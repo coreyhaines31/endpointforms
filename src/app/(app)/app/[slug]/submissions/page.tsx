@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Container } from "@/components/container";
 import { EmptyState, Panel, PanelHeader } from "@/components/app/panel";
 import { ProvenanceChip } from "@/components/provenance-chip";
+import { NowhereChip } from "@/components/app/reach-alert";
 import { SubmissionFilterBar } from "@/components/app/submission-filters";
 import { DataTable, Td, Th } from "@/components/app/table";
 import { RelativeTime } from "@/components/app/time";
@@ -212,7 +213,18 @@ export default async function SubmissionsPage({
                       <RelativeTime value={row.submittedAt} />
                     </Link>
                   </Td>
-                  <Td className="max-w-[26rem]">{summariseValues(row.values)}</Td>
+                  <Td className="max-w-[26rem]">
+                    {summariseValues(row.values)}
+                    {/* #65. On the row, because it is a fact about this lead:
+                        nothing was ever attempted for it. Adding a destination
+                        now does not un-happen it, and this is the only place
+                        that will ever say so. */}
+                    {row.deliveredNowhere ? (
+                      <span className="mt-1.5 block">
+                        <NowhereChip />
+                      </span>
+                    ) : null}
+                  </Td>
                   <Td>
                     <ProvenanceChip origin={row.origin} />
                   </Td>

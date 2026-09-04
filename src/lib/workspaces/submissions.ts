@@ -1,8 +1,14 @@
-import { desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { asc, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 
 // Relative, extension-bearing imports, matching `./queries.ts` and `src/db/`.
 import { withWorkspace } from "../../db/index.ts";
-import { deliveryAttempts, destinations, endpoints, submissions } from "../../db/schema.ts";
+import {
+  deliveryAttempts,
+  destinations,
+  endpoints,
+  submissionFiles,
+  submissions,
+} from "../../db/schema.ts";
 import { NOWHERE_GRACE_SECONDS } from "../destinations/reach.ts";
 import type {
   SubmissionDetail,
@@ -356,6 +362,29 @@ export async function getSubmission(
       .where(ws.where(deliveryAttempts, eq(deliveryAttempts.submissionId, row.id)))
       .orderBy(desc(deliveryAttempts.createdAt));
 
+    // Read from `submission_files`, not from `values` (#66). The two normally
+    // agree, and where they cannot the table is the one that is right: a file
+    // posted under a reserved field name has its reference stripped from
+    // `values` along with our other plumbing, and reading the attachments off
+    // `values` would make that file invisible in the one screen that exists to
+    // prove nothing was lost.
+    const files = await ws.tx
+      .select({
+        publicId: submissionFiles.publicId,
+        fieldKey: submissionFiles.fieldKey,
+        filename: submissionFiles.filename,
+        declaredContentType: submissionFiles.declaredContentType,
+        detectedContentType: submissionFiles.detectedContentType,
+        size: submissionFiles.size,
+        sha256: submissionFiles.sha256,
+        purgedAt: submissionFiles.purgedAt,
+        expiresAt: submissionFiles.expiresAt,
+        createdAt: submissionFiles.createdAt,
+      })
+      .from(submissionFiles)
+      .where(ws.where(submissionFiles, eq(submissionFiles.submissionId, row.id)))
+      .orderBy(asc(submissionFiles.createdAt), asc(submissionFiles.publicId));
+
     return {
       ...toListItem(row),
       originReasons: asReasons(row.originReasons),
@@ -373,6 +402,7 @@ export async function getSubmission(
       idempotencyKey: row.idempotencyKey,
       createdAt: row.createdAt,
       deliveries,
+      files,
     };
   });
 }

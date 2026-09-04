@@ -12,6 +12,8 @@ import {
   PARTIALS_EXPORT_LIMIT,
   type PartialListItem,
 } from "@/lib/workspaces/partials";
+import { refreshFileRefsIn } from "@/lib/uploads/links";
+import { collectFileRefs, isStoredFileRef } from "@/lib/uploads/types";
 import type { SubmissionExportRow } from "@/lib/workspaces/types";
 
 /**
@@ -210,7 +212,11 @@ function toJson(rows: SubmissionExportRow[]): string {
         verdictCurrency: row.verdictCurrency,
         verdictAt: row.verdictAt ? row.verdictAt.toISOString() : null,
         verdictSource: row.verdictSource,
-        values: row.values,
+        // Every attached file's link is re-signed on the way out (#66), so an
+        // export downloaded today is an export whose links work today. The one
+        // stored on the row was signed when the submission arrived and is
+        // pointed at a webhook receiver, not at the person opening this file.
+        values: refreshFileRefsIn(row.values, "export"),
         attribution: {
           utmSource: row.utmSource,
           utmMedium: row.utmMedium,
@@ -265,7 +271,32 @@ const FIXED_COLUMNS = [
  */
 function toCsv(rows: SubmissionExportRow[]): string {
   const valueKeys = collectValueKeys(rows);
-  const header = [...FIXED_COLUMNS, ...valueKeys.map((key) => `field.${key}`)];
+  const now = new Date();
+
+  // Which fields ever held an attachment, across the whole export (#66). A file
+  // gets **two** columns: `field.cv` reads `cv.pdf (241 kB)`, and
+  // `field.cv.url` holds the signed link on its own.
+  //
+  // Two rather than one, because a cell containing a name and a URL is neither:
+  // a spreadsheet will not turn it into a link, and a person cannot read the
+  // filename past 200 characters of signature. On its own in a cell, the URL is
+  // clickable in Excel and Sheets without anybody doing anything.
+  //
+  // The column exists at all because "exports are never paywalled" is a promise
+  // about getting your data out, and a spreadsheet that names a file it cannot
+  // fetch is the promise broken quietly — which is the same failure, one layer
+  // up, as the one this whole issue was about.
+  const fileKeys = new Set<string>();
+  for (const row of rows) {
+    for (const { key } of collectFileRefs(row.values)) fileKeys.add(key);
+  }
+
+  const header = [
+    ...FIXED_COLUMNS,
+    ...valueKeys.flatMap((key) =>
+      fileKeys.has(key) ? [`field.${key}`, `field.${key}.url`] : [`field.${key}`],
+    ),
+  ];
 
   const lines = [header.map(csvCell).join(",")];
 
@@ -291,13 +322,32 @@ function toCsv(rows: SubmissionExportRow[]): string {
       row.referrer ?? "",
       row.userAgent ?? "",
       row.rawContentType ?? "",
-      ...valueKeys.map((key) => formatValue(row.values[key])),
+      ...valueKeys.flatMap((key) =>
+        fileKeys.has(key)
+          ? [formatValue(row.values[key]), fileUrls(row.values[key], now)]
+          : [formatValue(row.values[key])],
+      ),
     ];
 
     lines.push(cells.map(csvCell).join(","));
   }
 
   return `﻿${lines.join("\r\n")}\r\n`;
+}
+
+/**
+ * The signed links for one cell, space separated.
+ *
+ * Space rather than comma because the cell is already inside a CSV, and a
+ * reader that splits on commas — a person, most often — should not see one link
+ * become two broken ones. Re-signed here, not read off the row: see `toJson`.
+ */
+function fileUrls(value: unknown, now: Date): string {
+  const entries = Array.isArray(value) ? value : [value];
+  return entries
+    .filter(isStoredFileRef)
+    .map((ref) => refreshFileRefsIn(ref, "export", now).url)
+    .join(" ");
 }
 
 /** The sum of the signal weights — the arithmetic behind the stamp, in a column. */

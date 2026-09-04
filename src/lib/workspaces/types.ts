@@ -1,6 +1,7 @@
 import type { MembershipRole } from "../../db/schema.ts";
 import type { OriginReason, OriginState } from "../origin/types.ts";
 import type { SpamReason, SpamState } from "../spam/types.ts";
+import type { SubmissionFileRow } from "../uploads/types.ts";
 
 /**
  * The shapes the workspace queries return.
@@ -12,6 +13,7 @@ import type { SpamReason, SpamState } from "../spam/types.ts";
  */
 
 export type { MembershipRole, OriginReason, OriginState, SpamReason, SpamState };
+export type { SubmissionFileRow };
 
 export type WorkspaceSummary = {
   id: string;
@@ -184,6 +186,14 @@ export type SubmissionDetail = SubmissionListItem & {
   idempotencyKey: string | null;
   createdAt: Date;
   deliveries: DeliveryAttemptRow[];
+  /**
+   * Attachments (#66), read from `submission_files` rather than from `values`.
+   *
+   * Never carries the bytes — the detail screen mints a signed, short-lived
+   * link per row and the bytes travel through `/api/v1/files/{id}`, so a page
+   * render never puts a customer's CV through React's serialiser.
+   */
+  files: SubmissionFileRow[];
 };
 
 export type SubmissionExportRow = SubmissionListItem & {
