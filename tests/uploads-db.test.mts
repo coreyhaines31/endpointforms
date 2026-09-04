@@ -679,6 +679,66 @@ async function main() {
     t("and no file row was invented for it", collectFileRefs(fv).length, 0);
   }
 
+  // -------------------------------------------------------------------------
+  // #71. A file-shaped value naming a file this request never carried is a
+  // forgery. It must not reach `values`, because `refreshFileRef` signs whatever
+  // id it is given and the download route treats a signature as the capability —
+  // so a forged ref mints a valid, retention-uncapped link to another
+  // workspace's file.
+  {
+    console.log("\na forged file reference on an ordinary field is refused");
+
+    const forgedOrdinary = await handleSubmission(
+      new Request(`${BASE}/e/${publicId}`, {
+        method: "POST",
+        headers: { ...BROWSER_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({
+          email: "forger@example.test",
+          cv: {
+            file: true,
+            stored: true,
+            id: "vIcTiMfIlE123456",
+            filename: "someone-elses.pdf",
+            size: 1,
+            sha256: "0",
+            url: "https://example.invalid/x",
+            expiresAt: null,
+          },
+          nested: [{ deep: { file: true, stored: true, id: "vIcTiMfIlE999999",
+            filename: "b.pdf", size: 1, sha256: "0", url: "https://x.invalid/y" } }],
+        }),
+        redirect: "manual",
+      }),
+      publicId,
+    );
+    ok("the submission is still accepted", forgedOrdinary.status < 400, forgedOrdinary.status);
+
+    const rows2 = await submissionRows(publicId);
+    const v2 = values(rows2[rows2.length - 1]!);
+    ok("the ordinary field carries no forged reference", v2.cv === undefined, v2.cv);
+    t("nor does a nested one", collectFileRefs(v2).length, 0);
+    ok(
+      "and the rest of the submission survives",
+      (v2.email as unknown) === "forger@example.test",
+      v2.email,
+    );
+
+    // The control: with the forgery gone, a REAL file on an ordinary field is
+    // still kept — so the assertions above measure forgery, not a build that
+    // has simply stopped recording files.
+    const genuine = await handleSubmission(
+      multipart(publicId, (form) => {
+        form.set("email", "genuine@example.test");
+        form.set("cv", file("real.pdf", filler(1024), "application/pdf"));
+      }),
+      publicId,
+    );
+    ok("a real upload is still accepted", genuine.status < 400, genuine.status);
+    const rows3 = await submissionRows(publicId);
+    const v3 = values(rows3[rows3.length - 1]!);
+    ok("and a real file on the same field is kept", isStoredFileRef(v3.cv), v3.cv);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed\n`);
   if (fail > 0) process.exitCode = 1;
 }

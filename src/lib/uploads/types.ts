@@ -120,6 +120,57 @@ export function isStoredFileRef(value: unknown): value is StoredFileRef {
   );
 }
 
+/**
+ * Every file-shaped value that this request did not actually store, removed.
+ *
+ * `isStoredFileRef` is **structural** — it has to be, because `values` comes
+ * back out of `jsonb` with no class to check against — and `normalizeJson`
+ * passes arbitrary objects through untouched. So a caller can post JSON that
+ * matches the shape exactly, naming any file id they like.
+ *
+ * That is not a cosmetic lie in the inbox. `refreshFileRef` signs whatever
+ * `ref.id` says, using the ref's own `expiresAt` as the retention ceiling, and
+ * the download route has no session check by design — the signature *is* the
+ * capability. A forged reference therefore mints a valid, retention-uncapped
+ * link to **another workspace's** file, renewable for as long as the forger
+ * keeps exporting. File ids are not secret in practice: they travel in webhook
+ * payloads, CSV exports and notification emails.
+ *
+ * So forged references are refused here, at the one point where we still know
+ * which parts the request actually carried, rather than defended against in
+ * every consumer. `raw_body` keeps the payload verbatim, so nothing is lost —
+ * the same treatment reserved field names already get.
+ */
+export function dropForgedFileRefs<T>(value: T, storedIds: ReadonlySet<string>): T {
+  if (isStoredFileRef(value)) {
+    return (storedIds.has(value.id) ? value : undefined) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => dropForgedFileRefs(entry, storedIds))
+      .filter((entry) => entry !== undefined) as unknown as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      const kept = dropForgedFileRefs(entry, storedIds);
+      if (kept === undefined) continue;
+      // `defineProperty`, not `out[key] = kept`: a field literally named
+      // `__proto__` would otherwise walk up to `Object.prototype` and mutate it
+      // instead of being stored. `../ingest/body.ts` guards its own assembly the
+      // same way, and there is a test that fails loudly if this regresses.
+      Object.defineProperty(out, key, {
+        value: kept,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
 /** Every stored file in a `values` object, in field order, flattening arrays. */
 export function collectFileRefs(
   values: Record<string, unknown>,
