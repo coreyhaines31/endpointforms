@@ -3,7 +3,7 @@
 > Generated from GitHub issues by `npm run roadmap`. Don't hand-edit —
 > edit the issue and re-run, or the two will drift.
 
-Last synced: 2026-08-31 22:46 UTC
+Last synced: 2026-09-04 20:26 UTC
 
 ## Phase 1 — Foundation
 
@@ -30,7 +30,7 @@ Last synced: 2026-08-31 22:46 UTC
 - [x] **#9** [Programmatic SEO pages](https://github.com/coreyhaines31/endpointforms/issues/9)
 - [x] **#10** [Email sequences — waitlist nurture and launch](https://github.com/coreyhaines31/endpointforms/issues/10)
 - [x] **#11** [Social content and distribution](https://github.com/coreyhaines31/endpointforms/issues/11)
-- [ ] **#24** [Endpoint collects its own waitlist (first real form)](https://github.com/coreyhaines31/endpointforms/issues/24)
+- [x] **#24** [Endpoint collects its own waitlist (first real form)](https://github.com/coreyhaines31/endpointforms/issues/24)
 
 ---
 
