@@ -136,6 +136,13 @@ export type SubmissionListItem = {
   utmMedium: string | null;
   utmCampaign: string | null;
   referrer: string | null;
+  /**
+   * No attempt was ever made to deliver this one, because the endpoint had
+   * nothing switched on when it arrived (#65). A historical fact about this
+   * submission, not a live reading of the endpoint — it stays true after a
+   * destination is added, which is the whole reason it is worth showing.
+   */
+  deliveredNowhere: boolean;
 };
 
 export type SubmissionPage = {

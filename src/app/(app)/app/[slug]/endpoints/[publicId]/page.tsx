@@ -11,6 +11,10 @@ import { RelativeTime } from "@/components/app/time";
 import { VerdictChip } from "@/components/app/verdict-chip";
 import { YieldPanel } from "@/components/app/yield-panel";
 import { DeliveryAlert, HealthChip } from "@/components/app/destinations-health";
+import { NowhereChip, ReachAlert } from "@/components/app/reach-alert";
+import { isMailConfigured } from "@/lib/destinations/mail";
+import { DEFAULT_NOTIFICATION_BLURB } from "@/lib/destinations/notify";
+import { endpointReach } from "@/lib/destinations/reach";
 import { listDestinations } from "@/lib/destinations/store";
 import { getEndpointByPublicId } from "@/lib/workspaces/endpoints";
 import { requireWorkspace } from "@/lib/workspaces/server";
@@ -46,6 +50,12 @@ export default async function EndpointDetailPage({
   const rows = recent.rows.slice(0, 8);
   const destinationRows = await listDestinations(workspace.id, endpoint.publicId);
 
+  // Is anybody being told? (#65) Read here rather than in the component: the
+  // second half of the answer is a deployment fact — whether this build has a
+  // mail transport at all — and `process.env` belongs on the server.
+  const reach = endpointReach(destinationRows, { mailConfigured: isMailConfigured() });
+  const defaultNotification = destinationRows.find((row) => row.defaultNotification) ?? null;
+
   // Yield for this endpoint (#44). Read here rather than in the component:
   // `src/lib/yield/query.ts` opens a database connection, and the eslint rule
   // in `eslint.config.mjs` exists to keep that out of `src/components`.
@@ -72,6 +82,16 @@ export default async function EndpointDetailPage({
         {endpoint.publicId}
         {endpoint.archivedAt ? " · archived" : null}
       </p>
+
+      {/* First on the page when it applies, above even the snippet (#65). An
+          endpoint that tells nobody is the one fact that changes what every
+          other panel here means, and a customer who reads no further than the
+          heading still has to see it. */}
+      <ReachAlert
+        className="mt-6"
+        reach={reach}
+        href={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/destinations`}
+      />
 
       <Panel className="mt-8">
         <PanelHeader
@@ -203,7 +223,14 @@ export default async function EndpointDetailPage({
                       <RelativeTime value={row.submittedAt} />
                     </Link>
                   </Td>
-                  <Td>{summariseValues(row.values)}</Td>
+                  <Td>
+                    {summariseValues(row.values)}
+                    {row.deliveredNowhere ? (
+                      <span className="mt-1.5 block">
+                        <NowhereChip />
+                      </span>
+                    ) : null}
+                  </Td>
                   <Td>
                     <ProvenanceChip origin={row.origin} />
                   </Td>
@@ -250,13 +277,24 @@ export default async function EndpointDetailPage({
             }
           />
           {destinationRows.length > 0 ? (
-            <PanelBody className="flex flex-wrap gap-2">
-              {destinationRows.map((row) => (
-                <span key={row.id} className="inline-flex items-center gap-2">
-                  <HealthChip state={row.health.state} />
-                  <span className="text-sm text-muted-foreground">{row.name}</span>
-                </span>
-              ))}
+            <PanelBody>
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
+                {destinationRows.map((row) => (
+                  <span key={row.id} className="inline-flex items-center gap-2">
+                    <HealthChip state={row.health.state} />
+                    <span className="text-sm text-muted-foreground">{row.name}</span>
+                  </span>
+                ))}
+              </div>
+              {/* #64. A destination the customer never added needs a sentence
+                  saying where it came from — on the screen they are most likely
+                  to first notice it on. */}
+              {defaultNotification ? (
+                <p className="mt-4 max-w-[64ch] text-sm text-muted-foreground">
+                  <span className="text-foreground">{defaultNotification.name}</span> —{" "}
+                  {DEFAULT_NOTIFICATION_BLURB}
+                </p>
+              ) : null}
             </PanelBody>
           ) : null}
         </Panel>

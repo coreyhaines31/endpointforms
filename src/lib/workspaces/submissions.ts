@@ -3,6 +3,7 @@ import { desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 // Relative, extension-bearing imports, matching `./queries.ts` and `src/db/`.
 import { withWorkspace } from "../../db/index.ts";
 import { deliveryAttempts, destinations, endpoints, submissions } from "../../db/schema.ts";
+import { NOWHERE_GRACE_SECONDS } from "../destinations/reach.ts";
 import type {
   SubmissionDetail,
   SubmissionExportRow,
@@ -190,6 +191,31 @@ const listColumns = {
   utmMedium: submissions.utmMedium,
   utmCampaign: submissions.utmCampaign,
   referrer: submissions.referrer,
+  /**
+   * This submission was delivered nowhere (#65).
+   *
+   * Not "the endpoint is currently deaf" — that is a different question, asked
+   * about the endpoint by `endpointReach`. This is the historical fact about
+   * one lead: **no attempt to deliver it was ever made**, because at the moment
+   * it arrived there was nothing switched on to deliver it to. It stays true
+   * after a destination is added later, which is exactly the case worth seeing:
+   * the leads that fell in the gap.
+   *
+   * Every delivery writes a row whatever happens — see the `catch` in
+   * `dispatch.ts`, which exists so that a delivery cannot vanish without a
+   * trace — so "no attempt row" means one thing only.
+   *
+   * The age clause is the in-flight guard, and `NOWHERE_GRACE_SECONDS` carries
+   * its reasoning.
+   */
+  deliveredNowhere: sql<boolean>`(
+    ${submissions.submittedAt} < now() - make_interval(secs => ${NOWHERE_GRACE_SECONDS})
+    and not exists (
+      select 1 from ${deliveryAttempts} a
+      where a.submission_id = ${submissions.id}
+        and a.workspace_id = ${submissions.workspaceId}
+    )
+  )`,
 } as const;
 
 /** One page of the inbox, plus the totals the header needs to say anything useful. */
@@ -380,6 +406,7 @@ function toListItem(row: ListRow): SubmissionListItem {
     utmMedium: (row.utmMedium as string | null) ?? null,
     utmCampaign: (row.utmCampaign as string | null) ?? null,
     referrer: (row.referrer as string | null) ?? null,
+    deliveredNowhere: row.deliveredNowhere === true,
   };
 }
 
