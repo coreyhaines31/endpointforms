@@ -4,6 +4,7 @@ import {
   boolean,
   char,
   check,
+  customType,
   date,
   foreignKey,
   index,
@@ -735,6 +736,118 @@ export const submissionPartials = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Uploaded files (#66)
+// ---------------------------------------------------------------------------
+
+/** Postgres `bytea`, which pg-core has no built-in column type for. */
+const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
+/**
+ * The bytes somebody attached to a form.
+ *
+ * ## Why the bytes are in Postgres and not in an object store
+ *
+ * Because **the file row and the submission row commit together.** An external
+ * store gives you two writes that can disagree: bytes written and the insert
+ * then fails, leaving an orphan nobody will ever find; or the insert succeeds
+ * and the upload fails, leaving a submission that claims an attachment which
+ * does not exist. The second of those is precisely the failure #66 exists to
+ * kill — a submission that *looks* like it kept your file. Here there is one
+ * transaction, so either the lead and its attachments are both in the database
+ * or neither is and the submitter is told. That is a property of the storage
+ * choice, not of care taken by the caller, which is why it is the choice.
+ *
+ * Everything else follows from it. Isolation is the row-level security policy
+ * that already guards `submissions`, rather than a second access-control system
+ * written against a bucket. Retention is a `DELETE`. A self-hoster gets uploads
+ * with no configuration at all, which is a stronger answer than the SMTP gap in
+ * `docs/24` §7. And there is no bucket URL anywhere, so there is no public URL
+ * to leak — the only way to these bytes is `/api/v1/files/…` with a signature.
+ *
+ * The cost is real and is written down in `docs/24` §3.6: bytes in the database
+ * are the most expensive bytes you own, and the caps in
+ * `src/lib/uploads/limits.ts` are what keep the bill sane. The seam for moving
+ * to object storage later is `src/lib/uploads/store.ts` — one module, two
+ * functions — and the day the numbers say to move, the thing that has to be
+ * rebuilt is exactly the atomicity guarantee above.
+ *
+ * ## `bytes` is nullable, and that is not "maybe we stored it"
+ *
+ * Null means **purged**, and `purged_at` says when. A row is never written with
+ * a null `bytes`; the retention sweep nulls it later. The distinction matters
+ * because the inbox has to be able to say "this file was deleted on 3 March
+ * under the 90-day rule" rather than showing a link that 404s.
+ */
+export const submissionFiles = pgTable(
+  "submission_files",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    submissionId: uuid("submission_id").notNull(),
+    /** What the download URL names. Never the primary key. */
+    publicId: text("public_id").notNull(),
+
+    /** The form field the file arrived in, so the inbox can say which input. */
+    fieldKey: text("field_key").notNull(),
+    /** The submitter's filename, sanitised. Display only — never a storage path. */
+    filename: text("filename").notNull(),
+    /**
+     * What the client said the file was. **Recorded, never trusted, never
+     * served.** Downloads always go out as `application/octet-stream`; see
+     * `src/app/api/v1/files/[publicId]/route.ts`.
+     */
+    declaredContentType: text("declared_content_type"),
+    /** What the first bytes actually look like, or null when nothing matched. */
+    detectedContentType: text("detected_content_type"),
+
+    size: integer("size").notNull(),
+    /** Hex SHA-256 of the stored bytes. Lets someone prove the file is intact. */
+    sha256: text("sha256").notNull(),
+    bytes: bytea("bytes"),
+
+    /**
+     * When retention takes this file. Null means "kept until deleted by hand",
+     * which is what `UPLOAD_RETENTION_DAYS=0` configures.
+     *
+     * Every signed download link is clamped to this instant, so no link outlives
+     * the bytes it points at.
+     */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** When the sweep actually took them. Null while the bytes are still here. */
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.endpointId],
+      foreignColumns: [endpoints.workspaceId, endpoints.id],
+      name: "submission_files_endpoint_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [t.workspaceId, t.submissionId],
+      foreignColumns: [submissions.workspaceId, submissions.id],
+      name: "submission_files_submission_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("submission_files_public_id_key").on(t.publicId),
+    unique("submission_files_workspace_id_id_key").on(t.workspaceId, t.id),
+    index("submission_files_submission_idx").on(t.workspaceId, t.submissionId),
+    // The sweep's query, and only the sweep's: rows that still hold bytes and
+    // have an expiry that may have passed.
+    index("submission_files_expiry_idx")
+      .on(t.expiresAt)
+      .where(sql`${t.purgedAt} is null and ${t.expiresAt} is not null`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Destinations and delivery
 // ---------------------------------------------------------------------------
 
@@ -1261,6 +1374,7 @@ export const workspaceScopedTables = [
   splitTestVariants,
   splitTestExposures,
   submissionPartials,
+  submissionFiles,
 ] as const;
 
 export const workspaceScopedTableNames = [
@@ -1278,6 +1392,7 @@ export const workspaceScopedTableNames = [
   "split_test_variants",
   "split_test_exposures",
   "submission_partials",
+  "submission_files",
 ] as const;
 
 export type Workspace = typeof workspaces.$inferSelect;
@@ -1291,6 +1406,7 @@ export type Submission = typeof submissions.$inferSelect;
 export type Destination = typeof destinations.$inferSelect;
 export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;
 export type SubmissionPartial = typeof submissionPartials.$inferSelect;
+export type SubmissionFile = typeof submissionFiles.$inferSelect;
 export type SpamListEntry = typeof spamListEntries.$inferSelect;
 export type EndpointSpamPolicy = typeof endpointSpamPolicies.$inferSelect;
 export type SubmissionSpamState = (typeof submissionSpamState.enumValues)[number];

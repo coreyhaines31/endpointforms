@@ -45,6 +45,16 @@ export const newPartialPublicId = () => nano(16);
 export const newVerdictKeyPublicId = () => nano(12);
 
 /**
+ * Public ID for an uploaded file (#66). 16 chars, matching a submission's.
+ *
+ * Unguessable, but **not itself the credential** — a download needs this id
+ * *and* a signature over it and an expiry (`src/lib/uploads/links.ts`). Sizing
+ * it like a submission id rather than like a partial key is therefore right:
+ * guessing one gets you nothing on its own.
+ */
+export const newFilePublicId = () => nano(16);
+
+/**
  * The token a visitor's form carries between screens (#37).
  *
  * Longer than a public ID, deliberately. This one is not merely unguessable in
