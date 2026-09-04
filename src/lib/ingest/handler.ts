@@ -31,7 +31,7 @@ import {
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
 import { retentionExpiry } from "../uploads/limits.ts";
-import { isStoredFileRef } from "../uploads/types.ts";
+import { collectFileRefs, isStoredFileRef } from "../uploads/types.ts";
 import { PARTIAL_KEY_PATTERN, STEP_FIELD_KEYS, PARTIAL_KEY_FIELD } from "../steps/format.ts";
 import { completePartial } from "../steps/store.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
@@ -190,6 +190,19 @@ export async function handleSubmission(
       // the same treatment as one that sends `_redirect`.
       ...STEP_FIELD_KEYS,
     ]);
+    // ...except when the value is a file. Everything above is our plumbing, and
+    // none of it is ever a file input — so a file arriving on one of these names
+    // is the customer's data wearing a reserved name, not plumbing.
+    //
+    // Stripping it anyway would be a quiet loss of exactly the shape this
+    // product is named against: `submission_files` is written from the parsed
+    // parts rather than from `values`, so the file is stored and the inbox shows
+    // it, while destinations and the CSV export — which both read `values` —
+    // would carry no link to it. The inbox and the webhook would disagree about
+    // whether the lead had an attachment, and the export would silently break
+    // the promise that everything is exportable.
+    for (const { key } of collectFileRefs(parsed.values)) reserved.delete(key);
+
     const values = omit(parsed.values, reserved);
 
     const submittedAt = new Date();

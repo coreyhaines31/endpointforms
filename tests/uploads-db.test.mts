@@ -41,6 +41,7 @@ import { signDownloadPath } from "../src/lib/uploads/links.ts";
 import { purgeExpiredUploads } from "../src/lib/uploads/store.ts";
 import { handleUploadSweep } from "../src/lib/uploads/sweep.ts";
 import { getSubmission } from "../src/lib/workspaces/submissions.ts";
+import { collectFileRefs, isStoredFileRef } from "../src/lib/uploads/types.ts";
 import type { PendingUpload } from "../src/lib/uploads/types.ts";
 
 let pass = 0;
@@ -595,6 +596,55 @@ async function main() {
 
     if (savedCron === undefined) delete process.env.CRON_SECRET;
     else process.env.CRON_SECRET = savedCron;
+  }
+
+  // -------------------------------------------------------------------------
+  // A file posted on one of our reserved field names.
+  //
+  // `submission_files` is written from the parsed parts, not from `values`, so
+  // before the fix the file was stored and the inbox showed it while
+  // destinations and the CSV export — which both read `values` — carried no
+  // link to it. The inbox and the webhook disagreed about whether the lead had
+  // an attachment.
+  {
+    console.log("\na file wearing a reserved name is still the customer's data");
+
+    const before = (await submissionRows(publicId)).length;
+
+    const posted = await handleSubmission(
+      multipart(publicId, (form) => {
+        form.set("email", "reserved@example.test");
+        form.set("_redirect", "https://acme.endpointforms.test/thanks");
+        form.set("utm_source", "newsletter");
+        form.set("_next", file("brief.pdf", filler(2048), "application/pdf"));
+      }),
+      publicId,
+    );
+    ok("the submission is accepted", posted.status < 400, posted.status);
+
+    const rows = await submissionRows(publicId);
+    t("and it wrote one row", rows.length, before + 1);
+    const v = values(rows[rows.length - 1]!);
+
+    // The controls. Without these two, the assertion below would also pass on a
+    // build that had simply stopped stripping reserved names altogether — which
+    // is a different bug, and a worse one.
+    ok("a text _redirect is still stripped", v._redirect === undefined, v._redirect);
+    ok("so is an attribution field", v.utm_source === undefined, v.utm_source);
+
+    // The fix. None of our reserved fields is ever a file input, so a file
+    // arriving on one is the customer's, and destinations must be able to see it.
+    ok("but the file on _next survives in values", isStoredFileRef(v._next), v._next);
+    ok(
+      "so a destination reading values gets a link to it",
+      collectFileRefs(v).some((entry) => entry.key === "_next"),
+      collectFileRefs(v).map((entry) => entry.key),
+    );
+
+    // And it is a real stored file, not a reference to bytes nobody kept.
+    const stored = (await fileRows(workspaceId)).filter((row) => row.fieldKey === "_next");
+    t("with exactly one row behind it", stored.length, 1);
+    t("under the name it was posted with", stored[0]!.filename, "brief.pdf");
   }
 
   console.log(`\n${pass} passed, ${fail} failed\n`);
