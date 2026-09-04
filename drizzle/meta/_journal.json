@@ -64,6 +64,13 @@
       "when": 1788287771978,
       "tag": "0008_key_revocation_and_mde",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788551657452,
+      "tag": "0009_default_notification",
+      "breakpoints": true
     }
   ]
 }

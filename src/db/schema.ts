@@ -751,6 +751,19 @@ export const destinations = pgTable(
     /** Shape depends on `kind`. Secrets get their own handling in #41; not here. */
     config: jsonb("config").notNull().default({}),
     enabled: boolean("enabled").notNull().default(true),
+    /**
+     * True when this row is the notification an endpoint was **created with**
+     * (#64) rather than one a customer went and added.
+     *
+     * It changes nothing about delivery — a default notification is an ordinary
+     * email destination and goes through the same dispatch, the same retries and
+     * the same delivery log, which is the entire reason it is a row here rather
+     * than a flag on `endpoints`. What it changes is what the screen may say
+     * about it: an email destination nobody remembers creating needs a sentence
+     * explaining where it came from, and the alternative — inferring it from the
+     * name — would be wrong the moment somebody renames it.
+     */
+    defaultNotification: boolean("default_notification").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     /** Soft-deleted so the delivery history that references it stays readable. */
