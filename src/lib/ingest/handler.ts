@@ -30,6 +30,8 @@ import {
   type SubmissionAck,
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
+import { retentionExpiry } from "../uploads/limits.ts";
+import { isStoredFileRef } from "../uploads/types.ts";
 import { PARTIAL_KEY_PATTERN, STEP_FIELD_KEYS, PARTIAL_KEY_FIELD } from "../steps/format.ts";
 import { completePartial } from "../steps/store.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
@@ -278,6 +280,12 @@ export async function handleSubmission(
       spamState: spam.state,
       spamScore: spam.score,
       spamReasons: spam.reasons,
+      // Read and hashed by `parseBody`; written by `storeSubmission` inside the
+      // same transaction as the row (#66). Nothing between here and there can
+      // produce a stored submission whose attachments were not also stored —
+      // the two commit together or neither does.
+      uploads: parsed.uploads,
+      uploadsExpireAt: retentionExpiry(submittedAt),
     });
 
     // Destinations (#41). The row is committed; from here on nothing can cost
@@ -444,10 +452,35 @@ function deriveIdempotencyKey(
     .update("\n")
     .update(ipHash ?? "")
     .update("\n")
-    .update(canonicalize(values))
+    .update(canonicalize(fingerprintable(values)))
     .digest("hex")
     .slice(0, 32);
   return `auto:${bucket}:${fingerprint}`;
+}
+
+/**
+ * Strips the parts of a payload that differ between two byte-identical posts.
+ *
+ * Only file references so far, and they are the reason this exists. A
+ * `StoredFileRef` carries a freshly generated id and a freshly signed URL, so
+ * the same form submitted twice by a double-click would fingerprint differently
+ * and **the duplicate would not collapse** — two rows, two copies of the bytes,
+ * and the double lead the idempotency key exists to prevent. Reducing a file to
+ * its name, size and content hash restores that, and does it better than the
+ * old behaviour did: two posts now count as the same lead only if the attached
+ * files are byte-for-byte the same file.
+ */
+function fingerprintable(value: JsonValue): JsonValue {
+  if (isStoredFileRef(value)) {
+    return { file: true, filename: value.filename, size: value.size, sha256: value.sha256 };
+  }
+  if (Array.isArray(value)) return value.map(fingerprintable);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, JsonValue> = {};
+    for (const key of Object.keys(value)) out[key] = fingerprintable(value[key]);
+    return out;
+  }
+  return value;
 }
 
 /** Key order in a payload is not meaningful, so it must not change the fingerprint. */

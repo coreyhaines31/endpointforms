@@ -7,6 +7,8 @@ import { endpoints, formSchemas, submissions } from "../../db/schema.ts";
 import type { OriginReason, OriginState } from "../origin/types.ts";
 import type { SpamReason } from "../spam/types.ts";
 import { readStoredDocument, type FormSchemaDocument } from "../schema/format.ts";
+import { insertUploads } from "../uploads/store.ts";
+import type { PendingUpload } from "../uploads/types.ts";
 import type { JsonValue } from "./body.ts";
 import { IngestError } from "./errors.ts";
 
@@ -155,6 +157,18 @@ export type SubmissionRecord = {
   spamScore: number;
   /** Every signal consulted, including the ones that scored nothing. */
   spamReasons: SpamReason[];
+  /**
+   * The file parts this submission carried (#66), already read and hashed.
+   *
+   * They are written **inside the same transaction as the row below**, which is
+   * the whole reason they are a parameter here rather than a separate call the
+   * handler makes afterwards. A separate call has a window in which the
+   * submission exists and the attachment does not, and a submission that claims
+   * a file it does not have is the failure this feature was built to remove.
+   */
+  uploads: PendingUpload[];
+  /** When those files are swept, or null when this deployment keeps them. */
+  uploadsExpireAt: Date | null;
 };
 
 export type StoredSubmission = {
@@ -241,6 +255,22 @@ export async function storeSubmission(
 
     const row = inserted[0];
     if (row) {
+      // Same transaction, deliberately. If this throws — a constraint, a
+      // disconnect, a disk that is full — the insert above is rolled back with
+      // it, `handleSubmission` answers with an error, and there is no row
+      // anywhere claiming an attachment that was never written. The submitter
+      // is told, which is the entire point.
+      //
+      // Only on the freshly inserted branch: a collapsed duplicate's files were
+      // written by the original request and re-inserting them would be a second
+      // copy of the same bytes under new ids.
+      await insertUploads(ws, {
+        endpointId: endpoint.id,
+        submissionId: row.id,
+        uploads: record.uploads,
+        expiresAt: record.uploadsExpireAt,
+      });
+
       return {
         id: row.id,
         publicId: row.publicId,
