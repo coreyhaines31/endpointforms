@@ -280,6 +280,58 @@ There is no SMTP transport. §7.
 | `ALLOW_INSECURE_DESTINATIONS` | off | Set to `1` to permit `http://` destination URLs. Off by default because a delivery carries leads and a signing secret. This is the flag for delivering to a service on your own network |
 | `ALLOW_PRIVATE_DESTINATIONS` | off | Set to `1` to permit loopback and private-range destination hosts. Used by the test suite; set it in a self-host only if you deliberately deliver to a private address |
 
+### 3.6a File uploads — on by default, no configuration
+
+Attachments are stored **in Postgres**, in the same transaction as the submission
+they belong to. There is no bucket, no object-storage credential and no fourth
+service: a self-hosted instance takes files with nothing set. `docs/21` §"Uploaded
+bytes live in Postgres" explains why that was chosen over a bucket and what it
+costs.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `UPLOAD_LINK_SECRET` | falls back to `AUTH_SECRET` | Signs download links. **With neither set, a production instance refuses file uploads rather than accepting bytes it cannot hand back.** Outside production a fixed dev key is used |
+| `UPLOAD_MAX_FILE_BYTES` | `4194304` (4 MiB) | One file |
+| `UPLOAD_MAX_TOTAL_BYTES` | `4194304` (4 MiB) | Every file in one submission, added up |
+| `UPLOAD_MAX_FILES` | `10` | File parts per submission |
+| `INGEST_MAX_MULTIPART_BODY_BYTES` | `4456448` (4.25 MiB) | The whole multipart envelope. Larger than the file caps so the part headers and the ordinary text fields fit |
+| `UPLOAD_ALLOWED_TYPES` | unset — everything accepted | Comma-separated MIME types; `image/*` matches a family. See below |
+| `UPLOAD_RETENTION_DAYS` | `90` | `0` keeps files indefinitely |
+
+**The defaults are pinned to Vercel, and a self-host can raise them.** A Vercel
+function refuses a request body over 4,500,000 bytes before any of our code runs,
+so the envelope sits just under it — past that number the submitter would see a
+platform error page instead of our sentence explaining what to do. Behind your
+own proxy there is no such ceiling. Two things to know before you raise them: the
+body is buffered whole in memory, so the cap multiplies the memory a burst of
+concurrent uploads costs; and `MAX_BODY_BYTES` (1 MiB) still governs urlencoded
+and JSON posts, deliberately, so an ordinary submission does not pay for a
+feature it is not using.
+
+**`UPLOAD_ALLOWED_TYPES` is unset on purpose.** Refusing by declared MIME type
+stops approximately no attacker — the type is a string the client chooses — and
+does reliably stop real people, because browsers disagree about what a `.heic`
+or a `.pages` is and a form that rejects a customer's actual file is a lost lead.
+What makes a hostile upload harmless is how it is served: every download leaves
+as `application/octet-stream`, always as an attachment, never inline, with
+`nosniff` and a `default-src 'none'; sandbox` CSP. The variable exists for the
+deployment with a compliance reason to take only PDFs.
+
+**Retention needs a scheduler to be true.** `loadFile` refuses to serve a file
+whose expiry has passed, so nothing is served after the date either way — but the
+bytes only actually go when something calls `GET /api/v1/files/sweep` with
+`Authorization: Bearer $CRON_SECRET`. `vercel.json` schedules it daily. On your
+own box, a cron entry hitting that URL is the whole requirement. **Without it,
+"deleted after 90 days" means "hidden after 90 days"**, which is not the same
+promise.
+
+**Refusals are refusals, never silent trims.** A file over a cap, or of a type
+this deployment refuses, fails the **whole submission** with a `413` or a `415`
+naming the file. That is deliberate: a browser form post is answered with a
+redirect to a thank-you page, which has nowhere to carry "we kept your message
+and binned your CV". A refusal the submitter can read and act on beats a success
+that lied.
+
 ### 3.7 Rate limits
 
 All are optional and all take a positive integer; a bad value logs a warning and uses the
@@ -404,6 +456,7 @@ An honest limits section is worth more than an omission.
 | Multi-workspace tenancy with RLS isolation | ✅ | ✅ |
 | **TLS fingerprinting for the form-surface origin signal** | **possible — see below** | ❌ not available |
 | Email delivery | needs a Resend API key | included |
+| **File uploads** | ✅ no configuration | ✅ |
 | Backups, upgrades, uptime | yours | ours |
 | Support | GitHub issues | included |
 
@@ -424,8 +477,11 @@ SMTP has a real gap, and it is written down rather than papered over.
 
 ### Also missing, in both
 
-- **No file uploads.** A multipart file part is described — filename, type, size — and the bytes
-  are discarded. There is no attachment storage.
+- ~~**No file uploads.**~~ Built in #66. Attachments are stored in Postgres in the same
+  transaction as the submission, downloaded through a signed expiring link, and swept on a
+  retention schedule. §3.6a. **A self-hoster gets the whole feature with nothing configured** —
+  the one thing to add is a cron on `/api/v1/files/sweep`, without which retention hides files
+  rather than deleting them.
 - **No password reset flow yet.**
 - **Rate limiting is per-process**, as above.
 - **Outcome API keys cannot be revoked per workspace**, and there is no per-key audit trail.

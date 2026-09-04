@@ -36,7 +36,7 @@ from anything.
 | `Content-Type` | Parsing |
 |---|---|
 | `application/x-www-form-urlencoded` | Repeated names collapse into an array |
-| `multipart/form-data` | Same. **File parts are described, not stored** — see §1.8 |
+| `multipart/form-data` | Same, and the only encoding that can carry a file. **File parts are stored** (#66) — see §1.8. A larger body cap applies |
 | `application/json` or `*/+json` | Must be a JSON **object**. `null`, an array or a scalar is `400 malformed_body` |
 | anything else, or absent | Sniffed: a body starting `{` or `[` is read as JSON; a body containing `=` that parses as urlencoded is read that way; otherwise `415` |
 
@@ -153,11 +153,15 @@ page carrying the same message and code in redirect mode.
 | `endpoint_not_found` | 404 | No endpoint with that id |
 | `endpoint_deleted` | 410 | The endpoint was deleted |
 | `empty_body` | 422 | Nothing to store |
-| `payload_too_large` | 413 | Over 1 048 576 bytes |
+| `payload_too_large` | 413 | Over 1 048 576 bytes — or over 4 456 448 for a `multipart/form-data` body |
 | `too_many_fields` | 413 | Over 250 fields, or over 5 000 JSON values |
 | `field_name_too_long` | 422 | A field name over 256 characters |
 | `unsupported_media_type` | 415 | Unrecognised body, unsniffable |
 | `malformed_body` | 400 | Unparseable JSON, or JSON that is not an object, or nesting over 12 deep |
+| `file_too_large` | 413 | One file over 4 MiB, or the files together over 4 MiB |
+| `too_many_files` | 413 | Over 10 file parts |
+| `file_type_not_allowed` | 415 | Only when the deployment sets `UPLOAD_ALLOWED_TYPES` |
+| `uploads_not_configured` | 503 | This deployment cannot sign download links, so it will not take files |
 | `schema_validation_failed` | 422 | Strict-mode schema only |
 | `rate_limited` | 429 | See §1.5 |
 | `method_not_allowed` | 405 | Not a POST |
@@ -238,9 +242,65 @@ Reserved keys are stripped from `values` and kept verbatim in `raw_body`: every 
 attribution key, plus `_redirect`, `_next`, `_idempotency_key`, `_idempotency`,
 `_submission_key`, `_origin_token`, `_ef_token`.
 
-**No file storage.** A multipart file part becomes
-`{"file": true, "filename": …, "contentType": …, "size": …, "stored": false}` and the bytes are
-discarded. There is no attachment feature.
+**Files are stored** (#66). A multipart file part becomes an object in `values`, in the field it
+was submitted under:
+
+```json
+{
+  "file": true, "stored": true,
+  "id": "kQ2r8kLm4TpWvZ9a",
+  "filename": "cv.pdf", "contentType": "application/pdf", "detectedType": "application/pdf",
+  "size": 241305, "sha256": "9f2b…",
+  "url": "https://endpointforms.com/api/v1/files/kQ2r8kLm4TpWvZ9a?e=…&s=…",
+  "urlExpiresAt": "…", "expiresAt": "…"
+}
+```
+
+`stored` is always `true` and has no other value. **Before #66 this object said `stored: false`
+and the bytes were thrown away** — the submission looked, from the submitter's side, exactly
+like one that had kept their file. That shape no longer exists. A file this endpoint cannot
+keep now fails the **whole submission** with a `413`, a `415` or a `503` naming the file, which
+is what a browser form post shows on its error page. Nothing is ever accepted and quietly
+dropped.
+
+`contentType` is what the client declared and is not trusted. `detectedType` is what the leading
+bytes actually look like, or `null`. Neither affects how a download is served: every file leaves
+as `application/octet-stream`, always as an attachment, never inline.
+
+The caps, all configurable — `docs/24` §3.6a:
+
+| | Default |
+|---|---|
+| one file | 4 MiB |
+| all files in one submission | 4 MiB |
+| file parts per submission | 10 |
+| the whole multipart envelope | 4.25 MiB |
+| retention | 90 days |
+
+An **unfilled** `<input type="file">` — empty filename, zero bytes — is skipped rather than
+stored, because otherwise every submission from a form with an optional upload would carry an
+empty attachment. A zero-byte file *with* a name is stored, because somebody attached it.
+
+`raw_body` for a multipart post is truncated at 65 536 characters with a visible
+`…[truncated]` marker. Every other encoding is still kept verbatim. Megabytes of binary in a
+`text` column would be unreadable and four times the cost of the submission it belongs to, and
+the file bytes are kept properly instead — downloadable, and hashed so their integrity is
+checkable.
+
+### Downloading a file — `GET /api/v1/files/{id}`
+
+The `url` on the object above, and the only way to the bytes. It carries an expiry and an HMAC
+over the file id and that expiry; there is no bucket and no public URL. Links minted for a
+delivery last **7 days**, links on the submission detail screen **15 minutes**, and every one of
+them is **clamped to the file's retention expiry**, so no link outlives the bytes it points at.
+
+| HTTP | When |
+|---|---|
+| `200` | `application/octet-stream`, `Content-Disposition: attachment`, `nosniff`, `default-src 'none'; sandbox` |
+| `403` | Bad or missing signature, or an id that does not exist — **the same answer for all three**, so the route is not an oracle for which files exist |
+| `403` | Expired, which *does* say so: the file is still there, the link ran out, open the submission again |
+| `410` | The bytes were removed under the retention rule, naming the date |
+| `503` | This deployment cannot sign links |
 
 Every stored string has NUL bytes removed and unpaired surrogates replaced with `�`. A field
 literally named `__proto__` is stored as an ordinary field.

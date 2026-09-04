@@ -634,9 +634,15 @@ with no `unknown_field` warning:
 
 ### 7.5 Attachments
 
-**There is no file field type and no attachment storage.** A `tools/call` cannot carry a file.
-On the human form surface a multipart file part is *described* — filename, content type, size —
-and the bytes are discarded.
+**There is no file field type, and a `tools/call` cannot carry a file.** JSON-RPC over a JSON
+body has nowhere to put megabytes of bytes that would not also make every `tools/list` response
+worse, so the Manifest surface does not attempt it.
+
+The human form surface **does** store files as of #66 — a multipart file part is kept, hashed,
+and downloadable through a signed expiring link (`docs/26` §1.8). The asymmetry is deliberate
+and worth naming: an endpoint whose form has a required file input is one an agent cannot
+complete. That is a real limitation of this surface rather than a rounding error, and a schema
+with a file field should expect agent submissions to arrive without it.
 
 ---
 
@@ -745,7 +751,7 @@ Stated plainly so nobody builds against an assumption.
 - **No `notifications/*` handling.** Notifications are accepted with a `202` and dropped.
 - **No authentication.** A public form is public to both surfaces.
 - **No `listChanged`.** Poll `tools/list`.
-- **No attachments.**
+- **No attachments** on this surface. The human form surface stores them (#66); a `tools/call` cannot carry one.
 - **Rate limiting is per-process** (§3.3).
 
 ## 12. Versioning

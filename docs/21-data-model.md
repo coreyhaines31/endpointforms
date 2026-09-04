@@ -91,6 +91,7 @@ visible.
 | `form_schemas` | *Optional*, immutable, versioned field definitions (#51). |
 | `submissions` | The central row. Values, provenance, verdict, source metadata. |
 | `submission_partials` | Somebody who filled in part of a multi-step form and never submitted it (#37). **Deliberately not a `submissions` row.** |
+| `submission_files` | The bytes somebody attached (#66). Kept in Postgres, in the same transaction as the submission. |
 | `destinations` | Where data goes (#41). |
 | `delivery_attempts` | Whether it got there, with both sides of the exchange retained (#42). |
 
@@ -348,6 +349,59 @@ The second one is the reason `workspaceWhere` is exported and tested *outside* a
 scoped transaction. Tested only from inside one, a broken predicate passes —
 row-level security silently covers for it, and the codebase is down to one layer
 without anyone knowing.
+
+### Uploaded bytes live in Postgres, and that is a decision about atomicity
+
+`submission_files.bytes` is `bytea`. The obvious alternative — a bucket, with a
+key on the row — was rejected for one reason that outranks every other
+consideration here.
+
+**An external store gives you two writes that can disagree.** Upload the bytes
+and then fail the insert and you have an orphan nobody will find. Insert first
+and then fail the upload and you have a submission that claims an attachment
+which does not exist. The second of those is exactly the failure #66 exists to
+kill: a form that accepts a file, shows a thank-you page, and kept nothing. In
+Postgres the file rows and the submission row are **one commit**. Either the
+lead and its attachments are both there or neither is and the submitter is told.
+That is a property of the storage choice rather than of care taken by whoever
+writes the next caller, which is why it is the choice.
+
+Three things follow, and each one is a system we did not have to build:
+
+- **Isolation is the row-level security policy that already guards
+  `submissions`**, word for word, rather than a second access-control scheme
+  written against a bucket's ACLs.
+- **Retention is a `DELETE`** — see below — rather than a lifecycle rule
+  configured somewhere the code cannot see.
+- **A self-hoster gets uploads with no configuration at all.** No bucket, no
+  credentials, no fourth service in the compose file. Compare the SMTP gap in
+  `docs/24` §7, which is a real hole; this is the opposite outcome for the same
+  kind of question.
+
+And there is no public URL anywhere, because there is no object to have one. The
+only path to the bytes is `/api/v1/files/{id}` carrying an HMAC over the id and
+an expiry.
+
+**The cost is real and is the reason this may not be the last answer.** Bytes in
+a database are the most expensive bytes you own — roughly an order of magnitude
+more per gigabyte than object storage, and they sit in the same backups and the
+same restore window as the rows that matter most. What keeps that bounded is the
+caps in `src/lib/uploads/limits.ts` (4 MiB a file, 4 MiB a submission) and the
+retention rule. The seam for changing it later is `src/lib/uploads/store.ts` —
+three functions, write, read and sweep — and the thing that has to be rebuilt on
+the day that happens is the atomicity guarantee above, not the plumbing.
+
+### A purged file keeps its row
+
+`bytes` is nullable, and null means **purged**, never "we are not sure". A row is
+never written without bytes; the retention sweep nulls them later and stamps
+`purged_at`. The name, the size and the SHA-256 stay.
+
+That is not tidiness. A file that vanished from the inbox would leave a
+submission that used to mention a CV and now mentions nothing, which is
+indistinguishable — to the customer looking at it — from us having lost it. This
+product does not get to look like that. The screen says which rule removed the
+bytes and on what date.
 
 ---
 
