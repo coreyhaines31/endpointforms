@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import { LOCAL_DATABASE_URL, databaseUrl, dbTarget, hasDatabaseUrl } from "./env.ts";
+import { LOCAL_DATABASE_URL, databaseUrl, hasDatabaseUrl, requiresTls } from "./env.ts";
 import * as schema from "./schema.ts";
 
 type Sql = ReturnType<typeof postgres>;
@@ -40,8 +40,8 @@ function connect(): Sql {
     // be shared mid-transaction. postgres.js handles this, but keep the pool
     // modest: serverless functions each hold their own.
     max: Number(process.env.DATABASE_POOL_MAX ?? 10),
-    // Neon terminates TLS at the edge and refuses plaintext.
-    ssl: dbTarget() === "neon" ? "require" : undefined,
+    // Decided from the URL, never from `DB_TARGET` — see `requiresTls`.
+    ssl: requiresTls(url) ? "require" : undefined,
     prepare: !usesTransactionPooler,
   });
   return cached;

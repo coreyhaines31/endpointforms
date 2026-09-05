@@ -100,11 +100,78 @@ export function hasDatabaseUrl(): boolean {
   }
 }
 
-/** Host and database only — safe to log. Never returns credentials. */
+/**
+ * Whether this connection must be TLS, decided from the URL itself (#77).
+ *
+ * ## Why not from `DB_TARGET`
+ *
+ * It used to be `dbTarget() === "neon"`, which is a statement about *which
+ * variable the URL came from* rather than about where it points. Anything
+ * holding a hosted URL in `DATABASE_URL` — the migrator, a one-off script, a
+ * self-hoster following `docs/24` — connected in plaintext and got a bare
+ * `28000 connection is insecure`, while the log line above it cheerfully said
+ * `migrating local` next to an `aws.neon.tech` host. The only way to make it
+ * work was `DB_TARGET=neon` **plus** `NEON_DEV_DATABASE_URL`, i.e. passing a
+ * production URL under a variable named `NEON_DEV_` — which is exactly how
+ * somebody migrates the wrong database.
+ *
+ * ## This is the second time
+ *
+ * `7227a8a` fixed it once, in August, as a production hotfix. A concurrent
+ * rewrite of this file (`b0d4a22`, lazy connection) was branched from before
+ * that fix, and when both landed the rewrite's copy of the line won. **Nothing
+ * went red, because nothing tested it** — the regression was invisible until a
+ * migration failed against production months later.
+ *
+ * `tests/db-tls.test.mts` exists so that a third rewrite cannot repeat it.
+ *
+ * ## The rules
+ *
+ * An explicit `sslmode` wins, because someone who wrote one meant it. Otherwise
+ * loopback is plaintext and **everything else is TLS** — the default is the
+ * cautious one, so a new host is encrypted by omission rather than exposed by
+ * it. An unparseable URL is treated as hostile for the same reason.
+ */
+export function requiresTls(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Not parseable: assume the network is hostile rather than assume it is not.
+    return true;
+  }
+
+  const sslmode = parsed.searchParams.get("sslmode");
+  if (sslmode) return sslmode !== "disable" && sslmode !== "allow";
+
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const local =
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.startsWith("127.") ||
+    // A unix socket path, which is not a network at all.
+    host === "";
+
+  return !local;
+}
+
+/**
+ * Host and database only — safe to log. Never returns credentials.
+ *
+ * **The label comes from the URL, not from `DB_TARGET`.** It used to print
+ * `dbTarget()`, so a migration aimed at a hosted database announced itself as
+ * `migrating local · ep-....aws.neon.tech/neondb` — the one line whose whole job
+ * is to stop you migrating the wrong database, disagreeing with itself. It now
+ * cannot say `local` next to a remote host, because both halves are decided by
+ * the same function.
+ */
 export function describeDatabase(): string {
   try {
-    const { host, pathname } = new URL(databaseUrl());
-    return `${dbTarget()} · ${host}${pathname}`;
+    const url = databaseUrl();
+    const { host, pathname } = new URL(url);
+    return `${requiresTls(url) ? "hosted" : "local"} · ${host}${pathname}`;
   } catch {
     return dbTarget();
   }
