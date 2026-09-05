@@ -17,15 +17,36 @@ npm run db:seed
 Drizzle Studio. Local Postgres **18** in Docker on **port 5433** — 5432 is left
 free so this never collides with a Postgres already on the machine.
 
-### Two targets, one schema
+### Three databases, one schema
 
-| Target | Selected by | Connection string |
-|---|---|---|
-| Local Docker | default | `DATABASE_URL`, defaulting to the compose database |
-| Hosted Neon dev | `DB_TARGET=neon` | `NEON_DEV_DATABASE_URL` (in `.env.local`, gitignored) |
+| Database | Neon project | Selected by | Connection string |
+|---|---|---|---|
+| Local Docker | — | default | `DATABASE_URL`, defaulting to the compose database |
+| Hosted dev | `endpointforms-dev` | `DB_TARGET=neon` | `NEON_DEV_DATABASE_URL` (in `.env.local`, gitignored) |
+| **Production** | `endpointforms-prod` | never from a script | `DATABASE_URL`, set in Vercel only |
 
 Every db script has a `:neon` twin that just sets `DB_TARGET`:
-`db:migrate:neon`, `db:seed:neon`, `db:studio:neon`, `test:db:neon`.
+`db:migrate:neon`, `db:seed:neon`, `db:studio:neon`, `test:db:neon`. **Every one
+of those points at `endpointforms-dev` and none of them can reach production**,
+because `DB_TARGET=neon` reads `NEON_DEV_DATABASE_URL` and nothing else.
+
+> **Production was called `endpointforms-dev` until 2026-09-05** (#76). There was
+> no separate dev project, so the database holding real leads answered to the
+> name every disposable database in the org uses, and this table called it
+> "Hosted Neon dev". `db:seed` had already grown a `refuseRemoteDatabase()` guard
+> after a near miss. The projects are now named for what they are and the dev one
+> is genuinely empty of customer data; the guard stays, because a guard that has
+> already caught something is not the place to economise.
+
+**The application role is `endpoint`, on every target, and it is not the owner.**
+Neon provisions `neondb_owner` with `rolbypassrls = true`, which ignores every
+policy on every table — tenant isolation is inert while migrations still apply
+and queries still return rows. `scripts/db-create-app-role.mts` creates the
+non-bypassing role, and `tests/tenant-isolation.test.mts` is what proves it: it
+caught exactly this, 18 failures on Neon against 0 on Docker with an identical
+schema. Migrations run **as `endpoint`**, so it owns the objects it queries — no
+migration contains a `GRANT`, so a table created by the owner would be
+unreadable by the app.
 
 **Nothing in `src/db/schema.ts` or in `drizzle/` is specific to either target.**
 Both are Postgres 18 reached over TCP with the same `postgres.js` driver. Neon's
