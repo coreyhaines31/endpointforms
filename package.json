@@ -21,7 +21,7 @@
     "db:reset": "docker compose down -v && npm run db:up && npm run db:migrate && npm run db:seed",
     "lint": "eslint",
     "roadmap": "bash scripts/sync-roadmap.sh",
-    "test": "node --experimental-strip-types tests/waitlist-validate.test.mjs && npm run test:waitlist && node --experimental-strip-types tests/tools.test.mjs && node --experimental-strip-types tests/content-links.test.mjs && node --experimental-strip-types tests/tools-ungated.test.mjs && node --experimental-strip-types tests/workspace-slug.test.mjs && npm run test:classes && npm run test:browser-weight && npm run test:client-ip && npm run test:origin && npm run test:spam && npm run test:schema && npm run test:builder && npm run test:rules && npm run test:render && npm run test:steps && npm run test:uploads && npm run test:theme && npm run test:embed && npm run test:manifest && npm run test:destinations && npm run test:ssrf && npm run test:yield && npm run test:hindsight && npm run test:db",
+    "test": "node --experimental-strip-types tests/waitlist-validate.test.mjs && npm run test:waitlist && node --experimental-strip-types tests/tools.test.mjs && node --experimental-strip-types tests/content-links.test.mjs && node --experimental-strip-types tests/tools-ungated.test.mjs && node --experimental-strip-types tests/workspace-slug.test.mjs && npm run test:classes && npm run test:browser-weight && npm run test:client-ip && npm run test:origin && npm run test:spam && npm run test:schema && npm run test:builder && npm run test:rules && npm run test:render && npm run test:form-css && npm run test:steps && npm run test:uploads && npm run test:theme && npm run test:embed && npm run test:manifest && npm run test:destinations && npm run test:ssrf && npm run test:yield && npm run test:hindsight && npm run test:db",
     "test:waitlist": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/waitlist-endpoint.test.mts",
     "test:origin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/origin.test.mts",
     "test:spam": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/spam.test.mts",
@@ -55,7 +55,10 @@
     "test:steps": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/steps.test.mts",
     "test:steps:db": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/steps-partials.test.mts",
     "test:uploads": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/uploads.test.mts",
-    "test:uploads:db": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/uploads-db.test.mts"
+    "test:uploads:db": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/uploads-db.test.mts",
+    "build:form-css": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/build-form-css.mts",
+    "prebuild": "npm run build:form-css",
+    "test:form-css": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/form-css.test.mts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

@@ -24,13 +24,16 @@ import "./forms.css";
  *
  * ## What is left, and why it cannot go
  *
- * 134 KB of the remaining 150 KB is React and the App Router's client runtime,
- * and only 5.4 KB of the JS this page used to carry was ever the marketing
- * chrome. Next ships that runtime for every App Router route whether or not the
- * route has a single Client Component, and there is no per-route opt-out. So
- * "no marketing JS" is achieved and "no JS" is not: getting under it would mean
- * serving this surface from outside the App Router entirely, which is a
- * different change and belongs with #26's move onto the render domain.
+ * 134 KB of the remaining 150 KB was React and the App Router's client runtime,
+ * which Next ships for every App Router route whether or not the route has a
+ * single Client Component. There is no per-route opt-out, so the only way under
+ * it was to stop being a route: **`/f/{formId}` is now a route handler**
+ * (`route.tsx`, #56) that renders to a string and inlines its stylesheet, and
+ * it transfers **13 KB in one request with no external script at all**.
+ *
+ * This layout no longer wraps the form. It still wraps `thanks/page.tsx`, which
+ * is an ordinary page and still carries the runtime — it is seen once, after
+ * the lead is already captured, so the same arithmetic does not apply to it.
  *
  * ## The type
  *
