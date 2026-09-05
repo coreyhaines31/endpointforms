@@ -6,12 +6,15 @@ import { useFormStatus } from "react-dom";
 
 import { saveSchemaAction } from "@/actions/schemas";
 import { Panel, PanelBody, PanelHeader } from "@/components/app/panel";
+import { EmbedPanel } from "./embed-panel";
 import { FieldCard } from "./field-card";
 import { ImportPanel } from "./import-panel";
 import { CheckboxField, IssueLine, QuietButton, TextField } from "./inputs";
 import { PreviewPane } from "./preview-pane";
 import { RulesInspector } from "./rules-inspector";
 import { RulesPanel } from "./rules-panel";
+import { StepsPanel } from "./steps-panel";
+import { ThemePanel } from "./theme-panel";
 import { VersionsPanel, type VersionSummary } from "./versions-panel";
 import {
   draftIssues,
@@ -26,6 +29,7 @@ import {
   type DraftField,
   type ImportCandidate,
 } from "./state";
+import { EMPTY_THEME } from "@/lib/render/theme";
 import type { FormSchemaDocument } from "@/lib/schema/format";
 import { cn } from "@/lib/utils";
 
@@ -87,9 +91,26 @@ export type SchemaBuilderProps = {
   versions: VersionSummary[];
   /** `https://{render domain}/f/{publicId}` — where the hosted form lives. */
   formUrl: string;
+  /**
+   * The registrable domain forms are served from (docs/05 §4.4).
+   *
+   * Passed down rather than imported so this stays one Client Component with
+   * no environment of its own, and so the embed snippets (#39) name the same
+   * host every other screen in the app names.
+   */
+  renderDomain: string;
   /** The path the hosted form posts to. What the preview draws, verbatim. */
   formAction: string;
   formRedirect: string;
+  /**
+   * A page address to read a form from, arriving as `?import=` (#68).
+   *
+   * Set when somebody pasted their page on the endpoint screen rather than
+   * coming here to build. It opens the import panel on the URL tab and runs the
+   * fetch, so one paste is one action — the alternative was landing them on a
+   * builder with their address typed into a box they still have to press.
+   */
+  initialImportUrl?: string | null;
 };
 
 export function SchemaBuilder({
@@ -102,8 +123,10 @@ export function SchemaBuilder({
   draft,
   versions,
   formUrl,
+  renderDomain,
   formAction,
   formRedirect,
+  initialImportUrl = null,
 }: SchemaBuilderProps) {
   // Seeded from the draft when there is one, because that is what somebody was
   // last working on; from the live version otherwise. Never from both.
@@ -116,7 +139,7 @@ export function SchemaBuilder({
     draft?.mode ?? published?.mode ?? "warn",
   );
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const [importOpen, setImportOpen] = useState(seed === null);
+  const [importOpen, setImportOpen] = useState(seed === null || initialImportUrl !== null);
 
   const [saveState, save] = useActionState(saveSchemaAction, idleSchemaState);
 
@@ -315,6 +338,20 @@ export function SchemaBuilder({
           <RulesInspector document={preview.document} />
         </div>
 
+        {/* Screens (#37), below the rules because a rule can empty a screen and
+            the panel above is where that is decided. Writes straight into the
+            draft, so the preview redraws — and it redraws through `FormView`,
+            which is the hosted form. */}
+        <div className="mt-6">
+          <StepsPanel
+            steps={doc.steps ?? []}
+            fields={doc.fields}
+            notice={doc.notice ?? ""}
+            onChange={(steps) => setDoc((current) => ({ ...current, steps }))}
+            onNoticeChange={(notice) => setDoc((current) => ({ ...current, notice }))}
+          />
+        </div>
+
         <Panel className="mt-6">
           <PanelHeader
             title="Start from a form you already have"
@@ -334,11 +371,23 @@ export function SchemaBuilder({
                 slug={slug}
                 publicId={publicId}
                 submissionCount={submissionCount}
+                initialUrl={initialImportUrl}
                 onAdopt={adopt}
               />
             </PanelBody>
           ) : null}
         </Panel>
+
+        {/* Presentation, beside the other two settings that live on a version
+            rather than on a field. It writes straight into the draft, so the
+            preview in the right-hand column redraws as the controls move — and
+            it redraws through `FormView`, which is the hosted form. */}
+        <div className="mt-6">
+          <ThemePanel
+            theme={doc.theme ?? EMPTY_THEME}
+            onChange={(theme) => setDoc((current) => ({ ...current, theme }))}
+          />
+        </div>
 
         <Panel className="mt-6">
           <PanelHeader
@@ -378,6 +427,22 @@ export function SchemaBuilder({
             </div>
           </PanelBody>
         </Panel>
+
+        {/* Last on the editor, because it is the last thing you do: the fields
+            are the contract and this is where the contract goes to work. It
+            reads the *draft*, so a field renamed a moment ago shows up in the
+            prefill example straight away — the snippets themselves depend only
+            on the endpoint id and are correct before anything is published. */}
+        <div className="mt-6">
+          <EmbedPanel
+            slug={slug}
+            renderDomain={renderDomain}
+            publicId={publicId}
+            fields={preview.document.fields}
+            published={published !== null}
+            archived={archived}
+          />
+        </div>
       </div>
 
       {/* The right-hand column: what state the form is in, what it looks like,

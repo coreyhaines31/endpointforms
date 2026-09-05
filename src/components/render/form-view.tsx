@@ -17,6 +17,8 @@ import {
 import { FormRules } from "./form-rules";
 import { endpointHoneypotFields, honeypotInputProps } from "@/lib/spam/honeypot";
 import { DEFAULT_FONT_STACK, type FormTheme } from "@/lib/render/theme";
+import type { StepContext } from "@/lib/steps/serve";
+import { PartialNotice, StepCarry, StepHeader, StepNav } from "./steps-view";
 
 /**
  * The hosted form (#28).
@@ -82,6 +84,40 @@ export type FormViewProps = {
   values: Record<string, string | string[]>;
   /** True when an answer was too large to carry back across the redirect. */
   truncated: boolean;
+  /**
+   * Underscore-prefixed fields the endpoint consumes before `values` is
+   * written — `_page_url` today, from an embed (#39).
+   *
+   * Separate from `values` on purpose, and the separation is the security
+   * boundary rather than tidiness: `values` is what a person answered, and
+   * these are what the page they were on asserted. `attribution.ts` lifts them
+   * onto columns of their own and they never reach the customer's inbox as
+   * fields. Nothing here may be one of the schema's own keys — see
+   * `src/lib/embed/prefill.ts` for why a URL is not allowed to fill in
+   * something the person submitting cannot see.
+   */
+  controlFields?: Record<string, string>;
+  /**
+   * One screen of a stepped form (#37), or null/absent for the one-screen form
+   * every endpoint has by default.
+   *
+   * When it is absent this file renders exactly what it rendered before #37 —
+   * every field, one `<form>`, one Submit button. `resolveStepContext` returns
+   * null for a document with no steps *and* for every failure it can meet, so
+   * there is no state in which a visitor is shown a wizard we cannot drive.
+   */
+  step?: StepContext | null;
+  /**
+   * Where a screen that is not the last one posts. Required whenever `step` is
+   * given; ignored otherwise.
+   *
+   * **Every** screen posts here, including the last. The step route forwards
+   * the final screen's identical bytes to `handleSubmission`, so routing the
+   * last one through `action` instead would gain nothing and lose the thing
+   * that matters: a validation failure there would 303 to `/f/{id}` with no
+   * partial key, dropping somebody onto screen one holding nothing.
+   */
+  stepAction?: string;
 };
 
 /**
@@ -114,10 +150,64 @@ const THEME_DEFAULTS: Record<string, string> = {
   "--form-danger": "var(--destructive)",
   "--form-danger-surface": "var(--destructive-surface)",
   "--form-radius": "var(--radius)",
+  /**
+   * The page's own breathing room, as a property rather than a literal, because
+   * an embedded form (#39) wants far less of it: this block sits inside
+   * somebody else's section, which already has padding, and a second helping of
+   * it reads as a misaligned box. `page.tsx` overrides this and nothing else
+   * about the layout changes.
+   */
+  "--form-pad": "clamp(2.5rem,7vw,4.5rem)",
+  /**
+   * Horizontal padding, which is its own property because it goes to zero for a
+   * different reason than the vertical one does.
+   *
+   * On a phone, an embedded form that keeps this ends up inset twice — once by
+   * the host section's padding and once by its own — and sits visibly indented
+   * from the heading above it. The host's container is the thing that decides
+   * how far from the edge of a 390px screen its content starts, and the form is
+   * that container's content.
+   */
+  "--form-pad-x": "1.25rem",
+  /**
+   * The measure, for the same reason and with the same override.
+   *
+   * A hosted page centres the form in a 34rem column because nothing else is
+   * on the screen. Inside somebody's `<div>` the column has already been
+   * chosen — by them, in their layout — and centring a narrower one inside it
+   * reads as a misaligned widget rather than as part of the page.
+   */
+  "--form-width": "34rem",
+  /**
+   * Density and button style (#38), which are the two theme controls that could
+   * not otherwise be reached.
+   *
+   * Everything else a theme sets is already a custom property, so it arrives in
+   * the `style` attribute and wins by the cascade. These four measurements and
+   * three button colours were Tailwind literals in the markup below —
+   * `gap-7`, `px-3 py-2.5`, `min-w-[12rem]` — which a `style` attribute cannot
+   * touch. Naming them here is what makes them themeable; every value is the
+   * literal it replaced, so an unthemed form renders the same pixels it did
+   * before.
+   *
+   * The button gets **its own** three tokens rather than reusing the accent.
+   * The checkboxes and radios are painted with `accent-[var(--form-accent)]`,
+   * so an outline button style driven off the shared token would hollow those
+   * out too — a theme choosing "outline button" would silently also un-fill
+   * every checkbox on the form. The defaults point at the accent, so the two
+   * are identical until a theme deliberately separates them.
+   */
+  "--form-gap": "1.75rem",
+  "--form-control-px": "0.75rem",
+  "--form-control-py": "0.625rem",
+  "--form-button-bg": "var(--form-accent)",
+  "--form-button-ink": "var(--form-accent-ink)",
+  "--form-button-edge": "var(--form-accent-edge)",
+  "--form-button-min": "12rem",
 };
 
 const CONTROL_CLASS =
-  "w-full min-w-0 rounded-[var(--form-radius)] border border-[var(--form-border-control)] bg-[var(--form-bg)] px-3 py-2.5 text-base text-[var(--form-fg)] placeholder:text-[var(--form-muted)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] aria-invalid:border-2 aria-invalid:border-[var(--form-danger)]";
+  "w-full min-w-0 rounded-[var(--form-radius)] border border-[var(--form-border-control)] bg-[var(--form-bg)] px-[var(--form-control-px)] py-[var(--form-control-py)] text-base text-[var(--form-fg)] placeholder:text-[var(--form-muted)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] aria-invalid:border-2 aria-invalid:border-[var(--form-danger)]";
 
 export function FormView({
   document,
@@ -128,6 +218,9 @@ export function FormView({
   errors,
   values,
   truncated,
+  controlFields,
+  step,
+  stepAction,
 }: FormViewProps) {
   const style = {
     ...THEME_DEFAULTS,
@@ -168,13 +261,36 @@ export function FormView({
   // worse than no trap.
   const decoys = endpointHoneypotFields(document.fields.map((field) => field.key));
 
-  const listed = rendered.filter((entry) => entry.error && entry.field.type !== "hidden");
+  /**
+   * The fields on this screen, or all of them.
+   *
+   * A `hidden` field is never on a screen and is carried instead — see
+   * `carryKeys` in `src/lib/steps/plan.ts` — so filtering by the screen's field
+   * list is enough here and the hidden branch below simply never fires on a
+   * stepped form.
+   */
+  const onScreen = step ? new Set(step.plan.current.fieldKeys) : null;
+  const shown = onScreen ? rendered.filter((entry) => onScreen.has(entry.field.key)) : rendered;
+
+  const listed = shown.filter((entry) => entry.error && entry.field.type !== "hidden");
 
   return (
+    // The themed ground is full-bleed and the content column is a child of it.
+    //
+    // These were one element, so `--form-page` stopped at the 34rem column and
+    // the `<body>` behind it kept following `.dark` on `<html>` — i.e. the
+    // *visitor's* preference. A form pinned to light, opened on a machine set to
+    // dark, was a white column floating on a near-black page, and the inverse
+    // for a pinned-dark form. It never showed at 390px, where the column fills
+    // the viewport, which is why it survived earlier passes.
+    //
+    // The vars are defined *on* this element, so no ancestor can read
+    // `--form-page`. Splitting it is the only place the fix can live.
     <main
       style={style}
-      className="mx-auto flex w-full max-w-[34rem] flex-1 flex-col bg-[var(--form-page)] px-5 py-[clamp(2.5rem,7vw,4.5rem)] text-[var(--form-fg)]"
+      className="flex w-full flex-1 flex-col bg-[var(--form-page)] text-[var(--form-fg)]"
     >
+      <div className="mx-auto flex w-full max-w-[var(--form-width)] flex-1 flex-col px-[var(--form-pad-x)] py-[var(--form-pad)]">
       {/* `break-words` because the title is somebody else's string and can be a
           single unbroken token — an imported form is often named after the URL
           it came from. Without it a long one runs off the side of a phone,
@@ -190,12 +306,28 @@ export function FormView({
         </p>
       ) : null}
 
-      <form method="post" action={action} className="mt-8" {...{ [FORM_ATTRIBUTE]: "" }}>
+      {/* Which screen this is, and how many there are. Above the form so it is
+          read before the questions rather than after them. */}
+      {step ? <StepHeader plan={step.plan} /> : null}
+
+      <form
+        method="post"
+        action={step ? (stepAction ?? action) : action}
+        className="mt-8"
+        {...{ [FORM_ATTRIBUTE]: "" }}
+      >
         {/* `_redirect` is the ingest path's own field for naming where a browser
             lands afterwards (`src/lib/ingest/respond.ts`). Setting it rather
             than relying on the fallback is what keeps a customer's hosted form
             off the marketing site's thank-you page. */}
         <input type="hidden" name="_redirect" value={redirectTo} />
+
+        {/* The embed's own metadata (#39). Rendered as plain hidden inputs
+            through React, so a page URL containing a quote or a `<` is escaped
+            into the attribute rather than able to leave it. */}
+        {Object.entries(controlFields ?? {}).map(([name, value]) => (
+          <input key={name} type="hidden" name={name} value={value} />
+        ))}
 
         {/* The spam decoys (#31). Rendered here rather than in `src/lib/spam`
             because this is the only place that knows which field names the
@@ -212,8 +344,14 @@ export function FormView({
           <input key={name} {...honeypotInputProps(name)} />
         ))}
 
-        <div className="grid gap-7">
-          {rendered.map((entry) =>
+        {/* Every answer that is not on this screen, re-posted (#37). This is
+            what makes the last screen's POST an ordinary complete submission,
+            so `handleSubmission` merges nothing and knows nothing about steps.
+            It also heals a partial whose earlier write was lost. */}
+        {step ? <StepCarry keys={step.plan.carryKeys} values={values} /> : null}
+
+        <div className="grid gap-[var(--form-gap)]">
+          {shown.map((entry) =>
             entry.field.type === "hidden" ? (
               <HiddenField key={entry.id} field={entry.field} values={values} />
             ) : (
@@ -230,17 +368,30 @@ export function FormView({
           )}
         </div>
 
-        <button
-          type="submit"
-          className="mt-9 inline-flex h-12 w-full items-center justify-center rounded-[var(--form-radius)] bg-[var(--form-accent)] px-5 text-base font-medium text-[var(--form-accent-ink)] shadow-[inset_0_0_0_1px_var(--form-accent-edge)] transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:w-auto sm:min-w-[12rem]"
-        >
-          Submit
-        </button>
+        {/* Back and Continue, or Back and Submit on the last screen. `StepNav`
+            draws the primary button too, so the plain Submit below is the
+            one-screen form's and only the one-screen form's. */}
+        {step ? (
+          <StepNav plan={step.plan} partialKey={step.partialKey} />
+        ) : (
+          <button
+            type="submit"
+            className="mt-9 inline-flex h-12 w-full items-center justify-center rounded-[var(--form-radius)] bg-[var(--form-button-bg)] px-5 text-base font-medium text-[var(--form-button-ink)] shadow-[inset_0_0_0_1px_var(--form-button-edge)] transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:w-auto sm:min-w-[var(--form-button-min)]"
+          >
+            Submit
+          </button>
+        )}
 
         {/* Renders nothing. Present only when there is logic to run, so a form
             without rules ships not one byte of it. */}
         {(document.rules?.length ?? 0) > 0 ? <FormRules schema={document} /> : null}
       </form>
+
+      {/* What the visitor is told about their answers being kept (#37). Under
+          the buttons that cause it, on every screen, and there is no path
+          through `partialNotice` that returns null for a form that captures. */}
+      {step?.plan.notice ? <PartialNotice text={step.plan.notice} /> : null}
+      </div>
     </main>
   );
 }

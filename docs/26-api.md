@@ -36,7 +36,7 @@ from anything.
 | `Content-Type` | Parsing |
 |---|---|
 | `application/x-www-form-urlencoded` | Repeated names collapse into an array |
-| `multipart/form-data` | Same. **File parts are described, not stored** — see §1.8 |
+| `multipart/form-data` | Same, and the only encoding that can carry a file. **File parts are stored** (#66) — see §1.8. A larger body cap applies |
 | `application/json` or `*/+json` | Must be a JSON **object**. `null`, an array or a scalar is `400 malformed_body` |
 | anything else, or absent | Sniffed: a body starting `{` or `[` is read as JSON; a body containing `=` that parses as urlencoded is read that way; otherwise `415` |
 
@@ -153,11 +153,15 @@ page carrying the same message and code in redirect mode.
 | `endpoint_not_found` | 404 | No endpoint with that id |
 | `endpoint_deleted` | 410 | The endpoint was deleted |
 | `empty_body` | 422 | Nothing to store |
-| `payload_too_large` | 413 | Over 1 048 576 bytes |
+| `payload_too_large` | 413 | Over 1 048 576 bytes — or over 4 456 448 for a `multipart/form-data` body |
 | `too_many_fields` | 413 | Over 250 fields, or over 5 000 JSON values |
 | `field_name_too_long` | 422 | A field name over 256 characters |
 | `unsupported_media_type` | 415 | Unrecognised body, unsniffable |
 | `malformed_body` | 400 | Unparseable JSON, or JSON that is not an object, or nesting over 12 deep |
+| `file_too_large` | 413 | One file over 4 MiB, or the files together over 4 MiB |
+| `too_many_files` | 413 | Over 10 file parts |
+| `file_type_not_allowed` | 415 | Only when the deployment sets `UPLOAD_ALLOWED_TYPES` |
+| `uploads_not_configured` | 503 | This deployment cannot sign download links, so it will not take files |
 | `schema_validation_failed` | 422 | Strict-mode schema only |
 | `rate_limited` | 429 | See §1.5 |
 | `method_not_allowed` | 405 | Not a POST |
@@ -238,9 +242,65 @@ Reserved keys are stripped from `values` and kept verbatim in `raw_body`: every 
 attribution key, plus `_redirect`, `_next`, `_idempotency_key`, `_idempotency`,
 `_submission_key`, `_origin_token`, `_ef_token`.
 
-**No file storage.** A multipart file part becomes
-`{"file": true, "filename": …, "contentType": …, "size": …, "stored": false}` and the bytes are
-discarded. There is no attachment feature.
+**Files are stored** (#66). A multipart file part becomes an object in `values`, in the field it
+was submitted under:
+
+```json
+{
+  "file": true, "stored": true,
+  "id": "kQ2r8kLm4TpWvZ9a",
+  "filename": "cv.pdf", "contentType": "application/pdf", "detectedType": "application/pdf",
+  "size": 241305, "sha256": "9f2b…",
+  "url": "https://endpointforms.com/api/v1/files/kQ2r8kLm4TpWvZ9a?e=…&s=…",
+  "urlExpiresAt": "…", "expiresAt": "…"
+}
+```
+
+`stored` is always `true` and has no other value. **Before #66 this object said `stored: false`
+and the bytes were thrown away** — the submission looked, from the submitter's side, exactly
+like one that had kept their file. That shape no longer exists. A file this endpoint cannot
+keep now fails the **whole submission** with a `413`, a `415` or a `503` naming the file, which
+is what a browser form post shows on its error page. Nothing is ever accepted and quietly
+dropped.
+
+`contentType` is what the client declared and is not trusted. `detectedType` is what the leading
+bytes actually look like, or `null`. Neither affects how a download is served: every file leaves
+as `application/octet-stream`, always as an attachment, never inline.
+
+The caps, all configurable — `docs/24` §3.6a:
+
+| | Default |
+|---|---|
+| one file | 4 MiB |
+| all files in one submission | 4 MiB |
+| file parts per submission | 10 |
+| the whole multipart envelope | 4.25 MiB |
+| retention | 90 days |
+
+An **unfilled** `<input type="file">` — empty filename, zero bytes — is skipped rather than
+stored, because otherwise every submission from a form with an optional upload would carry an
+empty attachment. A zero-byte file *with* a name is stored, because somebody attached it.
+
+`raw_body` for a multipart post is truncated at 65 536 characters with a visible
+`…[truncated]` marker. Every other encoding is still kept verbatim. Megabytes of binary in a
+`text` column would be unreadable and four times the cost of the submission it belongs to, and
+the file bytes are kept properly instead — downloadable, and hashed so their integrity is
+checkable.
+
+### Downloading a file — `GET /api/v1/files/{id}`
+
+The `url` on the object above, and the only way to the bytes. It carries an expiry and an HMAC
+over the file id and that expiry; there is no bucket and no public URL. Links minted for a
+delivery last **7 days**, links on the submission detail screen **15 minutes**, and every one of
+them is **clamped to the file's retention expiry**, so no link outlives the bytes it points at.
+
+| HTTP | When |
+|---|---|
+| `200` | `application/octet-stream`, `Content-Disposition: attachment`, `nosniff`, `default-src 'none'; sandbox` |
+| `403` | Bad or missing signature, or an id that does not exist — **the same answer for all three**, so the route is not an oracle for which files exist |
+| `403` | Expired, which *does* say so: the file is still there, the link ran out, open the submission again |
+| `410` | The bytes were removed under the retention rule, naming the date |
+| `503` | This deployment cannot sign links |
 
 Every stored string has NUL bytes removed and unpaired surrogates replaced with `�`. A field
 literally named `__proto__` is stored as an ordinary field.
@@ -285,55 +345,82 @@ An automation written against `/api/v1/verdict` keeps working. A breaking change
 ## 2.2 Authentication
 
 ```
+Authorization: Bearer efv2.{key-id}.{secret}
+```
+
+`X-Api-Key: efv2.…` also works. `Authorization` wins when both are sent. A bare key with no
+`Bearer` scheme is accepted deliberately, because some CRM webhook builders cannot send one.
+
+Keys are created in **workspace settings**. A workspace may hold several at once, which is how
+one is rotated without an outage: create the new key, move the integration across, then revoke
+the old one, with both live in between.
+
+**A key is shown once.** Only a SHA-256 of its secret half is stored, so nothing — including
+us — can display it again. If you lose one, revoke it and create another.
+
+**Revocation is per key.** Revoking one key does not affect any other key, any other workspace,
+or any other deployment. The row is kept rather than deleted, so `created_at`, `last_used_at`
+and `revoked_at` remain answerable after the fact. `last_used_at` is recorded to the nearest
+five minutes: writing it on every request would put a row update and a row lock on a path CRMs
+retry, and "is anything still using this key?" is not a question anybody asks to the second.
+
+### The legacy `efv1` key
+
+```
 Authorization: Bearer efv1.{workspace-slug}.{signature}
 ```
 
-`X-Api-Key: efv1.…` also works. `Authorization` wins when both are sent. A bare key with no
-`Bearer` scheme is accepted deliberately, because some CRM webhook builders cannot send one.
+The original format, still accepted so that integrations already in the field keep working. It
+is an HMAC over the workspace's internal id — nothing is stored, and minting and verifying are
+the same computation, which is why the settings page can still display it in full and why
+anything holding `VERDICT_API_KEY_SECRET` can recompute it.
 
-The key is an HMAC over the workspace's internal id. Nothing is stored: minting and verifying
-are the same computation. The slug in the middle is a lookup handle, so **renaming a workspace
-invalidates its key**.
+Its documented costs are unchanged except for the first, which is now fixed:
 
-**Rotation** is `VERDICT_API_KEY_SECRET` → `VERDICT_API_KEY_SECRET_PREVIOUS`. Keys are minted
-from the current secret and verified against current-then-previous, with a constant-time
-comparison.
+1. ~~**Rotation is fleet-wide, not per-tenant.**~~ **Each workspace can now revoke its own
+   legacy key** from settings, without touching `VERDICT_API_KEY_SECRET` or anybody else's key.
+   Rotating the server secret is still fleet-wide, and is still the only way to invalidate
+   every legacy key at once; set the old value as `VERDICT_API_KEY_SECRET_PREVIOUS` so live
+   integrations keep working while you reissue.
+2. **Renaming a workspace invalidates its legacy key.** Intended, not a bug: the slug is the
+   render subdomain and is effectively permanent, and a key that silently followed a rename
+   would be a key nobody could reason about. `efv2` keys are looked up by their own id and are
+   unaffected by a rename.
+3. **The audit trail is coarser than an `efv2` key's.** A last-used time is recorded for the
+   workspace's legacy key, but there is only ever one of them, so several callers sharing it
+   remain indistinguishable. An `efv2` key per integration is what makes them separable.
 
-> **Three honest limits, worth knowing before you build on this.**
->
-> 1. **Rotation is fleet-wide, not per-tenant.** Changing `VERDICT_API_KEY_SECRET` invalidates
->    every workspace's key at once. Set the old value as `VERDICT_API_KEY_SECRET_PREVIOUS` so
->    live integrations keep working while you reissue.
-> 2. **Renaming a workspace invalidates its key.** Intended, not a bug: the slug is the render
->    subdomain and is effectively permanent, and a key that silently followed a rename would be
->    a key nobody could reason about.
-> 3. **No per-key audit trail.** Every caller holding a workspace's key is indistinguishable
->    from every other. `verdict_source` records that an outcome arrived by webhook, not who
->    sent it.
->
-> A stored key with its own `revoked_at` is the real answer to all three, and it needs a column
-> the data model deliberately does not have yet.
+New integrations should use an `efv2` key. It needs no server secret at all, which means a
+self-hosted deployment that never sets `VERDICT_API_KEY_SECRET` still has a working outcome
+webhook — the 503 below applies only to `efv1`.
 
 ### 401
 
 Status `401`, header `WWW-Authenticate: Bearer realm="endpointforms", charset="UTF-8"`, body
-`{"ok": false, "error": {"code": "unauthorized", "message": …}}`.
+`{"ok": false, "error": {"code": …, "message": …}}`.
 
-| Situation | Message |
-|---|---|
-| No key at all | ``No API key. Send your workspace's outcome key as `Authorization: Bearer efv1.<workspace>.<signature>`.`` |
-| Structurally invalid | `That is not a valid outcome API key. Expected a key of the form efv1.<workspace>.<signature> in the Authorization header.` |
-| Unknown workspace **or** bad signature | `That API key is not valid for this deployment. Keys are per workspace; check you are sending the key for the workspace whose submissions you are grading.` |
+| Situation | Code | Message |
+|---|---|---|
+| No key at all | `unauthorized` | ``No API key. Send your workspace's outcome key as `Authorization: Bearer efv2.<id>.<secret>`.`` |
+| Structurally invalid | `unauthorized` | `That is not a valid outcome API key. Expected a key of the form efv2.<id>.<secret> in the Authorization header.` |
+| Unknown key **or** wrong secret | `unauthorized` | `That API key is not valid for this deployment. Keys are per workspace; check you are sending the key for the workspace whose submissions you are grading.` |
+| The key was revoked | `key_revoked` | `That outcome API key has been revoked and will not be accepted again. Create a new key in workspace settings and update whatever is calling this.` |
 
-The last two are byte-identical **on purpose**, and asserted to be, so that workspace slugs
-cannot be enumerated by comparing error messages.
+The two middle rows are byte-identical **on purpose**, and asserted to be, so that neither
+workspace slugs nor key ids can be enumerated by comparing error messages.
+
+`key_revoked` is deliberately *not* collapsed into them. Whoever is holding a revoked key
+already had the key, so naming its state tells them nothing they did not have — while an
+undifferentiated 401 sends a CRM engineer looking for a signing bug that is not there.
 
 **There is no 403 on this surface.** A key for workspace A naming workspace B's submission gets
 `404 submission_not_found`, because inside the workspace-scoped transaction the row genuinely
 does not exist.
 
-If `VERDICT_API_KEY_SECRET` is unset in production the route answers `503
-server_not_configured` rather than accepting keys it cannot verify.
+If `VERDICT_API_KEY_SECRET` is unset in production, a **legacy `efv1`** key answers `503
+server_not_configured` rather than being accepted unverified. An `efv2` key is unaffected: it
+is a random secret checked against its own hash and is not forgeable with or without a server
+secret.
 
 ## 2.3 The request
 
@@ -475,7 +562,8 @@ field at all. If `submission_id` is present, `email` is ignored entirely.
 | HTTP | `code` | Cause |
 |---|---|---|
 | 401 | `unauthorized` | §2.2 |
-| 503 | `server_not_configured` | No `VERDICT_API_KEY_SECRET` in production |
+| 401 | `key_revoked` | §2.2 — the key existed and was revoked |
+| 503 | `server_not_configured` | A legacy `efv1` key with no `VERDICT_API_KEY_SECRET` in production |
 | 404 | `submission_not_found` | Unknown id, or an id belonging to another workspace |
 | 422 | `invalid_request` | Neither `submission_id` nor `email`; or an over-long id |
 | 422 | `invalid_verdict` | Missing, or not one of the four |
@@ -627,7 +715,7 @@ curl -sX POST https://example.com/e/abc123 \
 
 ```bash
 curl -sX POST https://example.com/api/v1/verdict \
-  -H 'authorization: Bearer efv1.northwind.<signature>' \
+  -H 'authorization: Bearer efv2.<key-id>.<secret>' \
   -H 'content-type: application/json' \
   -d '{"submission_id":"fAlO-my_EP2XbtxN","verdict":"won","value":18400,"currency":"USD"}'
 ```
@@ -636,7 +724,7 @@ curl -sX POST https://example.com/api/v1/verdict \
 
 ```bash
 curl -sX POST https://example.com/api/v1/verdict \
-  -H 'authorization: Bearer efv1.northwind.<signature>' \
+  -H 'authorization: Bearer efv2.<key-id>.<secret>' \
   -H 'content-type: text/csv' \
   --data-binary @outcomes.csv
 ```

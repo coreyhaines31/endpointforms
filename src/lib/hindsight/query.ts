@@ -10,6 +10,7 @@ import {
   splitTestVariants,
   splitTests,
   submissions,
+  type SplitTestBasis,
 } from "../../db/schema.ts";
 import { measureTimeToOutcomeIn } from "../verdict/latency.ts";
 import { MIN_RESOLVED } from "../yield/compute.ts";
@@ -20,6 +21,7 @@ import { computeHindsight } from "./compare.ts";
 import type {
   HindsightReport,
   HindsightTiming,
+  PreRegisteredEffect,
   SplitTestDefinition,
   VariantDefinition,
 } from "./types.ts";
@@ -106,6 +108,10 @@ export async function listSplitTests(
         status: splitTests.status,
         startedAt: splitTests.startedAt,
         stoppedAt: splitTests.stoppedAt,
+        mdeRelative: splitTests.mdeRelative,
+        mdeBaselineRate: splitTests.mdeBaselineRate,
+        mdeBasis: splitTests.mdeBasis,
+        mdeRegisteredAt: splitTests.mdeRegisteredAt,
         endpointPublicId: endpoints.publicId,
         endpointName: endpoints.name,
       })
@@ -130,6 +136,7 @@ export async function listSplitTests(
       status: row.status,
       startedAt: row.startedAt,
       stoppedAt: row.stoppedAt,
+      preRegistered: preRegisteredFrom(row),
       variants: variants.get(row.id) ?? [],
     }));
   });
@@ -156,6 +163,10 @@ export async function readRunningTest(
         status: splitTests.status,
         startedAt: splitTests.startedAt,
         stoppedAt: splitTests.stoppedAt,
+        mdeRelative: splitTests.mdeRelative,
+        mdeBaselineRate: splitTests.mdeBaselineRate,
+        mdeBasis: splitTests.mdeBasis,
+        mdeRegisteredAt: splitTests.mdeRegisteredAt,
         endpointPublicId: endpoints.publicId,
         endpointName: endpoints.name,
       })
@@ -182,6 +193,7 @@ export async function readRunningTest(
       status: row.status,
       startedAt: row.startedAt,
       stoppedAt: row.stoppedAt,
+      preRegistered: preRegisteredFrom(row),
       variants: variants.get(row.id) ?? [],
     };
   });
@@ -203,6 +215,10 @@ async function readDefinition(
       status: splitTests.status,
       startedAt: splitTests.startedAt,
       stoppedAt: splitTests.stoppedAt,
+      mdeRelative: splitTests.mdeRelative,
+      mdeBaselineRate: splitTests.mdeBaselineRate,
+      mdeBasis: splitTests.mdeBasis,
+      mdeRegisteredAt: splitTests.mdeRegisteredAt,
       endpointPublicId: endpoints.publicId,
       endpointName: endpoints.name,
     })
@@ -223,7 +239,48 @@ async function readDefinition(
     status: row.status,
     startedAt: row.startedAt,
     stoppedAt: row.stoppedAt,
+    preRegistered: preRegisteredFrom(row),
     variants: variants.get(row.id) ?? [],
+  };
+}
+
+/**
+ * The pre-registered effect, or null (#59).
+ *
+ * All four columns or none: a `CHECK` constraint in `drizzle/0008` makes the
+ * half-written row impossible, and this reads defensively anyway because a
+ * partially populated pre-registration silently downgrading to the observed
+ * rule is precisely the "gate that is quietly not working" the issue is about.
+ *
+ * `numeric` arrives from the driver as a string, so the parse happens here
+ * rather than in `./compare.ts` — which is pure and never sees a database
+ * value's original type.
+ */
+function preRegisteredFrom(row: {
+  mdeRelative: string | null;
+  mdeBaselineRate: string | null;
+  mdeBasis: SplitTestBasis | null;
+  mdeRegisteredAt: Date | null;
+}): PreRegisteredEffect | null {
+  if (
+    row.mdeRelative === null ||
+    row.mdeBaselineRate === null ||
+    row.mdeBasis === null ||
+    row.mdeRegisteredAt === null
+  ) {
+    return null;
+  }
+
+  const relativeLift = Number(row.mdeRelative);
+  const baselineRate = Number(row.mdeBaselineRate);
+  if (!Number.isFinite(relativeLift) || relativeLift <= 0) return null;
+  if (!Number.isFinite(baselineRate) || baselineRate <= 0 || baselineRate >= 1) return null;
+
+  return {
+    relativeLift,
+    baselineRate,
+    basis: row.mdeBasis,
+    registeredAt: row.mdeRegisteredAt,
   };
 }
 
@@ -491,7 +548,16 @@ async function readTiming(
     awaitingOlderThanMedian = censored?.count ?? 0;
   }
 
-  return { medianDaysToVerdict, p90DaysToVerdict, awaitingOlderThanMedian };
+  return {
+    medianDaysToVerdict,
+    p90DaysToVerdict,
+    awaitingOlderThanMedian,
+    // Carried through so a draft can be forecast before it has data of its own.
+    // Measured with this test's own submissions excluded, for the same reason
+    // the median is — see the note above.
+    submissionsPerMonth: workspace.submissionsPerMonth,
+    gradedShare: workspace.gradedShare,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -554,7 +620,13 @@ function talliesFor(
 }
 
 function emptyTiming(): HindsightTiming {
-  return { medianDaysToVerdict: null, p90DaysToVerdict: null, awaitingOlderThanMedian: 0 };
+  return {
+    medianDaysToVerdict: null,
+    p90DaysToVerdict: null,
+    awaitingOlderThanMedian: 0,
+    submissionsPerMonth: 0,
+    gradedShare: 0,
+  };
 }
 
 /**

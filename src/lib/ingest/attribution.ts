@@ -27,6 +27,21 @@ import { sanitizeString } from "./body.ts";
  * cross-origin. It is a genuine rescue for a form on the same site as the
  * landing page, and not one otherwise — which is why the snippet we hand people
  * should include `_page_url`.
+ *
+ * **And on the hosted form, (3) no longer fires at all.** `/f` is served with
+ * `Referrer-Policy: no-referrer`, because a stepped form carries its partial key
+ * in the query string and that key reads back a visitor's answers — a link or an
+ * image added to a form later would have sent it to whoever owned that resource.
+ * See `next.config.ts`.
+ *
+ * That was a deliberate trade and it narrows this list from three sources to two
+ * for an embedded form, so it is worth knowing rather than discovering: on the
+ * hosted form, **`_page_url` is now the only source of an outside-world
+ * referrer**, and the other remaining source needs the customer to add a hidden
+ * field. The header cost us nothing real — the fallback it removed was our own
+ * form URL, which was never an answer to "where did this lead come from", and
+ * `describeSource()` in the inbox used to render it as the forms domain where it
+ * now correctly reads `direct`.
  */
 
 export type Attribution = {
@@ -133,9 +148,26 @@ class FieldIndex {
    */
   lookup(name: string): { key: string; value: string | null } | null {
     const direct = this.exact.get(name);
-    const found =
-      direct !== undefined ? { key: name, value: direct } : this.normalized.get(normalizeKey(name));
+    if (direct !== undefined) return { key: name, value: scalarToString(direct) };
+
+    const found = this.normalized.get(normalizeKey(name));
     if (!found) return null;
+
+    // An underscore prefix marks one of **our** names, and `normalizeKey` strips
+    // separators — so without this, `_url` folds onto a customer's own `url`
+    // field and `_referrer` onto their `referrer`, and both get consumed out of
+    // `values`. "Website URL" and "How did you hear about us" are ordinary
+    // things to ask, and the answer would vanish from the inbox, the exports and
+    // every destination (#72).
+    //
+    // The referrer branch below already intended this — it consumes only when
+    // the name starts with `_` — but it tested the *pattern* it was looking up
+    // rather than the *key that matched*, so the guard was always true. Fixing
+    // it here fixes it once, for every caller, rather than at each call site.
+    //
+    // An exact match is returned above, so `_url` still finds a literal `_url`.
+    if (name.startsWith("_") && !found.key.startsWith("_")) return null;
+
     return { key: found.key, value: scalarToString(found.value) };
   }
 }

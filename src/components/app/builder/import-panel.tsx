@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
@@ -37,6 +37,15 @@ import { cn } from "@/lib/utils";
  * person looks at it before it becomes the thing their endpoint validates
  * against.
  *
+ * ## Arriving with a URL already in hand
+ *
+ * `initialUrl` is set when somebody pasted the page their form is on from the
+ * endpoint screen (#68) rather than coming here to build something. The panel
+ * then opens on the URL tab and runs the fetch once, on mount, so that one
+ * paste is one action. It does not publish anything — the result is the same
+ * list of candidates every other route through this panel produces, and a
+ * person still chooses one and still reads it before it becomes a draft.
+ *
  * ## Three producers, one screen
  *
  * `src/lib/schema/index.ts` names four ways a schema comes to exist. Three of
@@ -50,6 +59,8 @@ export type ImportPanelProps = {
   slug: string;
   publicId: string;
   submissionCount: number;
+  /** A page address pasted on the endpoint screen. Fetched once, on mount. */
+  initialUrl?: string | null;
   /** Hands the chosen document to the editor as an unsaved draft. */
   onAdopt: (candidate: ImportCandidate) => void;
 };
@@ -60,9 +71,10 @@ export function ImportPanel({
   slug,
   publicId,
   submissionCount,
+  initialUrl = null,
   onAdopt,
 }: ImportPanelProps) {
-  const [tab, setTab] = useState<ImportTab>("html");
+  const [tab, setTab] = useState<ImportTab>(initialUrl ? "url" : "html");
 
   const [htmlState, htmlAction] = useActionState(importHtmlAction, idleImportState);
   const [urlState, urlAction] = useActionState(importUrlAction, idleImportState);
@@ -70,6 +82,25 @@ export function ImportPanel({
     proposeFromSubmissionsAction,
     idleImportState,
   );
+
+  /**
+   * The one fetch a pasted URL is owed, and only one.
+   *
+   * A ref rather than a dependency list, because the fetch is a *request to
+   * somebody else's server* — re-running it because React re-mounted a
+   * component in development would be us hitting a customer's page twice for
+   * one paste. Strict mode's double-invoke is exactly that case.
+   */
+  const ran = useRef(false);
+  useEffect(() => {
+    if (ran.current || !initialUrl) return;
+    ran.current = true;
+
+    const form = new FormData();
+    form.set("slug", slug);
+    form.set("url", initialUrl);
+    urlAction(form);
+  }, [initialUrl, slug, urlAction]);
 
   const state =
     tab === "html" ? htmlState : tab === "url" ? urlState : inferState;
@@ -113,6 +144,7 @@ export function ImportPanel({
               type="url"
               inputMode="url"
               spellCheck={false}
+              defaultValue={initialUrl ?? undefined}
               placeholder="https://example.com/contact"
               hint="We fetch the page and read its markup. Only what the server sends — a form assembled in the browser will not be there, so paste it instead."
             />

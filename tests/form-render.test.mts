@@ -316,33 +316,43 @@ function themeTests() {
   t("a schema with no theme gets the default", readTheme({ fields: [] }), DEFAULT_THEME);
   t("so does a null row", readTheme(null), DEFAULT_THEME);
   t("and an array-shaped one", readTheme([{ key: "a" }]), DEFAULT_THEME);
+  t("and an empty theme object", readTheme({ theme: {} }), DEFAULT_THEME);
 
   const themed = readTheme({
     fields: [],
-    theme: { accent: "#1d4ed8", background: "#ffffff", radius: 12, font: "serif" },
+    theme: { accent: "#1d4ed8", scheme: "light", radius: "round", font: "serif" },
   });
   t("an accent becomes a custom property", themed.vars["--form-accent"], "#1d4ed8");
   t("with readable ink chosen for it", themed.vars["--form-accent-ink"], "#ffffff");
-  t("a background sets the page", themed.vars["--form-page"], "#ffffff");
-  // One named colour means one ground; a card is what you get by naming two.
-  t("and the controls follow it", themed.vars["--form-bg"], "#ffffff");
-  t("a radius is expressed in pixels", themed.vars["--form-radius"], "12px");
+  t("a pinned scheme sets the page", themed.vars["--form-page"], "#fcfcfa");
+  t("and the controls get their own surface", themed.vars["--form-bg"], "#ffffff");
+  // Not a `--form-*` token: the renderer reads `--ring` directly for every
+  // focus outline, so pinning the scheme without pinning this leaves a
+  // forced-light form wearing dark mode's lime ring at 1.26:1 on white.
+  ok("and the focus ring is pinned with it", themed.vars["--ring"] !== undefined);
+  t("a radius resolves from its name", themed.vars["--form-radius"], "0.875rem");
   ok("a font resolves to a device stack", themed.fontFamily?.includes("Georgia") === true);
   ok("and never to a webfont", !JSON.stringify(themed).includes("--font-"));
 
-  t(
-    "a surface can be named separately",
-    readTheme({ theme: { background: "#eeeeee", surface: "#ffffff" } }).vars["--form-bg"],
-    "#ffffff",
-  );
+  // `auto` deliberately emits no neutrals: left alone they resolve through
+  // `globals.css` and follow the `.dark` class the theme script sets from the
+  // visitor's own preference. Writing literals here would freeze that.
+  const auto = readTheme({ theme: { accent: "#1d4ed8" } });
+  t("auto names no page colour", auto.vars["--form-page"], undefined);
+  // Deliberately absent: declaring `color-scheme: light dark` here would hand
+  // the light-dark() choice to `prefers-color-scheme`, which is not what the
+  // `.dark` class was set from. Inheriting `<html>`'s single value keeps the
+  // pairs and the palette in step. See `resolveTheme`.
+  ok("and declares no color-scheme of its own", auto.vars.colorScheme === undefined);
 
   // These land in a `style` attribute on a page we serve. Anything that is not
   // a hex literal is a way to write arbitrary CSS onto someone else's form.
   const hostile = readTheme({
-    theme: { accent: "red; background:url(https://evil.example/x)", background: "var(--anything)" },
+    theme: { accent: "red; background:url(https://evil.example/x)", scheme: "var(--anything)" },
   });
   t("a non-hex colour does not survive", hostile.vars, {});
-  t("an out-of-range radius does not survive", readTheme({ theme: { radius: 999 } }).vars, {});
+  t("an unknown radius name does not survive", readTheme({ theme: { radius: "999px" } }).vars, {});
+  t("a numeric radius does not survive either", readTheme({ theme: { radius: 12 } }).vars, {});
   t("an unknown font name does not survive", readTheme({ theme: { font: "Comic Sans" } }).fontFamily, null);
   // Unknown properties are ignored rather than fatal: a row written by a newer
   // build must still render on an older one.
@@ -351,10 +361,17 @@ function themeTests() {
     readTheme({ theme: { accent: "#000000", somethingNew: true } }).vars["--form-accent"],
     "#000000",
   );
+  // And one bad value does not take the rest of the theme with it. A newer
+  // build that grew a fourth radius should still get its colour honoured here.
+  t(
+    "a bad value costs only itself",
+    readTheme({ theme: { accent: "#000000", radius: "pillowy" } }).vars["--form-accent"],
+    "#000000",
+  );
 
-  t("black ink on a pale fill", readableInk("#c7f23c"), "#15140f");
+  t("black ink on a pale fill", readableInk("#c7f23c"), "#000000");
   t("white ink on a dark fill", readableInk("#1d4ed8"), "#ffffff");
-  t("shorthand hex is understood", readableInk("#fff"), "#15140f");
+  t("shorthand hex is understood", readableInk("#fff"), "#000000");
 }
 
 // ---------------------------------------------------------------------------

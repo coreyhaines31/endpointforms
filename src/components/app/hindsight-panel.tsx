@@ -63,6 +63,12 @@ export function HindsightPanel({
         <StatusLine report={report} />
       </PanelBody>
 
+      {report.test.preRegistered ? (
+        <PanelBody className="border-b border-border">
+          <PreRegistration report={report} />
+        </PanelBody>
+      ) : null}
+
       {populated ? (
         <>
           {report.disagree ? (
@@ -432,6 +438,104 @@ function ArmTable({ report }: { report: HindsightReport }) {
  * a winner — a customer who can see which bars were cleared is a customer who
  * can judge the call rather than take it.
  */
+/**
+ * The pre-registered effect, and what it costs (#59).
+ *
+ * Shown above everything measured, because it is the one number on the page
+ * that was true before any of the rest existed. On a draft it is the whole
+ * panel worth reading: it says what the test will need and roughly how long
+ * that will take, at this workspace's own volume, **before** any traffic has
+ * been committed to it.
+ *
+ * The projection is `/tools/time-to-outcome-calculator`'s arithmetic, run on
+ * measured inputs. Its verdict is printed unedited, including the ones that say
+ * this test cannot conclude inside any useful timeframe — which is the answer
+ * a lot of forms should get, and the one that is only useful in advance.
+ */
+function PreRegistration({ report }: { report: HindsightReport }) {
+  const effect = report.test.preRegistered;
+  if (!effect) return null;
+
+  const { requirement, forecast } = report;
+  const months = forecast?.monthsTotal ?? null;
+
+  return (
+    <div>
+      <SectionLabel>Pre-registered before this test started</SectionLabel>
+
+      <p className="mt-3 max-w-[68ch] text-sm text-foreground">
+        Detect a{" "}
+        <span className="font-mono">{formatPercent(effect.relativeLift, 0)}</span> relative
+        improvement on a <span className="font-mono">{formatPercent(effect.baselineRate, 1)}</span>{" "}
+        Yield rate {effect.basis === "exposure" ? "per visitor shown the form" : "per submission"}.
+        {requirement.source === "pre_registered" && requirement.perArm !== null ? (
+          <>
+            {" "}That needs{" "}
+            <span className="font-mono text-foreground">
+              {formatNumber(requirement.perArm)}
+            </span>{" "}
+            {unit(requirement.basis, requirement.perArm)} in every arm, at 95% confidence and 80%
+            power.
+          </>
+        ) : null}
+      </p>
+
+      {months !== null ? (
+        <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
+          At this workspace&rsquo;s measured volume and disposition lag that is roughly{" "}
+          <span className="font-mono text-foreground">{describeMonths(months)}</span> from the day
+          it starts to the day it could conclude — collection plus the wait for the last of those
+          submissions to get a verdict.
+        </p>
+      ) : (
+        <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
+          There is not enough measured volume in this workspace yet to say how long that will
+          take. The sample above is still fixed; only the timeline is unknown.
+        </p>
+      )}
+
+      {forecast ? (
+        <div className="mt-4">
+          <VerdictNote verdict={forecast.verdict} />
+        </div>
+      ) : null}
+
+      <p className="mt-4 max-w-[68ch] text-sm text-muted-foreground">
+        This number does not move as the data arrives, which is what lets the test
+        eventually conclude that the arms are the same rather than only that it
+        cannot tell yet.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A duration a person can picture.
+ *
+ * Days below a month, months up to two years, years beyond that. "379 months"
+ * is arithmetically correct and reads as a number rather than as a length of
+ * time — and this figure exists precisely so somebody looks at it and decides
+ * not to run the test, which it cannot do if the units defeat them.
+ */
+function describeMonths(months: number): string {
+  if (months < 1) {
+    const days = Math.max(1, Math.round(months * 30.44));
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  if (months >= 24) {
+    const years = months / 12;
+    const rounded = years < 10 ? Math.round(years * 10) / 10 : Math.round(years);
+    return `${formatNumber(rounded)} year${rounded === 1 ? "" : "s"}`;
+  }
+  const rounded = months < 10 ? Math.round(months * 10) / 10 : Math.round(months);
+  return `${rounded} month${rounded === 1 ? "" : "s"}`;
+}
+
+function unit(basis: RankingBasis, count: number): string {
+  const one = basis === "exposure" ? "visitor" : "submission";
+  return count === 1 ? one : `${one}s`;
+}
+
 function Requirements({
   requirements,
   state,

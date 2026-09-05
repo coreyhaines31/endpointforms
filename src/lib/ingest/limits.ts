@@ -8,14 +8,37 @@
  */
 
 /**
- * Total request body, in bytes. Read with a streaming cap so an oversized body
- * is abandoned rather than buffered.
+ * Total request body, in bytes, for everything that is **not** multipart. Read
+ * with a streaming cap so an oversized body is abandoned rather than buffered.
  *
  * 1 MiB is far beyond any lead form and still small enough that a submission
- * row stays cheap. Files are not stored (see `body.ts`), so a multipart post
- * with an attachment is measured on the same scale as anything else.
+ * row stays cheap.
+ *
+ * A `multipart/form-data` post is the only encoding that can carry a file, and
+ * since #66 it is measured against a larger cap of its own —
+ * `uploadLimits().maxMultipartBodyBytes` in `../uploads/limits.ts`, which
+ * explains the number. The two are deliberately separate rather than one raised
+ * ceiling: the overwhelming majority of submissions are urlencoded or JSON, and
+ * quadrupling the memory every one of them may cost, to serve the few that
+ * carry an attachment, would be paying for files on every request that has
+ * none.
  */
 export const MAX_BODY_BYTES = 1_048_576;
+
+/**
+ * How much of a multipart envelope is kept verbatim in `submissions.raw_body`.
+ *
+ * The raw body exists to settle "the data is wrong" arguments, and for a
+ * urlencoded or JSON post it is byte-for-byte what arrived. A multipart post
+ * carrying a 4 MiB photograph is different in kind: the bulk of it is binary
+ * that no one will ever read, that decodes to replacement characters, and that
+ * would sit in a `text` column forever at four times the cost of the
+ * submission it belongs to. So multipart bodies are truncated here, with the
+ * same visible `…[truncated]` marker used for an over-long field, and the file
+ * bytes themselves are kept properly — in `submission_files`, downloadable, and
+ * hashed so their integrity is checkable, which the raw body never offered.
+ */
+export const MAX_MULTIPART_RAW_BODY_CHARS = 65_536;
 
 /** Distinct field names in one submission. A real form has fewer than 50. */
 export const MAX_FIELDS = 250;

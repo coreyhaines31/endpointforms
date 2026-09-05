@@ -128,6 +128,55 @@ its seed, its migrator and its entire test suite from `.mts` files, so a TypeScr
 silently skips all of them. When renaming or auditing across the repo, grep with no `--include`
 filter and exclude `node_modules` instead.
 
+**Browser tooling fails open — check that your check took effect.** Two separate verification
+attempts in this project measured nothing and passed anyway: `agent-browser network route --abort`
+on `**/*.js` did not block the scripts (React still hydrated — `__reactFiber$` was on the form),
+and a dark-mode emulation silently no-opped while colours were read off it as if it had worked.
+Neither errored. Both would have shipped as confident false claims in exactly the place evidence
+had been asked for.
+
+So after arming any emulation or interception, assert the state it was supposed to produce before
+you trust anything downstream of it: `__reactFiber$` absent for no-JS, the computed background
+actually dark for dark mode, the request actually absent from the network log for a block. For
+disabling JavaScript specifically, CDP's `Emulation.setScriptExecutionDisabled` is the real switch
+— it is what DevTools' "Disable JavaScript" toggles — and `curl` is stronger still where the
+markup is all you need, because it cannot execute a script even if one existed.
+
+**Never click `button[type=submit]` in an authenticated page.** The sidebar's **Sign out**
+is the first submit button in the DOM on every `/app` screen, so a generic selector signs you
+out and lands you on `/login`. That looks exactly like the feature being broken, and it has
+already cost two separate investigations — one of them a near-miss bug report against
+production auth. Select by the button's text:
+
+```js
+[...document.querySelectorAll('button[type=submit]')]
+  .find(b => b.textContent.trim() === 'Create workspace').click()
+```
+
+The same applies to `form` — scope to the form containing the field you just filled, not the
+first one on the page.
+
+**A structural type guard is not a trust boundary.** `isStoredFileRef` checks the
+shape of a value because `values` comes back out of `jsonb` with no class to check
+against — and a caller can post JSON matching that shape exactly. Two separate bugs
+came from treating it as proof of provenance: un-reserving a reserved field name on
+it let a forged object reinstate a honeypot, and re-signing on it minted a valid,
+retention-uncapped download link to **another workspace's** file. Both were caught
+only because the shape check was asked "who could also produce this?".
+
+When a value's *origin* matters, key off the thing that knows the origin —
+`parsed.uploads` is the parts this request actually carried, and is empty for every
+encoding except multipart — never off a predicate the payload can satisfy. The
+guard's own doc comment claimed it defended against this; it defended against a
+partial shape and not a complete one, which is the same class of error as a check
+measuring the wrong thing.
+
+One more, from the same fix: **rebuilding a values object with `out[key] = value`
+reintroduces prototype pollution.** A field literally named `__proto__` mutates
+`Object.prototype` instead of being stored. `src/lib/ingest/body.ts` uses
+`Object.defineProperty` for this reason and there is a test that fails loudly when
+it regresses — it caught this one.
+
 For **frontend-only changes**, passing checks are not enough: open it in `agent-browser`,
 screenshot it, and look at the image in both themes before reporting it done. A computed style
 confirms the code does what you wrote, not what was asked.

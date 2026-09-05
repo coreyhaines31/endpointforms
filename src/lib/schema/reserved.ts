@@ -1,6 +1,7 @@
 import { ATTRIBUTION_FIELD_KEYS } from "../ingest/attribution.ts";
 import { IDEMPOTENCY_FIELD_KEYS } from "../ingest/limits.ts";
 import { REDIRECT_FIELD_KEYS } from "../ingest/respond.ts";
+import { STEP_FIELD_KEYS } from "../steps/format.ts";
 
 /**
  * Field names the endpoint consumes before `values` is written.
@@ -17,7 +18,14 @@ import { REDIRECT_FIELD_KEYS } from "../ingest/respond.ts";
  * (`utmSource` and `utm_source` are one field); the underscore-prefixed control
  * fields are matched literally, so a customer's own `redirect` field is theirs.
  */
-const EXACT = new Set<string>([...IDEMPOTENCY_FIELD_KEYS, ...REDIRECT_FIELD_KEYS]);
+const EXACT = new Set<string>([
+  ...IDEMPOTENCY_FIELD_KEYS,
+  ...REDIRECT_FIELD_KEYS,
+  // The multi-step flow's navigation fields (#37). Here for the same reason the
+  // redirect fields are: the ingest path strips them, so a schema that declared
+  // one would describe a field the validator can only ever see as missing.
+  ...STEP_FIELD_KEYS,
+]);
 
 /** Mirrors `normalizeKey` in `attribution.ts`. */
 function normalize(key: string): string {

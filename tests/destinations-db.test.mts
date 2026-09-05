@@ -50,6 +50,7 @@ import {
   listDestinations,
   newDestinationSecret,
   reapStaleAttempts,
+  runSweep,
   sendTestDelivery,
   sweepDueRetries,
   updateDestination,
@@ -58,7 +59,19 @@ import {
   HEADER_DELIVERY_ID,
   HEADER_SIGNATURE,
   HEADER_TIMESTAMP,
+  STALE_ATTEMPT_MS,
 } from "../src/lib/destinations/index.ts";
+// Not part of the public surface in `index.ts` — the abandonment test has to
+// call the claim on its own, without the delivery that normally follows it,
+// because that gap *is* the thing under test.
+import { claimDueRetries, workspacesWithDeliveryWork } from "../src/lib/destinations/store.ts";
+// #64 and #65: the notification an endpoint is created with, and the inbox
+// marker for a submission nothing was ever attempted for.
+import { createEndpoint } from "../src/lib/workspaces/endpoints.ts";
+import {
+  listSubmissions,
+  parseSubmissionFilters,
+} from "../src/lib/workspaces/submissions.ts";
 
 let pass = 0;
 let fail = 0;
@@ -95,12 +108,27 @@ type Receiver = {
   url: string;
   received: Received[];
   /** Set to change what the next requests answer with. */
-  reply: { status: number; body: string; delayMs?: number };
+  reply: {
+    status: number;
+    body: string;
+    delayMs?: number;
+    /**
+     * Awaited before the response is written, so a test can change the world
+     * *during* a delivery. The only way to reach a code path that depends on
+     * something moving between two steps of one function call.
+     */
+    beforeRespond?: (() => Promise<void>) | null;
+  };
 };
 
 async function startReceiver(): Promise<Receiver> {
   const received: Received[] = [];
-  const reply = { status: 200, body: '{"ok":true}', delayMs: 0 };
+  const reply: Receiver["reply"] = {
+    status: 200,
+    body: '{"ok":true}',
+    delayMs: 0,
+    beforeRespond: null,
+  };
 
   const server = createServer((request, response) => {
     let body = "";
@@ -113,8 +141,12 @@ async function startReceiver(): Promise<Receiver> {
         response.writeHead(reply.status, { "content-type": "application/json" });
         response.end(reply.body);
       };
-      if (reply.delayMs) setTimeout(send, reply.delayMs);
-      else send();
+      const respond = async () => {
+        if (reply.beforeRespond) await reply.beforeRespond();
+        if (reply.delayMs) setTimeout(send, reply.delayMs);
+        else send();
+      };
+      void respond();
     });
   });
 
@@ -201,9 +233,164 @@ async function main() {
     await crud(fixture);
     await testDelivery(fixture, receiver);
     await pendingRowsAndTheSweep(fixture, receiver);
+    await abandonedClaims(fixture, receiver);
+    await concurrentClaimsTakeItOnce(fixture, receiver);
+    await claimsWhoseDestinationGoesAway(fixture, receiver);
+    await supersededClaims(fixture, receiver);
+    await notifiedByDefault(fixture);
+    await wentNowhere(fixture, receiver);
   } finally {
     await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Notified by default (#64)
+// ---------------------------------------------------------------------------
+
+/**
+ * Creating an endpoint creates the notification, in the same transaction.
+ *
+ * Asserted through `createEndpoint` and read back through `listDestinations` —
+ * the function the screen calls — rather than by selecting the row directly,
+ * because what is being claimed is that the notification is an **ordinary
+ * destination**: it appears in the list, it has health, and everything built for
+ * #41 and #42 applies to it without a second code path.
+ */
+async function notifiedByDefault(fixture: Fixture) {
+  console.log("\nnotified by default");
+
+  const created = await createEndpoint(fixture.workspaceId, "Notified form", {
+    notifyEmail: EMAIL,
+  });
+  t("the address it will notify comes back", created.notified, EMAIL);
+
+  const rows = await listDestinations(fixture.workspaceId, created.publicId);
+  t("one destination exists on a brand-new endpoint", rows.length, 1);
+  t("it is an email destination", rows[0]?.kind, "email");
+  t("switched on", rows[0]?.enabled, true);
+  t("and flagged as the one we made", rows[0]?.defaultNotification, true);
+  ok(
+    "named for the address, which is what the delivery log will show",
+    (rows[0]?.name ?? "").includes(EMAIL),
+    rows[0]?.name,
+  );
+  ok(
+    "and the address survives the redaction the screen reads through",
+    JSON.stringify(rows[0]?.config.summary ?? []).includes(EMAIL),
+    rows[0]?.config.summary,
+  );
+  t(
+    "it starts untested, because nothing has been delivered to it",
+    rows[0]?.health.state,
+    "untested",
+  );
+
+  // Switching it off has to be possible, and has to be the customer's act.
+  await updateDestination(fixture.workspaceId, rows[0]!.id, { enabled: false });
+  const afterPause = await listDestinations(fixture.workspaceId, created.publicId);
+  t("it can be switched off", afterPause[0]?.enabled, false);
+  t("and pausing it does not hide where it came from", afterPause[0]?.defaultNotification, true);
+
+  // End to end, without a mail provider and without a network call.
+  //
+  // `deliverEmail` refuses before it opens a socket when there is no key, so
+  // this exercises the whole chain — createEndpoint, dispatch, the delivery log
+  // — and proves the notification is wired to the *real* ingest path rather
+  // than merely existing as a row. The refusal is the point: an unset key must
+  // produce a written-down configuration failure, never a silent success.
+  const previousKey = process.env.RESEND_API_KEY;
+  delete process.env.RESEND_API_KEY;
+  await updateDestination(fixture.workspaceId, rows[0]!.id, { enabled: true });
+  await submit(created.publicId, { email: "first@dorsetmetal.example" });
+  await drainDispatch();
+
+  const attempts = await listDeliveryAttempts(fixture.workspaceId, rows[0]!.id);
+  t("the first submission produced an attempt against it", attempts.length, 1);
+  t("which failed rather than reporting success", attempts[0]?.status, "failed");
+  ok(
+    "and says the deployment cannot send, not that something broke",
+    /not switched on for this deployment/.test(attempts[0]?.error ?? ""),
+    attempts[0]?.error,
+  );
+  if (previousKey === undefined) delete process.env.RESEND_API_KEY;
+  else process.env.RESEND_API_KEY = previousKey;
+
+  // The falsifying case: without an address there is no row, which is what makes
+  // the assertion above mean "created because we asked for it" rather than
+  // "created by something else on the way past".
+  const without = await createEndpoint(fixture.workspaceId, "Unnotified form");
+  t("no address means no notification", without.notified, null);
+  t(
+    "and the endpoint really is created with nothing on it",
+    (await listDestinations(fixture.workspaceId, without.publicId)).length,
+    0,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A submission that went nowhere (#65)
+// ---------------------------------------------------------------------------
+
+/**
+ * The inbox marker, both ways round.
+ *
+ * An assertion that a flag is true proves nothing on its own — an empty result
+ * and a broken fixture look identical — so this drives the same query to
+ * `false` twice for two different reasons: once because the submission is too
+ * young to judge, and once because an attempt row exists. Only then does the
+ * `true` in the middle mean what it says.
+ */
+async function wentNowhere(fixture: Fixture, receiver: Receiver) {
+  console.log("\nsubmissions that went nowhere");
+
+  const deaf = await createEndpoint(fixture.workspaceId, "Deaf form");
+  const filters = parseSubmissionFilters({ endpoint: deaf.publicId });
+
+  await submit(deaf.publicId, { email: "lead@dorsetmetal.example" });
+  await drainDispatch();
+
+  const fresh = await listSubmissions(fixture.workspaceId, filters);
+  t("the submission was stored regardless", fresh.total, 1);
+  t(
+    "and is not called lost while it could still be in flight",
+    fresh.rows[0]?.deliveredNowhere,
+    false,
+  );
+
+  const publicId = fresh.rows[0]!.publicId;
+  // Older than the grace window. Nothing else about the row changes.
+  await unsafeDb
+    .update(submissions)
+    .set({ submittedAt: new Date(Date.now() - 10 * 60_000) })
+    .where(eq(submissions.publicId, publicId));
+
+  const aged = await listSubmissions(fixture.workspaceId, filters);
+  t(
+    "past the window with no attempt on it, the inbox says it went nowhere",
+    aged.rows[0]?.deliveredNowhere,
+    true,
+  );
+
+  // Now give it somewhere to go and send it. The row is still backdated, so the
+  // only thing that changed is that an attempt exists.
+  const destination = await createDestination(fixture.workspaceId, deaf.publicId, {
+    kind: "webhook",
+    name: "Late arrival",
+    config: { url: `${receiver.url}/late`, secret: SECRET },
+  });
+  ok("a destination was added after the fact", destination !== null);
+  receiver.reply.status = 200;
+  receiver.reply.body = "ok";
+  await deliverSubmission(fixture.workspaceId, publicId, { force: true });
+  await drainDispatch();
+
+  const delivered = await listSubmissions(fixture.workspaceId, filters);
+  t(
+    "and once something was attempted, it no longer says so",
+    delivered.rows[0]?.deliveredNowhere,
+    false,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +948,9 @@ async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
   //
   // A pending row nobody will ever finish. Written by hand because the only
   // honest way to produce one is to kill the process that owned it.
+  //
+  // Note this is the *same* submission that just succeeded above, which is what
+  // makes the assertion below what it is.
   const abandonedId = newId();
   await unsafeDb.insert(deliveryAttempts).values({
     id: abandonedId,
@@ -795,20 +985,51 @@ async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
     /started and never finished/i.test(afterReap?.error ?? ""),
     afterReap?.error,
   );
-  ok("and a retry scheduled, so the lead still gets its chances", afterReap?.nextRetryAt !== null);
+  // No retry, and that is the point: this destination already delivered *this*
+  // submission successfully a few lines above. Rescheduling would put a second
+  // copy of the same lead in front of a receiver that may not dedupe.
+  //
+  // This assertion used to require the opposite, and it was wrong — it encoded a
+  // duplicate delivery as the expected behaviour. Found by an independent review
+  // of the #60 fix, then reproduced: the resend really happened, and the sweep
+  // sent a third request for a lead already delivered twice.
+  //
+  // The other half — an abandoned row on a submission that has NOT arrived does
+  // still get its retry — is asserted in `abandonedClaims`.
+  ok(
+    "and no retry, because this submission already reached this destination",
+    afterReap?.nextRetryAt === null,
+    { status: afterReap?.status, nextRetryAt: afterReap?.nextRetryAt },
+  );
+  ok(
+    "with a sentence saying nothing is missing",
+    /already been delivered/i.test(afterReap?.error ?? ""),
+    afterReap?.error,
+  );
 
   health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
   // It does NOT bump `consecutiveFailures`, and that is right rather than a
   // gap: this row is older than the last successful delivery, and the count is
   // deliberately "failures since the last success". Nor is it dead-lettered —
-  // a retry is scheduled, so the lead is in flight, not lost. What changed is
+  // the lead reached this destination, so nothing is missing. What changed is
   // that it is now visible in the log as a failure with a reason on it instead
   // of sitting `pending` forever, looking like nothing happened.
   t("it does not count against a destination that has succeeded since", health?.health.consecutiveFailures, 0);
-  t("and it is not dead-lettered, because a retry is scheduled", health?.health.deadLetterCount, 0);
+  t("and it is not dead-lettered, because the lead did arrive", health?.health.deadLetterCount, 0);
   t("but it is no longer pending", health?.health.pendingCount, 0);
 
   // --- The sweep, end to end through the HTTP handler.
+  //
+  // It needs real work to do. The reaped row above no longer supplies any — its
+  // submission had already been delivered, so scheduling a retry for it would
+  // have been a duplicate — so make a delivery that genuinely fails and is still
+  // owed its next attempt.
+  receiver.reply.status = 503;
+  const owedResponse = await submit(fixture.endpointPublicId, { email: "owed@test.example" });
+  await owedResponse.json();
+  await drainDispatch();
+  receiver.reply.status = 200;
+
   const previousSecret = process.env.CRON_SECRET;
   process.env.CRON_SECRET = "sweep-test-secret";
   const url = "https://endpointforms.test/api/v1/deliveries/sweep";
@@ -831,11 +1052,11 @@ async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
     delivered: number;
   };
   ok("and reports what it did", summary.ok === true && summary.workspaces >= 1, summary);
-  ok("including delivering the retry the reaper scheduled", summary.delivered >= 1, summary);
+  ok("including delivering a retry that was genuinely owed", summary.delivered >= 1, summary);
 
   const finalLog = await listDeliveryAttempts(fixture.workspaceId, created.id);
   const delivered = finalLog.filter((row) => row.status === "succeeded");
-  ok("so the abandoned delivery did eventually arrive", delivered.length >= 2, finalLog.length);
+  ok("so the failed delivery did eventually arrive", delivered.length >= 2, finalLog.length);
 
   // Idempotent: the first sweep cleared `next_retry_at` on everything it took,
   // so a second one — a cron whose previous run overran — finds nothing.
@@ -857,6 +1078,250 @@ async function pendingRowsAndTheSweep(fixture: Fixture, receiver: Receiver) {
 }
 
 // ---------------------------------------------------------------------------
+// A claim that is never attempted (#60)
+// ---------------------------------------------------------------------------
+
+/**
+ * The gap between claiming a retry and attempting it.
+ *
+ * `claimDueRetries` commits before any request goes out, and the attempts then
+ * run sequentially. A process that dies in that window used to leave the row
+ * `failed` with `next_retry_at` null and **no attempt row at all** — which
+ * matches neither branch of `workspacesWithDeliveryWork`, so nothing ever came
+ * back for it. The lead was still stored and still visible, but the redelivery
+ * was gone, and the destinations screen said "gave up" about a delivery that had
+ * never been tried.
+ *
+ * The crash is simulated the only honest way available: call the claim, and then
+ * do nothing. No delivery, no settle. Everything after that point asks whether
+ * the system recovers on its own.
+ */
+async function abandonedClaims(fixture: Fixture, receiver: Receiver) {
+  console.log("\nabandoned claims (#60)");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Abandoned claim target",
+    config: { url: `${receiver.url}/abandoned`, secret: SECRET },
+  });
+  if (!created) return;
+
+  const requests = () => receiver.received.filter((row) => row.path === "/abandoned").length;
+
+  receiver.reply.status = 503;
+  receiver.reply.body = "upstream unavailable";
+  await submit(fixture.endpointPublicId, { email: "abandoned@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  let log = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  t("the first attempt failed", log.length, 1);
+  ok("and scheduled a retry", log[0].nextRetryAt !== null);
+  t("having sent exactly one request", requests(), 1);
+
+  // The crash. A sweep claims the due retry — and then the process goes away
+  // before the request is made.
+  const claimedAt = new Date(Date.now() + 2 * 3_600_000);
+  const claimed = await claimDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: claimedAt,
+  });
+  t("the sweep claims the due retry", claimed.length, 1);
+  t("and sends nothing yet", requests(), 1);
+
+  const afterClaim = await attemptsFor(created.id);
+  t("claiming opens the attempt row, so an abandoned claim leaves a trace", afterClaim.length, 2);
+  const open = afterClaim.find((row) => row.status === "pending");
+  ok("which is pending", open !== undefined, afterClaim.map((row) => row.status));
+  t("numbered as the next attempt, not a repeat of the failed one", open?.attempt, 2);
+
+  // A delivery with an attempt open has not given up. The dead-letter count is
+  // the number a customer reads as "these leads are not coming", and it must not
+  // say that about one that is in flight.
+  let health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("an open attempt does not read as a delivery that gave up", health?.health.deadLetterCount, 0);
+
+  // The other half of the fix: re-claiming must not overlap a live attempt.
+  const concurrent = await sweepDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: new Date(claimedAt.getTime() + 60_000),
+    timeoutMs: 3_000,
+  });
+  t(
+    "a second sweep while the attempt is open claims nothing",
+    concurrent.delivered + concurrent.failed + concurrent.skipped,
+    0,
+  );
+  t("and sends nothing", requests(), 1);
+
+  // Recovery, with no submission to this endpoint to piggyback on. Once the
+  // open row is older than `STALE_ATTEMPT_MS` the reaper's own machinery covers
+  // it — which is the whole reason the row is opened at claim time.
+  const staleAt = new Date(claimedAt.getTime() + STALE_ATTEMPT_MS + 60_000);
+  const waiting = await workspacesWithDeliveryWork({ now: staleAt });
+  ok(
+    "an abandoned claim still counts as delivery work waiting",
+    waiting.includes(fixture.workspaceId),
+    waiting,
+  );
+
+  const reapPass = await runSweep({ now: staleAt, timeoutMs: 3_000 });
+  ok("the sweep reaps it", reapPass.reaped >= 1, reapPass);
+
+  const reaped = (await listDeliveryAttempts(fixture.workspaceId, created.id)).find(
+    (row) => row.id === open?.id,
+  );
+  t("turning the abandoned attempt into an honest failure", reaped?.status, "failed");
+  // `reaped?.nextRetryAt !== null` would be vacuously true when the row does not
+  // exist at all, which is precisely the broken case. Asserted against the row.
+  ok("with a retry scheduled", reaped !== undefined && reaped.nextRetryAt !== null, reaped);
+
+  const laterOn = new Date(staleAt.getTime() + 2 * 3_600_000);
+  await runSweep({ now: laterOn, timeoutMs: 3_000 });
+
+  log = await listDeliveryAttempts(fixture.workspaceId, created.id);
+  const succeeded = log.filter((row) => row.status === "succeeded");
+  t("and the lead is eventually delivered", succeeded.length, 1);
+  t("having been sent to the receiver exactly twice — once failed, once good", requests(), 2);
+  t("with every attempt on the record", log.length, 3);
+
+  health = await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id);
+  t("and nothing is left dead-lettered", health?.health.deadLetterCount, 0);
+  t("or pending", health?.health.pendingCount, 0);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+/**
+ * Two sweeps racing for the same due retry.
+ *
+ * A cron and a submission can collide, and now that a claim *inserts* a row the
+ * cost of both winning would be two attempts and two outbound requests for one
+ * lead. The claim is therefore an update that also requires the schedule to
+ * still be set, and only the transaction whose update returns the row has taken
+ * it — the other re-checks the predicate after the row lock clears and finds
+ * nothing.
+ */
+async function concurrentClaimsTakeItOnce(fixture: Fixture, receiver: Receiver) {
+  console.log("\ntwo sweeps racing for one retry (#60)");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Contended",
+    config: { url: `${receiver.url}/contended`, secret: SECRET },
+  });
+  if (!created) return;
+
+  receiver.reply.status = 503;
+  receiver.reply.body = "upstream unavailable";
+  await submit(fixture.endpointPublicId, { email: "contended@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  const now = new Date(Date.now() + 2 * 3_600_000);
+  const [left, right] = await Promise.all([
+    claimDueRetries(fixture.workspaceId, { endpointId: fixture.endpointId, now }),
+    claimDueRetries(fixture.workspaceId, { endpointId: fixture.endpointId, now }),
+  ]);
+
+  t("exactly one of the two sweeps takes it", left.length + right.length, 1);
+
+  const rows = await attemptsFor(created.id);
+  t("and exactly one attempt is opened, not two", rows.filter((row) => row.status === "pending").length, 1);
+  t("so the delivery has two rows in total", rows.length, 2);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+/**
+ * A claim whose destination goes away before the delivery runs.
+ *
+ * The claim opens a `pending` row, and if nothing is ever attempted against it
+ * nothing settles it. That happens when a destination is paused between the
+ * claim and the delivery — both check that it is live, a moment apart. Left
+ * alone the row would sit until the reaper called it a network failure, which
+ * would be a lie about what happened, so the sweep closes it itself.
+ *
+ * Reaching that gap needs the world to change *inside* one call, so the
+ * receiver pauses the first delivery and pauses the second destination while it
+ * is holding the request open.
+ */
+async function claimsWhoseDestinationGoesAway(fixture: Fixture, receiver: Receiver) {
+  console.log("\na claim whose destination is paused mid-sweep (#60)");
+
+  const first = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Still here",
+    config: { url: `${receiver.url}/still-here`, secret: SECRET },
+  });
+  const second = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Paused mid-sweep",
+    config: { url: `${receiver.url}/paused`, secret: SECRET },
+  });
+  if (!first || !second) return;
+
+  // Both fail, so both have a retry due.
+  receiver.reply.status = 503;
+  receiver.reply.body = "upstream unavailable";
+  await submit(fixture.endpointPublicId, { email: "vanishing@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  t("both destinations failed", (await attemptsFor(second.id)).length, 1);
+
+  // Claims come back in `next_retry_at` order, and the schedule carries ±20%
+  // jitter — so the order is pinned by hand rather than left to chance. The
+  // surviving destination must be delivered first, because the pause has to
+  // happen while the sweep is still working.
+  const due = new Date(Date.now() + 3_600_000);
+  await unsafeDb
+    .update(deliveryAttempts)
+    .set({ nextRetryAt: due })
+    .where(eq(deliveryAttempts.destinationId, first.id));
+  await unsafeDb
+    .update(deliveryAttempts)
+    .set({ nextRetryAt: new Date(due.getTime() + 1_000) })
+    .where(eq(deliveryAttempts.destinationId, second.id));
+
+  // The sweep claims both up front, then delivers them one at a time. While the
+  // first delivery is in flight, the second destination is paused.
+  receiver.reply.beforeRespond = async () => {
+    receiver.reply.beforeRespond = null;
+    await updateDestination(fixture.workspaceId, second.id, { enabled: false });
+  };
+
+  const swept = await sweepDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: new Date(Date.now() + 2 * 3_600_000),
+    timeoutMs: 3_000,
+  });
+  receiver.reply.beforeRespond = null;
+
+  t("the destination that is still there gets its retry", swept.delivered, 1);
+
+  const orphan = (await attemptsFor(second.id)).find((row) => row.attempt === 2);
+  ok("the paused one's claimed row exists", orphan !== undefined);
+  t("and is not left pending forever", orphan?.status, "failed");
+  ok(
+    "with a sentence naming what actually happened, not a made-up network error",
+    /paused or removed/i.test(orphan?.error ?? ""),
+    orphan?.error,
+  );
+  ok("and no retry scheduled against a destination that is off", orphan?.nextRetryAt === null);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, first.id));
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, second.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, first.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, second.id));
+}
+
+// ---------------------------------------------------------------------------
 
 main()
   .catch((error) => {
@@ -873,3 +1338,99 @@ main()
     await cleanup();
     await sqlClient.end();
   });
+
+
+/**
+ * A claim abandoned, and then overtaken by a delivery that succeeded.
+ *
+ * Found by an independent review of the #60 fix rather than by writing this
+ * test first — worth recording, because it is an interleaving the fix itself
+ * made reachable. Opening a `pending` row at claim time means an abandoned
+ * claim can now outlive a success on a different attempt:
+ *
+ *   attempt 1 fails and schedules a retry
+ *   a sweep claims it, opening pending attempt 2 — that worker dies
+ *   someone redelivers by hand and it SUCCEEDS as attempt 3
+ *   the reaper finds attempt 2 stale and schedules a retry anyway
+ *   a later sweep sends attempt 4 — a second copy of a lead already delivered
+ *
+ * The lead is not lost. It arrives twice, at a receiver that may not dedupe —
+ * which is precisely what the lease design was rejected for, so it must not
+ * come back in by the side door.
+ *
+ * Runs last: it claims every due retry on the endpoint, so placed earlier it
+ * would eat retries the other cases are waiting for.
+ */
+async function supersededClaims(fixture: Fixture, receiver: Receiver) {
+  console.log("\nan abandoned claim overtaken by a success (#60 follow-up)");
+
+  const dest = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Superseded claim target",
+    config: { url: `${receiver.url}/superseded`, secret: SECRET },
+  });
+  if (!dest) return;
+
+  const sent = () => receiver.received.filter((row) => row.path === "/superseded").length;
+
+  receiver.reply.status = 503;
+  await submit(fixture.endpointPublicId, { email: "superseded@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+
+  const base = new Date(Date.now() + 6 * 3_600_000);
+  const took = await claimDueRetries(fixture.workspaceId, {
+    endpointId: fixture.endpointId,
+    now: base,
+  });
+  const mine = took.filter((row) => row.destinationId === dest.id);
+  t("the superseded case claims its own retry", mine.length, 1);
+  if (mine.length !== 1) return;
+
+  // The claim is abandoned — nothing is attempted. Then a manual redelivery
+  // succeeds on a fresh attempt.
+  const before = sent();
+  await deliverSubmission(fixture.workspaceId, mine[0]!.submissionPublicId, {
+    destinationId: dest.id,
+    force: true,
+    now: new Date(base.getTime() + 1_000),
+    timeoutMs: 3_000,
+  });
+  t("a manual redelivery sends one request", sent(), before + 1);
+
+  const afterSuccess = await listDeliveryAttempts(fixture.workspaceId, dest.id);
+  ok(
+    "and it succeeded",
+    afterSuccess.some((row) => row.status === "succeeded"),
+    afterSuccess.map((row) => row.status),
+  );
+
+  // The reaper now meets the abandoned claim, after the success.
+  const late = new Date(base.getTime() + STALE_ATTEMPT_MS + 60_000);
+  await reapStaleAttempts(fixture.workspaceId, { now: late });
+
+  const reaped = (await listDeliveryAttempts(fixture.workspaceId, dest.id)).find(
+    (row) => row.id === mine[0]!.attemptId,
+  );
+  ok(
+    "the abandoned claim is closed rather than left pending",
+    reaped !== undefined && reaped.status !== "pending",
+    reaped?.status,
+  );
+  ok(
+    "and NOT rescheduled, because the lead already arrived",
+    reaped !== undefined && reaped.nextRetryAt === null,
+    { status: reaped?.status, nextRetryAt: reaped?.nextRetryAt },
+  );
+
+  // Sweep *after* whatever the reaper scheduled, not 60s after the reap — the
+  // first version of this assertion passed only because the rescheduled retry
+  // was not due yet, which is the same vacuous-pass this suite already caught
+  // once. Ask at a time when the retry would actually fire.
+  const settled = sent();
+  const afterDue = reaped?.nextRetryAt
+    ? new Date(new Date(reaped.nextRetryAt).getTime() + 60_000)
+    : new Date(late.getTime() + 60_000);
+  await runSweep({ now: afterDue, timeoutMs: 3_000 });
+  t("so no later sweep re-sends a lead that already arrived", sent(), settled);
+}

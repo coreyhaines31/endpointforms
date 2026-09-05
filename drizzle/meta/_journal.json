@@ -50,6 +50,34 @@
       "when": 1788221699099,
       "tag": "0006_hindsight_split_tests",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788284466065,
+      "tag": "0007_step_partials",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788287771978,
+      "tag": "0008_key_revocation_and_mde",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788551657452,
+      "tag": "0009_default_notification",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788551743309,
+      "tag": "0010_submission_files",
+      "breakpoints": true
     }
   ]
 }

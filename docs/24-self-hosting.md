@@ -167,42 +167,70 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 | `AUTH_SECRET` | Session cookies and Auth.js tokens. Read by Auth.js itself, not by our code | **Auth.js throws in production.** Required |
 | `SUBMISSION_IP_SALT` | Salts the SHA-256 hash of submitter IPs. The raw IP is never stored, only this hash | Falls back to the built-in constant `endpointforms-ip-hash-v1` and warns once in production. Hashes become guessable, and identical across every deployment that forgot it |
 | `ORIGIN_TOKEN_SECRET` | Signs the client token minted at `GET /e/{id}/token`, one of nine form-surface origin signals | Falls back to a built-in key and warns once in production. A forgeable token is a weaker signal — but refusing the submission would be a lost lead |
-| `VERDICT_API_KEY_SECRET` | Signs and verifies the outcome API keys | **`POST /api/v1/verdict` answers `503 server_not_configured` in production.** Outside production it falls back to a fixed dev secret so you can try the API without configuring anything |
+| `VERDICT_API_KEY_SECRET` | Signs and verifies the **legacy** `efv1` outcome keys. Current `efv2` keys do not use it | **A legacy `efv1` key gets `503 server_not_configured` in production; `efv2` keys keep working.** Outside production it falls back to a fixed dev secret so you can try the legacy format without configuring anything |
 
 **The asymmetry is deliberate and worth understanding before you decide which to skip.** The two
 that guard *a signal* degrade rather than refuse, because losing a lead is worse than a weakened
 signal. `VERDICT_API_KEY_SECRET` guards **write access to another company's data**, so a
-built-in fallback would mean anyone who read the source could mint a key for any workspace on any
-deployment that forgot to set it. That one refuses.
+built-in fallback would mean anyone who read the source could mint a legacy key for any
+workspace on any deployment that forgot to set it. That one refuses.
 
-#### More on `VERDICT_API_KEY_SECRET`
+**A new deployment does not need it at all.** Current outcome keys are random secrets stored as
+hashes, so they are unforgeable whether or not this variable is set. Leave it unset and the
+outcome webhook still works; only the legacy `efv1` format needs it.
 
-The outcome API key is **derived, not stored**:
+#### Outcome API keys, current and legacy
+
+**Current keys (`efv2`) are stored hashes.** A workspace creates them in settings and can hold
+several at once, which is what makes rotation survivable — create the new key, move the
+integration across, revoke the old one, with both live in between.
+
+```
+efv2.<key-id>.<secret>          secret = 32 random bytes, base64url
+stored:  sha256(secret), hex    the plaintext is shown once and never again
+```
+
+SHA-256 rather than argon2, and the reason is not laziness: argon2 exists to make *guessing*
+expensive, which is what a human-chosen password needs. A 256-bit random secret is already
+beyond guessing, the only property still required is one-wayness, and an argon2 verification
+would land on every call of an endpoint that CRMs retry.
+
+Each key carries `created_at`, `last_used_at` (to the nearest five minutes), `last_used_ip`,
+`revoked_at` and a label. Revoking one affects that key and nothing else. Rows are never
+deleted, because "which key was this, and when did we kill it" is precisely what a revocation
+exists to be able to answer later.
+
+**Legacy keys (`efv1`) are derived, not stored**, and are still accepted so that integrations
+already in the field keep working:
 
 ```
 efv1.<workspace-slug>.<mac>
 mac = base64url(HMAC-SHA256(VERDICT_API_KEY_SECRET, "efv1:" + workspaceId))
 ```
 
-`workspaces` has no key column. Minting and verifying are the same computation, so there is no
-key table to leak, nothing to migrate, and no hash to compare against. The slug rides in the
-clear purely as a lookup handle; the MAC is over the workspace **id**, so a key cannot be
-repointed at another workspace by editing the slug in it.
+Minting and verifying are the same computation, so there is no key table to leak — and equally,
+anything holding `VERDICT_API_KEY_SECRET` can recompute every workspace's legacy key on demand,
+which is the weakness `efv2` removes. The slug rides in the clear purely as a lookup handle; the
+MAC is over the workspace **id**, so a key cannot be repointed at another workspace by editing
+the slug in it.
 
-Three costs of that design, worth knowing **before** you build an integration on it:
+Two costs of that design remain, and the third is fixed:
 
-1. **Rotation is fleet-wide, not per-tenant.** Revoking one workspace's key means changing
-   `VERDICT_API_KEY_SECRET`, which invalidates every workspace's key at once. Set the old value
-   as `VERDICT_API_KEY_SECRET_PREVIOUS` — both are accepted on verify, only the current one is
-   minted from — so live integrations survive the change while you reissue.
-2. **Renaming a workspace invalidates its key**, because the slug no longer resolves. That is
-   intended rather than a bug: the slug is the render subdomain and is documented as effectively
-   permanent, and a key that silently followed a rename would be a key nobody could reason about.
-3. **There is no per-key audit trail.** Every caller holding a workspace's key is
-   indistinguishable from every other.
+1. ~~**Rotation is fleet-wide, not per-tenant.**~~ **Each workspace can now revoke its own
+   legacy key** from settings, leaving every other workspace's untouched. Rotating
+   `VERDICT_API_KEY_SECRET` is still fleet-wide and is still how you invalidate all of them at
+   once; set the old value as `VERDICT_API_KEY_SECRET_PREVIOUS` — both are accepted on verify,
+   only the current one is minted from — so live integrations survive while you reissue.
+2. **Renaming a workspace invalidates its legacy key**, because the slug no longer resolves.
+   Intended rather than a bug: the slug is the render subdomain and is documented as effectively
+   permanent. `efv2` keys are looked up by their own id and survive a rename.
+3. **The legacy key's audit trail is coarser.** There is only ever one per workspace, so several
+   callers sharing it stay indistinguishable. One `efv2` key per integration is what separates
+   them.
 
-A stored key with its own `revoked_at` is the real answer to all three, and it needs a column the
-data model deliberately does not have yet.
+If you are standing up a new deployment with no legacy integrations, leave
+`VERDICT_API_KEY_SECRET` unset and use `efv2` keys only. Every workspace's legacy key is then
+unmintable and unverifiable, which is the strongest position available.
 
 ### 3.2 Database
 
@@ -251,6 +279,58 @@ There is no SMTP transport. §7.
 | `VERDICT_DEFAULT_CURRENCY` | `USD` | Assumed when an outcome carries a value but no currency code. **Read once at process start**, so changing it needs a restart |
 | `ALLOW_INSECURE_DESTINATIONS` | off | Set to `1` to permit `http://` destination URLs. Off by default because a delivery carries leads and a signing secret. This is the flag for delivering to a service on your own network |
 | `ALLOW_PRIVATE_DESTINATIONS` | off | Set to `1` to permit loopback and private-range destination hosts. Used by the test suite; set it in a self-host only if you deliberately deliver to a private address |
+
+### 3.6a File uploads — on by default, no configuration
+
+Attachments are stored **in Postgres**, in the same transaction as the submission
+they belong to. There is no bucket, no object-storage credential and no fourth
+service: a self-hosted instance takes files with nothing set. `docs/21` §"Uploaded
+bytes live in Postgres" explains why that was chosen over a bucket and what it
+costs.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `UPLOAD_LINK_SECRET` | falls back to `AUTH_SECRET` | Signs download links. **With neither set, a production instance refuses file uploads rather than accepting bytes it cannot hand back.** Outside production a fixed dev key is used |
+| `UPLOAD_MAX_FILE_BYTES` | `4194304` (4 MiB) | One file |
+| `UPLOAD_MAX_TOTAL_BYTES` | `4194304` (4 MiB) | Every file in one submission, added up |
+| `UPLOAD_MAX_FILES` | `10` | File parts per submission |
+| `INGEST_MAX_MULTIPART_BODY_BYTES` | `4456448` (4.25 MiB) | The whole multipart envelope. Larger than the file caps so the part headers and the ordinary text fields fit |
+| `UPLOAD_ALLOWED_TYPES` | unset — everything accepted | Comma-separated MIME types; `image/*` matches a family. See below |
+| `UPLOAD_RETENTION_DAYS` | `90` | `0` keeps files indefinitely |
+
+**The defaults are pinned to Vercel, and a self-host can raise them.** A Vercel
+function refuses a request body over 4,500,000 bytes before any of our code runs,
+so the envelope sits just under it — past that number the submitter would see a
+platform error page instead of our sentence explaining what to do. Behind your
+own proxy there is no such ceiling. Two things to know before you raise them: the
+body is buffered whole in memory, so the cap multiplies the memory a burst of
+concurrent uploads costs; and `MAX_BODY_BYTES` (1 MiB) still governs urlencoded
+and JSON posts, deliberately, so an ordinary submission does not pay for a
+feature it is not using.
+
+**`UPLOAD_ALLOWED_TYPES` is unset on purpose.** Refusing by declared MIME type
+stops approximately no attacker — the type is a string the client chooses — and
+does reliably stop real people, because browsers disagree about what a `.heic`
+or a `.pages` is and a form that rejects a customer's actual file is a lost lead.
+What makes a hostile upload harmless is how it is served: every download leaves
+as `application/octet-stream`, always as an attachment, never inline, with
+`nosniff` and a `default-src 'none'; sandbox` CSP. The variable exists for the
+deployment with a compliance reason to take only PDFs.
+
+**Retention needs a scheduler to be true.** `loadFile` refuses to serve a file
+whose expiry has passed, so nothing is served after the date either way — but the
+bytes only actually go when something calls `GET /api/v1/files/sweep` with
+`Authorization: Bearer $CRON_SECRET`. `vercel.json` schedules it daily. On your
+own box, a cron entry hitting that URL is the whole requirement. **Without it,
+"deleted after 90 days" means "hidden after 90 days"**, which is not the same
+promise.
+
+**Refusals are refusals, never silent trims.** A file over a cap, or of a type
+this deployment refuses, fails the **whole submission** with a `413` or a `415`
+naming the file. That is deliberate: a browser form post is answered with a
+redirect to a thank-you page, which has nowhere to carry "we kept your message
+and binned your CV". A refusal the submitter can read and act on beats a success
+that lied.
 
 ### 3.7 Rate limits
 
@@ -376,6 +456,7 @@ An honest limits section is worth more than an omission.
 | Multi-workspace tenancy with RLS isolation | ✅ | ✅ |
 | **TLS fingerprinting for the form-surface origin signal** | **possible — see below** | ❌ not available |
 | Email delivery | needs a Resend API key | included |
+| **File uploads** | ✅ no configuration | ✅ |
 | Backups, upgrades, uptime | yours | ours |
 | Support | GitHub issues | included |
 
@@ -396,8 +477,11 @@ SMTP has a real gap, and it is written down rather than papered over.
 
 ### Also missing, in both
 
-- **No file uploads.** A multipart file part is described — filename, type, size — and the bytes
-  are discarded. There is no attachment storage.
+- ~~**No file uploads.**~~ Built in #66. Attachments are stored in Postgres in the same
+  transaction as the submission, downloaded through a signed expiring link, and swept on a
+  retention schedule. §3.6a. **A self-hoster gets the whole feature with nothing configured** —
+  the one thing to add is a cron on `/api/v1/files/sweep`, without which retention hides files
+  rather than deleting them.
 - **No password reset flow yet.**
 - **Rate limiting is per-process**, as above.
 - **Outcome API keys cannot be revoked per workspace**, and there is no per-key audit trail.

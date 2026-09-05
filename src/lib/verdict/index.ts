@@ -10,8 +10,9 @@
  *
  *   - `handleVerdict`   — `POST /api/v1/verdict`, the one-line outcome webhook,
  *                         and the same URL for a bulk CSV.
- *   - `mintVerdictApiKey` — the per-workspace key, derived rather than stored;
- *                         `./keys.ts` explains why and what it costs.
+ *   - `createVerdictApiKey` — a revocable per-key credential (#57); `./keys.ts`
+ *                         explains why it is a stored hash and what the derived
+ *                         key it replaces cost.
  *   - `applyOutcomes`   — the write, workspace-scoped and idempotent.
  *   - `measureTimeToOutcome` — the honest constraint: how long this workspace
  *                         really takes to decide, and whether the loop can work
@@ -29,7 +30,25 @@ export {
   type PendingOutcome,
   type VerdictSource,
 } from "./apply.ts";
-export { authenticateKey, authenticateRequest, type AuthenticatedWorkspace } from "./auth.ts";
+export {
+  authenticateKey,
+  authenticateRequest,
+  type AuthenticateOptions,
+  type AuthenticatedWorkspace,
+} from "./auth.ts";
+export {
+  createVerdictApiKey,
+  listVerdictApiKeys,
+  MAX_LIVE_KEYS,
+  readDerivedKey,
+  revokeDerivedVerdictKey,
+  revokeVerdictApiKey,
+  TOUCH_INTERVAL_MS,
+  VerdictKeyError,
+  type CreatedVerdictApiKey,
+  type VerdictKeyKind,
+  type VerdictKeySummary,
+} from "./key-store.ts";
 export { isVerdictError, VerdictError, type VerdictErrorCode } from "./errors.ts";
 export {
   handleVerdict,
@@ -38,11 +57,17 @@ export {
   serializeMeasurement,
 } from "./handler.ts";
 export {
-  mintVerdictApiKey,
+  hashVerdictKeySecret,
+  mintDerivedVerdictApiKey,
+  mintStoredVerdictApiKey,
   parseVerdictApiKey,
   readApiKeyHeader,
   verdictKeySecrets,
+  verifyStoredVerdictApiKey,
   verifyVerdictApiKey,
+  type MintedVerdictApiKey,
+  type ParsedDerivedKey,
+  type ParsedStoredKey,
   type ParsedVerdictApiKey,
   type VerdictKeySecrets,
 } from "./keys.ts";

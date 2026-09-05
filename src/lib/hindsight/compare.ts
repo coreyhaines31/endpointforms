@@ -1,6 +1,7 @@
 import {
   clamp,
   computeSplitTest,
+  computeTimeToOutcome,
   formatNumber,
   formatPercent,
   normalCdf,
@@ -9,6 +10,7 @@ import {
   twoProportionTest,
   type ProportionTest,
   type SplitTestResult,
+  type TimeToOutcomeResult,
   type Verdict,
 } from "../tools/engine.ts";
 import { computeYield, emptyTallies, MIN_RESOLVED, wilsonInterval } from "../yield/compute.ts";
@@ -19,8 +21,10 @@ import type {
   HindsightInput,
   HindsightReport,
   HindsightState,
+  PreRegisteredEffect,
   RankingBasis,
   Requirement,
+  SampleRequirement,
   VariantArm,
   VariantDefinition,
 } from "./types.ts";
@@ -127,6 +131,48 @@ import type {
  * so out loud rather than implying a rigour it does not have.
  *
  * ─────────────────────────────────────────────────────────────────────────────
+ * AND WHY THAT SAMPLE SIZE USED TO BE CIRCULAR (#59)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Read the paragraph above again and the defect is visible in it: the sample a
+ * winner has to reach is derived from **the difference the test observed**. When
+ * that difference is real the requirement is about right. When it is noise, the
+ * requirement derived from it is *too small* — a large spurious gap demands a
+ * small sample — so the gate is loosest exactly when it is most needed. It is
+ * the same class of defect as the two maturity-gate holes #45 fixed: a gate that
+ * looks like it is doing work and is quietly not.
+ *
+ * The fix is a **pre-registered effect**: the smallest improvement worth acting
+ * on, fixed when the test is created, together with the baseline rate it is
+ * relative to. `requiredSamplePerArm` then depends on nothing the test observes,
+ * and three things follow.
+ *
+ *   - The finish line stops moving. `no_difference` is currently sized from the
+ *     *observed* control rate, so it drifts as data arrives and a test can never
+ *     quite arrive at "these are the same". Fixed, it can.
+ *   - The requirement exists **before any data does**, so a draft can be told
+ *     what it will cost and — through `report.forecast`, which is the public
+ *     calculator's own arithmetic — roughly how long it will take. Some tests
+ *     should never be started, and until now that was only discoverable by
+ *     starting one. For an agency spending a client's money on traffic, being
+ *     told in advance is worth more than being told afterwards.
+ *   - It is strictly more conservative on the winner gate. The pre-registered
+ *     sample is sized for the smallest effect worth acting on, so it is never
+ *     smaller than the sample a larger observed effect would have demanded. A
+ *     test with a pre-registration therefore never declares a winner *earlier*
+ *     than the same test without one, only later or never.
+ *
+ * It is opt-in per test, and a test with no pre-registration keeps the observed
+ * rule exactly as it was — every test created before this existed is running
+ * under it, and changing the rule underneath a live experiment would be its own
+ * kind of dishonesty. `report.requirement.source` says which is in force.
+ *
+ * What it does **not** fix, and the readout still says so: peeking is reduced,
+ * not eliminated. A pre-registered effect size is not a pre-registered horizon.
+ * The panel still recomputes on every load, and stopping the moment it agrees
+ * with you is still available.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  * THE OTHER TRAPS, EACH WITH THE LINE THAT HANDLES IT
  * ─────────────────────────────────────────────────────────────────────────────
  *
@@ -213,7 +259,7 @@ export function computeHindsight(input: HindsightInput): HindsightReport {
     buildArm(variant, talliesByVariant.get(variant.id) ?? emptyTallies()),
   );
 
-  const basis = decideBasis(arms);
+  const basis = decideBasis(arms, test.preRegistered);
   for (const arm of arms) arm.interval = intervalFor(arm, basis);
   applySampleRatio(arms, basis);
 
@@ -223,8 +269,10 @@ export function computeHindsight(input: HindsightInput): HindsightReport {
   const completionLeader = leaderBy(arms, (arm) => arm.completionRate);
   const yieldLeader = leaderBy(arms, (arm) => rankingRate(arm, basis));
 
+  const requirement = decideRequirement(arms, control, basis, test.preRegistered);
+
   const comparisons =
-    control === null ? [] : buildComparisons(control, arms, basis);
+    control === null ? [] : buildComparisons(control, arms, basis, requirement);
 
   // The set that licenses a winner. Identical to the above whenever the control
   // is the front-runner, which is most of the time; different, and decisive,
@@ -235,10 +283,7 @@ export function computeHindsight(input: HindsightInput): HindsightReport {
       ? []
       : leader.variant.id === control?.variant.id
         ? comparisons
-        : buildComparisons(leader, arms, basis);
-
-  const requiredForLiftPerArm =
-    control === null ? null : requiredForLift(control, basis);
+        : buildComparisons(leader, arms, basis, requirement);
 
   const state = decideState({
     arms,
@@ -249,7 +294,7 @@ export function computeHindsight(input: HindsightInput): HindsightReport {
     comparisons,
     leaderComparisons,
     yieldLeader,
-    requiredForLiftPerArm,
+    requirement,
   });
 
   const report: HindsightReport = {
@@ -267,6 +312,8 @@ export function computeHindsight(input: HindsightInput): HindsightReport {
     comparisons,
     leaderComparisons,
     state,
+    requirement,
+    forecast: forecastFor(test.preRegistered, arms.length, timing),
     decision: { tone: "neutral", headline: "", detail: "" },
     requirements: [],
     whatWouldChangeThis: [],
@@ -274,9 +321,9 @@ export function computeHindsight(input: HindsightInput): HindsightReport {
     calculator: runCalculator(arms, control, basis),
   };
 
-  report.requirements = requirementsFor(report, requiredForLiftPerArm);
-  report.decision = describe(report, requiredForLiftPerArm);
-  report.whatWouldChangeThis = whatWouldChangeThis(report, requiredForLiftPerArm);
+  report.requirements = requirementsFor(report);
+  report.decision = describe(report);
+  report.whatWouldChangeThis = whatWouldChangeThis(report);
   report.caveats = caveatsFor(report);
   return report;
 }
@@ -345,9 +392,15 @@ function applySampleRatio(arms: VariantArm[], basis: RankingBasis): void {
  * to be printed in the same column, and it would favour whichever arm we
  * happened not to be counting views for.
  */
-function decideBasis(arms: VariantArm[]): RankingBasis {
+function decideBasis(
+  arms: VariantArm[],
+  preRegistered: PreRegisteredEffect | null,
+): RankingBasis {
   const populated = arms.filter((arm) => arm.report.submissions > 0 || (arm.exposures ?? 0) > 0);
-  if (populated.length === 0) return "submission";
+  // Nothing has arrived, so nothing observed can decide this. A draft that
+  // pre-registered its effect said which denominator it meant, and reporting a
+  // requirement in the other one would be answering a question nobody asked.
+  if (populated.length === 0) return preRegistered?.basis ?? "submission";
   return populated.every((arm) => (arm.exposures ?? 0) > 0) ? "exposure" : "submission";
 }
 
@@ -420,6 +473,7 @@ function buildComparisons(
   baseline: VariantArm,
   arms: VariantArm[],
   basis: RankingBasis,
+  requirement: SampleRequirement,
 ): Comparison[] {
   const challengers = arms.filter((arm) => arm.variant.id !== baseline.variant.id);
   if (challengers.length === 0) return [];
@@ -439,12 +493,24 @@ function buildComparisons(
 
     const baselineRate = rankingRate(baseline, basis);
     const challengerRate = rankingRate(challenger, basis);
-    const requiredPerArm =
+    const observedRequiredPerArm =
       baselineRate === null || challengerRate === null
         ? null
         : requiredSamplePerArm(baselineRate, challengerRate);
 
-    const smallest = Math.min(baselineTrials, challengerTrials);
+    // The pre-registered requirement supersedes the observed one, and is
+    // counted in the units it was registered in — which need not be the units
+    // this z-test ran in. A test can rank per visitor while its finish line is
+    // stated in submissions, because a per-visitor baseline is not knowable
+    // before the form has ever been served and being knowable in advance is the
+    // whole property being bought.
+    const preRegistered = requirement.source === "pre_registered";
+    const requiredPerArm = preRegistered ? requirement.perArm : observedRequiredPerArm;
+    const countedOn = preRegistered ? requirement.basis : basis;
+    const smallest = Math.min(
+      rankingTrials(baseline, countedOn),
+      rankingTrials(challenger, countedOn),
+    );
     const shortfallPerArm =
       requiredPerArm === null ? null : Math.max(0, requiredPerArm - smallest);
 
@@ -457,6 +523,8 @@ function buildComparisons(
       // nothing about how many comparisons this p-value is one of.
       significant: test.p !== null && test.p < alpha,
       requiredPerArm,
+      requirementSource: requirement.source,
+      observedRequiredPerArm,
       shortfallPerArm,
       powered: requiredPerArm !== null && smallest >= requiredPerArm,
     };
@@ -464,17 +532,138 @@ function buildComparisons(
 }
 
 /**
- * The sample each arm needs to detect a `MIN_DETECTABLE_LIFT` improvement on
- * the control's observed rate.
+ * The sample a pre-registered effect demands, computed from nothing but the
+ * pre-registration itself.
  *
- * This, and not the observed difference, is what licenses the sentence "these
- * two variants are the same". A test that could not have seen a fifth more
- * closed deals has not found that there is no difference; it has found nothing.
+ * **This function never touches a tally**, which is the entire point of #59 and
+ * why it is exported: a draft screen can call it with no data in existence and
+ * get the real number, and a test can assert that the number does not move when
+ * the data does.
  */
-function requiredForLift(control: VariantArm, basis: RankingBasis): number | null {
-  const rate = rankingRate(control, basis);
-  if (rate === null || rate <= 0) return null;
-  return requiredSamplePerArm(rate, Math.min(1, rate * (1 + MIN_DETECTABLE_LIFT)));
+export function preRegisteredSamplePerArm(
+  effect: Pick<PreRegisteredEffect, "relativeLift" | "baselineRate">,
+): number | null {
+  const baseline = clamp(effect.baselineRate, 0, 1);
+  if (baseline <= 0) return null;
+  // The same clamp `computeTimeToOutcome` applies, so the two never disagree
+  // about a baseline near 1 — the product must not contradict its own public
+  // calculator by a rounding rule.
+  const target = clamp(baseline * (1 + effect.relativeLift), 0, 0.999999);
+  return requiredSamplePerArm(baseline, target);
+}
+
+/**
+ * The sample every arm has to reach, and where the number came from.
+ *
+ * Two rules, in order:
+ *
+ * 1. **A pre-registration wins whenever it can be evaluated.** It is fixed,
+ *    knowable in advance, and never smaller than what a larger observed effect
+ *    would have demanded — so honouring it can only ever delay a winner, never
+ *    hasten one.
+ * 2. **Otherwise the old rule stands, unchanged.** Sized from the control's
+ *    observed rate and `MIN_DETECTABLE_LIFT`. Circular, and documented as such,
+ *    and still what every test created before #59 is running under.
+ *
+ * The one case where a recorded pre-registration cannot be honoured is a
+ * requirement stated in visitors for arms nobody counted visitors for. That is
+ * reported in `unusableReason` and printed, rather than silently downgraded —
+ * a test whose stated finish line quietly stopped applying would be the exact
+ * failure this feature exists to remove.
+ */
+function decideRequirement(
+  arms: VariantArm[],
+  control: VariantArm | null,
+  basis: RankingBasis,
+  preRegistered: PreRegisteredEffect | null,
+): SampleRequirement {
+  if (preRegistered) {
+    const perArm = preRegisteredSamplePerArm(preRegistered);
+    const countable =
+      preRegistered.basis === "submission" ||
+      arms.every((arm) => arm.report.submissions === 0 || arm.exposures !== null);
+
+    if (perArm !== null && countable) {
+      return {
+        perArm,
+        basis: preRegistered.basis,
+        source: "pre_registered",
+        baselineRate: preRegistered.baselineRate,
+        relativeLift: preRegistered.relativeLift,
+        unusableReason: null,
+      };
+    }
+
+    return {
+      ...observedRequirement(control, basis),
+      unusableReason:
+        perArm === null
+          ? "The effect size recorded for this test cannot produce a sample size — a baseline of zero has no relative improvement to detect. The observed rule is being used instead."
+          : "This test's effect size was registered per visitor, and no view count exists for these arms, so that requirement cannot be counted. The observed rule is being used instead, and it is the weaker one.",
+    };
+  }
+
+  return { ...observedRequirement(control, basis), unusableReason: null };
+}
+
+/**
+ * The pre-#59 rule: detect a `MIN_DETECTABLE_LIFT` improvement on the control's
+ * **observed** rate.
+ *
+ * This is what licenses the sentence "these two variants are the same" for a
+ * test with no pre-registration. A test that could not have seen a fifth more
+ * closed deals has not found that there is no difference; it has found nothing.
+ * It is also the circular one — the baseline moves as the data arrives, so the
+ * finish line moves with it.
+ */
+function observedRequirement(
+  control: VariantArm | null,
+  basis: RankingBasis,
+): Omit<SampleRequirement, "unusableReason"> {
+  const rate = control === null ? null : rankingRate(control, basis);
+  return {
+    perArm:
+      rate === null || rate <= 0
+        ? null
+        : requiredSamplePerArm(rate, Math.min(1, rate * (1 + MIN_DETECTABLE_LIFT))),
+    basis,
+    source: "observed",
+    baselineRate: rate,
+    relativeLift: MIN_DETECTABLE_LIFT,
+  };
+}
+
+/**
+ * How much traffic and how long, at this workspace's measured rate.
+ *
+ * `computeTimeToOutcome` is `/tools/time-to-outcome-calculator`'s own
+ * arithmetic, run on measured inputs instead of typed ones — the same device
+ * `src/lib/verdict/latency.ts` uses, and for the same reason: the product must
+ * not tell a paying customer something softer than the public calculator tells
+ * a stranger. Its verdict is carried through unedited, including the ones that
+ * say this test cannot conclude in any useful timeframe.
+ *
+ * Submissions only. That calculator's denominator is gradeable submissions per
+ * month, and a draft has no view rate to convert a per-visitor requirement
+ * with — which is itself the honest answer, since nothing has ever counted
+ * views for a form that has not been served.
+ */
+function forecastFor(
+  preRegistered: PreRegisteredEffect | null,
+  arms: number,
+  timing: HindsightReport["timing"],
+): TimeToOutcomeResult | null {
+  if (!preRegistered || preRegistered.basis !== "submission") return null;
+  if (!Number.isFinite(timing.submissionsPerMonth) || timing.submissionsPerMonth <= 0) return null;
+
+  return computeTimeToOutcome({
+    submissions: timing.submissionsPerMonth,
+    gradeablePct: clamp(timing.gradedShare, 0, 1) * 100,
+    closeRate: clamp(preRegistered.baselineRate, 0, 1) * 100,
+    liftPct: preRegistered.relativeLift * 100,
+    medianDays: timing.medianDaysToVerdict ?? 0,
+    variants: Math.max(2, arms),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +679,7 @@ type StateInput = {
   comparisons: Comparison[];
   leaderComparisons: Comparison[];
   yieldLeader: string | null;
-  requiredForLiftPerArm: number | null;
+  requirement: SampleRequirement;
 };
 
 /**
@@ -501,7 +690,7 @@ type StateInput = {
  * different conclusion from the same numbers by reimplementing the ladder.
  */
 export function decideState(input: StateInput): HindsightState {
-  const { arms, control, basis, runningDays, timing, comparisons, leaderComparisons, requiredForLiftPerArm } =
+  const { arms, control, basis, runningDays, timing, comparisons, leaderComparisons, requirement } =
     input;
 
   const compared = arms.filter((arm) => arm.report.submissions > 0);
@@ -573,8 +762,14 @@ export function decideState(input: StateInput): HindsightState {
   // Nothing significant. Whether that means "they are the same" or "we cannot
   // tell" is decided by whether a difference worth acting on could have been
   // seen at all.
-  const smallest = Math.min(...compared.map((arm) => rankingTrials(arm, basis)));
-  if (requiredForLiftPerArm !== null && smallest >= requiredForLiftPerArm) {
+  //
+  // With a pre-registration this is the state that finally became reachable:
+  // the threshold is a fixed number decided before the data existed, rather
+  // than one recomputed from the observed control rate on every page load. A
+  // finish line that moves with the thing being measured is a finish line a
+  // test can approach forever without crossing.
+  const smallest = Math.min(...compared.map((arm) => rankingTrials(arm, requirement.basis)));
+  if (requirement.perArm !== null && smallest >= requirement.perArm) {
     return "no_difference";
   }
   return "underpowered";
@@ -610,11 +805,12 @@ function measureRunningDays(
 // Saying it out loud
 // ---------------------------------------------------------------------------
 
-function describe(report: HindsightReport, requiredForLiftPerArm: number | null): Verdict {
+function describe(report: HindsightReport): Verdict {
   // `leaderComparisons` throughout, not `comparisons`: every sentence below is
   // about why a winner was or was not declared, and that decision is made
   // against the front-runner. The control-based set is what the workings print.
-  const { state, arms, basis, leaderComparisons: comparisons, runningDays, timing } = report;
+  const { state, arms, basis, leaderComparisons: comparisons, runningDays, timing, requirement } =
+    report;
   const leader = armById(report, report.yieldLeader);
   const control = arms.find((arm) => arm.variant.isControl) ?? arms[0] ?? null;
 
@@ -648,7 +844,7 @@ function describe(report: HindsightReport, requiredForLiftPerArm: number | null)
         return {
           tone: "warn",
           headline: "Ahead, and not yet earned",
-          detail: `${name(leader)} is ahead of ${name(rival)} on Yield and the difference clears the ${formatPercent(1 - blocking.alpha, 1)} bar — but neither arm has reached the ${formatNumber(blocking.requiredPerArm)} ${unit(basis, blocking.requiredPerArm ?? 0)} a difference that size actually needs. This panel recomputes every time you open it, and stopping the first time it turns green is how a split test reports a coin flip as a finding. Keep it running.`,
+          detail: `${name(leader)} is ahead of ${name(rival)} on Yield and the difference clears the ${formatPercent(1 - blocking.alpha, 1)} bar — but neither arm has reached the ${formatNumber(blocking.requiredPerArm)} ${unit(requirement.basis, blocking.requiredPerArm ?? 0)} per arm ${requiredBy(requirement)}. This panel recomputes every time you open it, and stopping the first time it turns green is how a split test reports a coin flip as a finding. Keep it running.${observedAside(blocking)}`,
         };
       }
 
@@ -657,13 +853,13 @@ function describe(report: HindsightReport, requiredForLiftPerArm: number | null)
         return {
           tone: "warn",
           headline: `${name(leader)} is ahead overall, and level with ${name(rival)}`,
-          detail: `${name(leader)} has the highest Yield rate and beats at least one other arm convincingly, but the gap between it and ${name(rival)} does not clear ${formatPercent(1 - blocking.alpha, 1)}${blocking.requiredPerArm === null ? "" : ` and would need about ${formatNumber(blocking.requiredPerArm)} ${unit(basis, blocking.requiredPerArm)} per arm to`}. A front-runner that has not separated from the arm behind it is a front-runner by luck as easily as by merit, so there is no winner here yet — only a shortlist of two.`,
+          detail: `${name(leader)} has the highest Yield rate and beats at least one other arm convincingly, but the gap between it and ${name(rival)} does not clear ${formatPercent(1 - blocking.alpha, 1)}${blocking.requiredPerArm === null ? "" : ` and would need about ${formatNumber(blocking.requiredPerArm)} ${unit(requirement.basis, blocking.requiredPerArm)} per arm to`}. A front-runner that has not separated from the arm behind it is a front-runner by luck as easily as by merit, so there is no winner here yet — only a shortlist of two.`,
         };
       }
       return {
         tone: "neutral",
         headline: "Not enough traffic to tell these apart",
-        detail: `Nothing here clears ${formatPercent(1 - (comparisons[0]?.alpha ?? BASE_ALPHA), 1)}, and the arms are too small for that to mean much: detecting a ${formatPercent(MIN_DETECTABLE_LIFT, 0)} improvement on ${name(control)}'s Yield rate would take about ${requiredForLiftPerArm === null ? "more traffic than this window has" : `${formatNumber(requiredForLiftPerArm)} ${unit(basis, requiredForLiftPerArm)} per arm`}. This is the answer most outcome-weighted tests give, and it is the honest one.`,
+        detail: `Nothing here clears ${formatPercent(1 - (comparisons[0]?.alpha ?? BASE_ALPHA), 1)}, and the arms are too small for that to mean much: detecting a ${formatPercent(requirement.relativeLift, 0)} improvement on ${requirement.source === "pre_registered" ? `the ${formatPercent(requirement.baselineRate, 1)} baseline this test was registered against` : `${name(control)}'s observed Yield rate`} would take about ${requirement.perArm === null ? "more traffic than this window has" : `${formatNumber(requirement.perArm)} ${unit(requirement.basis, requirement.perArm)} per arm`}. This is the answer most outcome-weighted tests give, and it is the honest one.`,
       };
     }
 
@@ -671,7 +867,7 @@ function describe(report: HindsightReport, requiredForLiftPerArm: number | null)
       return {
         tone: "neutral",
         headline: "No difference worth acting on",
-        detail: `Both arms have enough ${unit(basis, 2)} that a ${formatPercent(MIN_DETECTABLE_LIFT, 0)} improvement in Yield would have shown up, and none did. That is a result rather than a shrug: whatever separates these two variants, it is not moving what the submissions turn out to be worth. Spend the traffic on a bigger change.`,
+        detail: `Both arms have enough ${unit(requirement.basis, 2)} that a ${formatPercent(requirement.relativeLift, 0)} improvement in Yield would have shown up, and none did. That is a result rather than a shrug: whatever separates these two variants, it is not moving what the submissions turn out to be worth. Spend the traffic on a bigger change.${requirement.source === "pre_registered" ? ` This is the size of effect you registered as worth acting on before the test started, so the finish line is where you put it rather than somewhere the data moved it.` : ""}`,
       };
 
     case "winner": {
@@ -685,7 +881,7 @@ function describe(report: HindsightReport, requiredForLiftPerArm: number | null)
         headline: report.disagree
           ? `${name(leader)} closes more, and it is not the one that fills more`
           : `${name(leader)} is ahead on money`,
-        detail: `${name(leader)} has the highest Yield rate ${basis === "exposure" ? "per visitor shown the form" : "per submission"}, the gap holds at ${formatPercent(1 - (worst?.alpha ?? BASE_ALPHA), 1)} against every other arm, and both sides have the sample that difference needs. ${report.disagree ? `${name(armById(report, report.completionLeader))} collected more submissions and closed fewer of them — which is the mistake this test exists to catch. ` : ""}What you have learned is a fact about these two variants on this traffic, not a general rule about forms.`,
+        detail: `${name(leader)} has the highest Yield rate ${basis === "exposure" ? "per visitor shown the form" : "per submission"}, the gap holds at ${formatPercent(1 - (worst?.alpha ?? BASE_ALPHA), 1)} against every other arm, and both sides have reached ${requirement.source === "pre_registered" ? "the sample this test was registered to need" : "the sample that difference needs"}. ${report.disagree ? `${name(armById(report, report.completionLeader))} collected more submissions and closed fewer of them — which is the mistake this test exists to catch. ` : ""}What you have learned is a fact about these two variants on this traffic, not a general rule about forms.`,
       };
     }
   }
@@ -776,12 +972,9 @@ function stillMaturing(
  * The point of printing the ones that pass as well as the ones that block is
  * that "not yet" stops being a mood and becomes a checklist with a bottom.
  */
-function requirementsFor(
-  report: HindsightReport,
-  requiredForLiftPerArm: number | null,
-): Requirement[] {
+function requirementsFor(report: HindsightReport): Requirement[] {
   // Again the leader-based set: these rows are the gates a winner has to clear.
-  const { arms, basis, runningDays, timing, leaderComparisons: comparisons } = report;
+  const { arms, runningDays, timing, leaderComparisons: comparisons, requirement } = report;
   const compared = arms.filter((arm) => arm.report.submissions > 0);
   const requirements: Requirement[] = [];
 
@@ -835,34 +1028,51 @@ function requirementsFor(
   });
 
   const smallest = compared.length > 0
-    ? Math.min(...compared.map((arm) => rankingTrials(arm, basis)))
+    ? Math.min(...compared.map((arm) => rankingTrials(arm, requirement.basis)))
     : 0;
-  const observedRequirement = comparisons.reduce<number | null>(
-    (highest, comparison) =>
-      comparison.requiredPerArm === null
-        ? highest
-        : Math.max(highest ?? 0, comparison.requiredPerArm),
-    null,
-  );
+  const have = `${formatNumber(smallest)} ${unit(requirement.basis, smallest)}`;
 
-  requirements.push({
-    label: "Sample the observed difference needs",
-    have: `${formatNumber(smallest)} ${unit(basis, smallest)}`,
-    need: observedRequirement === null ? null : `${formatNumber(observedRequirement)}`,
-    met: observedRequirement !== null && smallest >= observedRequirement,
-  });
+  if (requirement.source === "pre_registered") {
+    // **One row, not two.** With a pre-registration the sample that licenses a
+    // winner and the sample that licenses "these are the same" are the same
+    // number, because both come from the same fixed effect. Printing it twice
+    // under two labels would suggest two gates where there is one, and the
+    // single row is the honest shape of what changed: the finish line is now a
+    // constant a person chose rather than a pair of numbers the data moves.
+    requirements.push({
+      label: `Sample the pre-registered effect needs (${formatPercent(requirement.relativeLift, 0)} improvement on a ${formatPercent(requirement.baselineRate, 1)} baseline)`,
+      have,
+      need: requirement.perArm === null ? null : formatNumber(requirement.perArm),
+      met: requirement.perArm !== null && smallest >= requirement.perArm,
+    });
+  } else {
+    const observedRequirement = comparisons.reduce<number | null>(
+      (highest, comparison) =>
+        comparison.requiredPerArm === null
+          ? highest
+          : Math.max(highest ?? 0, comparison.requiredPerArm),
+      null,
+    );
 
-  // Deliberately labelled for the conclusion it licenses rather than for the
-  // arithmetic. It is not a gate on declaring a winner — a large effect can be
-  // proven on a sample far too small to rule out a small one — and a row that
-  // read "sample to rule out a 20% improvement" sitting unmet beside a declared
-  // winner would look like the panel contradicting itself.
-  requirements.push({
-    label: `Sample to call it a tie (detecting a ${formatPercent(MIN_DETECTABLE_LIFT, 0)} improvement)`,
-    have: `${formatNumber(smallest)} ${unit(basis, smallest)}`,
-    need: requiredForLiftPerArm === null ? null : formatNumber(requiredForLiftPerArm),
-    met: requiredForLiftPerArm !== null && smallest >= requiredForLiftPerArm,
-  });
+    requirements.push({
+      label: "Sample the observed difference needs",
+      have,
+      need: observedRequirement === null ? null : `${formatNumber(observedRequirement)}`,
+      met: observedRequirement !== null && smallest >= observedRequirement,
+    });
+
+    // Deliberately labelled for the conclusion it licenses rather than for the
+    // arithmetic. It is not a gate on declaring a winner — a large effect can be
+    // proven on a sample far too small to rule out a small one — and a row that
+    // read "sample to rule out a 20% improvement" sitting unmet beside a declared
+    // winner would look like the panel contradicting itself.
+    requirements.push({
+      label: `Sample to call it a tie (detecting a ${formatPercent(MIN_DETECTABLE_LIFT, 0)} improvement)`,
+      have,
+      need: requirement.perArm === null ? null : formatNumber(requirement.perArm),
+      met: requirement.perArm !== null && smallest >= requirement.perArm,
+    });
+  }
 
   const best = comparisons.reduce<Comparison | null>(
     (lowest, comparison) =>
@@ -885,11 +1095,8 @@ function requirementsFor(
  * The half of "not yet" that makes it useful. A refusal with no route out of it
  * is indistinguishable from a broken feature.
  */
-function whatWouldChangeThis(
-  report: HindsightReport,
-  requiredForLiftPerArm: number | null,
-): string[] {
-  const { state, arms, basis, runningDays, timing, leaderComparisons: comparisons } = report;
+function whatWouldChangeThis(report: HindsightReport): string[] {
+  const { state, arms, runningDays, timing, leaderComparisons: comparisons, requirement } = report;
   if (state === "winner" || state === "no_difference") return [];
 
   if (state === "split_broken") {
@@ -922,16 +1129,18 @@ function whatWouldChangeThis(
   }
 
   const target =
-    comparisons.reduce<number | null>(
-      (highest, comparison) =>
-        comparison.requiredPerArm === null
-          ? highest
-          : Math.max(highest ?? 0, comparison.requiredPerArm),
-      null,
-    ) ?? requiredForLiftPerArm;
+    requirement.source === "pre_registered"
+      ? requirement.perArm
+      : (comparisons.reduce<number | null>(
+          (highest, comparison) =>
+            comparison.requiredPerArm === null
+              ? highest
+              : Math.max(highest ?? 0, comparison.requiredPerArm),
+          null,
+        ) ?? requirement.perArm);
 
   if (target !== null && compared.length > 0 && runningDays !== null && runningDays > 0) {
-    const smallest = Math.min(...compared.map((arm) => rankingTrials(arm, basis)));
+    const smallest = Math.min(...compared.map((arm) => rankingTrials(arm, requirement.basis)));
     const shortfall = Math.max(0, target - smallest);
     if (shortfall > 0) {
       const perDay = smallest / runningDays;
@@ -939,8 +1148,8 @@ function whatWouldChangeThis(
       const settle = timing.medianDaysToVerdict ?? 0;
       out.push(
         daysToCollect === null
-          ? `Each arm needs about ${formatNumber(target)} ${unit(basis, target)} and the leanest has ${formatNumber(smallest)}. Nothing is arriving, so no amount of waiting closes that gap.`
-          : `Each arm needs roughly ${formatNumber(target)} ${unit(basis, target)}; the leanest has ${formatNumber(smallest)}. At the rate this test has been collecting that is about ${days(daysToCollect)} more of traffic${settle > 0 ? `, plus the ${days(settle)} the last of those submissions will take to get a verdict — so ${days(daysToCollect + settle)} before there is anything to call` : ""}.`,
+          ? `Each arm needs about ${formatNumber(target)} ${unit(requirement.basis, target)} and the leanest has ${formatNumber(smallest)}. Nothing is arriving, so no amount of waiting closes that gap.`
+          : `Each arm needs roughly ${formatNumber(target)} ${unit(requirement.basis, target)}; the leanest has ${formatNumber(smallest)}. At the rate this test has been collecting that is about ${days(daysToCollect)} more of traffic${settle > 0 ? `, plus the ${days(settle)} the last of those submissions will take to get a verdict — so ${days(daysToCollect + settle)} before there is anything to call` : ""}.`,
       );
     }
   }
@@ -957,7 +1166,7 @@ function whatWouldChangeThis(
     );
   }
 
-  if (basis === "submission") {
+  if (report.basis === "submission") {
     out.push(
       "There is no view count for these arms, so there is no completion rate to compare against Yield — only submission counts. A view count exists once the form is served from this endpoint rather than posted to it from markup we never render.",
     );
@@ -977,8 +1186,24 @@ function whatWouldChangeThis(
  * verbatim next to the number they qualify.
  */
 function caveatsFor(report: HindsightReport): string[] {
-  const { arms, basis, comparisons, timing } = report;
+  const { arms, basis, comparisons, timing, requirement } = report;
   const caveats: string[] = [];
+
+  // Named rather than left implicit, because a reader who does not know which
+  // rule is gating their test cannot tell how much the "not yet" is worth. The
+  // observed rule is the one with the defect #59 records; saying so is the
+  // difference between a limitation and a surprise.
+  if (requirement.unusableReason !== null) {
+    caveats.push(requirement.unusableReason);
+  } else if (requirement.source === "observed") {
+    caveats.push(
+      "No effect size was registered for this test, so the sample it has to reach is derived from the difference the arms have actually shown. That is circular: a gap that is mostly noise is a large gap, and a large gap asks for a small sample — so the requirement is loosest exactly when it is doing the most work. Fixing the effect you care about when the test is created removes that, and it can only be done before a test starts.",
+    );
+  } else {
+    caveats.push(
+      `The sample this test is waiting for was fixed before it started — enough to detect a ${formatPercent(requirement.relativeLift, 0)} improvement on a ${formatPercent(requirement.baselineRate, 1)} baseline — so it does not move as the numbers do. That removes one way a split test flatters itself and not the others: this panel still recomputes every time you open it, and a pre-registered effect size is not a pre-registered stopping point.`,
+    );
+  }
 
   if (comparisons.length > 1) {
     caveats.push(
@@ -1135,6 +1360,30 @@ function armById(report: HindsightReport, id: string | null): VariantArm | null 
 
 function name(arm: VariantArm | null): string {
   return arm?.variant.name ?? "that variant";
+}
+
+/** How a requirement earned its number, in the middle of a sentence. */
+function requiredBy(requirement: SampleRequirement): string {
+  return requirement.source === "pre_registered"
+    ? `this test was registered to need, to detect the ${formatPercent(requirement.relativeLift, 0)} improvement you said was worth acting on`
+    : "a difference that size actually needs";
+}
+
+/**
+ * The gap between a pre-registered requirement and what the observed gap alone
+ * would have asked for.
+ *
+ * Printed only when the observed number is materially smaller, because that is
+ * the whole argument for #59 made concrete: a difference that demands far less
+ * sample than the effect you care about is a difference large enough to be
+ * mostly noise, and the old rule would have called it early on exactly that.
+ */
+function observedAside(comparison: Comparison): string {
+  if (comparison.requirementSource !== "pre_registered") return "";
+  const { requiredPerArm, observedRequiredPerArm } = comparison;
+  if (requiredPerArm === null || observedRequiredPerArm === null) return "";
+  if (observedRequiredPerArm >= requiredPerArm * 0.5) return "";
+  return ` The gap as currently observed would only need ${formatNumber(observedRequiredPerArm)} — which is what a difference this large looks like when a good deal of it is noise, and is why the number being waited for is the one fixed before the test began.`;
 }
 
 function unit(basis: RankingBasis, count: number): string {

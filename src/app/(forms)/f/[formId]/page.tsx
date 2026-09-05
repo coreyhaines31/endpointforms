@@ -4,12 +4,22 @@ import { notFound } from "next/navigation";
 import { after } from "next/server";
 
 import { FormView } from "@/components/render/form-view";
+import { embeddedTheme } from "@/lib/embed/layout";
+import {
+  carriedParams,
+  queryEntries,
+  readEmbedContext,
+  withQuery,
+} from "@/lib/embed/params";
+import { NO_PREFILL, prefillFromQuery } from "@/lib/embed/prefill";
 import { readVisitorKey } from "@/lib/hindsight/assign";
 import { resolveVariant } from "@/lib/hindsight/serve";
 import { recordExposure } from "@/lib/hindsight/store";
 import { VISITOR_COOKIE } from "@/lib/hindsight/visitor";
 import { cookieName, decodeFlash, ERROR_FLAG } from "@/lib/render/flash";
 import { loadForm } from "@/lib/render/form";
+import { resolveStepContext } from "@/lib/steps/serve";
+import { EmbedFrame } from "./embed-frame";
 
 /**
  * `GET /f/{formId}` — the form, rendered from its published schema.
@@ -36,6 +46,19 @@ import { loadForm } from "@/lib/render/form";
  * posts from the customer's own markup right now. A schema row this build cannot
  * parse → our bug, said plainly, with the endpoint still named so the customer
  * can point their existing form at it.
+ *
+ * ## The same page, inside somebody else's site (#39)
+ *
+ * `?ef_embed=inline` is the only difference between this page in a tab and this
+ * page in a customer's `<iframe>`, and it changes three things and no others:
+ * the ground goes transparent and the page padding goes to zero, a ~500-byte
+ * inline script starts reporting the content height to the parent, and the
+ * parent page's URL is carried into the submission as `_page_url`.
+ *
+ * Everything the frame knows about the page it is in arrived on that query
+ * string, because a cross-origin frame cannot read its parent's location. The
+ * snippet in `public/embed.js` is what puts it there; `src/lib/embed/params.ts`
+ * is what refuses to believe most of it.
  */
 
 export const dynamic = "force-dynamic";
@@ -104,19 +127,84 @@ export default async function FormPage({ params, searchParams }: PageProps) {
     });
   }
 
+  const document = served?.document ?? form.document;
+
+  // Embedding (#39). `NOT_EMBEDDED` for every direct visit, which is most of
+  // them, and nothing below changes shape when it is.
+  const embed = readEmbedContext(query);
+
+  /**
+   * Prefill, and the one rule that keeps it from being a lie.
+   *
+   * **Skipped entirely whenever the retry cookie is in force.** Once somebody
+   * has submitted, their answers are the truth about this form and a query
+   * parameter is a stale instruction from before they touched it. Merging the
+   * two would mean a URL silently restoring a value they had just deleted —
+   * indistinguishable, in the row that gets stored, from them having typed it.
+   *
+   * A cookie that expired is not the same thing: `flash` is null, nothing was
+   * carried back, and the page is a fresh form again — so it prefills again,
+   * which is what somebody reloading a prefilled link expects.
+   */
+  const prefill = flash === null ? prefillFromQuery(document, query) : NO_PREFILL;
+  const values = flash?.values ?? prefill.values;
+
+  /**
+   * Which screen of a multi-step form this is (#37).
+   *
+   * **Null for every form with no steps, and null for every failure** — a
+   * partial key that expired, one naming a visit that already finished, one
+   * somebody typed, a database we could not reach. All of them land on the same
+   * branch, and that branch is the form this page has always rendered: every
+   * field, one screen, one Submit button. Our bookkeeping failing must never be
+   * the reason somebody cannot send a form.
+   *
+   * Answers come back from the partial rather than from the request, because a
+   * 303 turns the step POST into a GET and the body is gone by the time this
+   * runs. `src/lib/steps/plan.ts` explains why that trade was worth making.
+   */
+  const step = await resolveStepContext(formId, document, query, values);
+
+  // Carried onto the `action` rather than left on this page's URL: the POST
+  // goes to a different path, and `extractAttribution` reads the endpoint URL's
+  // own query string as its fourth source. It is also what lets the submit
+  // route rebuild an embedded form's URL when it has to send somebody back.
+  const carried = carriedParams(new URLSearchParams(queryEntries(query)));
+  const encoded = encodeURIComponent(form.publicId);
+
   return (
-    <FormView
-      document={served?.document ?? form.document}
-      title={form.title}
-      action={`/f/${encodeURIComponent(form.publicId)}/submit`}
-      redirectTo={`/f/${encodeURIComponent(form.publicId)}/thanks`}
-      theme={form.theme}
-      errors={flash?.errors ?? []}
-      values={flash?.values ?? {}}
-      truncated={flash?.truncated ?? false}
-    />
+    <>
+      <FormView
+        document={document}
+        title={form.title}
+        action={withQuery(`/f/${encoded}/submit`, carried)}
+        // The thank-you page has to know it is in a frame too, or a successful
+        // submission repaints the full-height page inside somebody's section
+        // and stops resizing at the moment the form finally worked.
+        redirectTo={withQuery(`/f/${encoded}/thanks`, carried)}
+        theme={embed.mode === null ? form.theme : embeddedTheme(form.theme, embed.mode)}
+        // On a stepped form the errors are re-derived from the stored answers
+        // by the same validator, so nothing has to survive the redirect — no
+        // cookie to be blocked inside somebody's iframe, nothing to truncate.
+        errors={
+          step
+            ? step.errors.map((issue) => ({ field: issue.field, code: issue.code }))
+            : (flash?.errors ?? [])
+        }
+        values={step?.values ?? values}
+        truncated={flash?.truncated ?? false}
+        controlFields={embed.pageUrl === null ? undefined : { _page_url: embed.pageUrl }}
+        step={step}
+        // Every screen posts here, the last one included: the step route
+        // forwards the final screen's identical bytes to `handleSubmission`.
+        stepAction={withQuery(`/f/${encoded}/step`, carried)}
+      />
+      <EmbedFrame context={embed} />
+    </>
   );
 }
+
+
 
 /**
  * A live endpoint with no schema.

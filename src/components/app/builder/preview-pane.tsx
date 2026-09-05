@@ -3,7 +3,7 @@
 import { ExternalLink } from "lucide-react";
 
 import { FormView } from "@/components/render/form-view";
-import { DEFAULT_THEME } from "@/lib/render/theme";
+import { EMPTY_THEME, resolveTheme } from "@/lib/render/theme";
 import type { FormSchemaDocument } from "@/lib/schema/format";
 
 /**
@@ -104,7 +104,11 @@ export function PreviewPane({
             title={title}
             action={action}
             redirectTo={redirectTo}
-            theme={DEFAULT_THEME}
+            /* The draft's own theme (#38), resolved by the same function the
+               hosted page resolves it with. The preview is only evidence if it
+               is drawn the way the real thing is drawn — that goes for the
+               colours as much as for the fields. */
+            theme={resolveTheme(document.theme ?? EMPTY_THEME)}
             errors={[]}
             values={{}}
             truncated={false}

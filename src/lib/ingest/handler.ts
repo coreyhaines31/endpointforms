@@ -30,6 +30,10 @@ import {
   type SubmissionAck,
 } from "./respond.ts";
 import { validateSubmission, type ValidationIssue } from "../schema/validate.ts";
+import { retentionExpiry } from "../uploads/limits.ts";
+import { dropForgedFileRefsIn, isStoredFileRef } from "../uploads/types.ts";
+import { PARTIAL_KEY_PATTERN, STEP_FIELD_KEYS, PARTIAL_KEY_FIELD } from "../steps/format.ts";
+import { completePartial } from "../steps/store.ts";
 import { resolveEndpoint, storeSubmission } from "./store.ts";
 import type { FormSchemaDocument } from "../schema/format.ts";
 
@@ -178,8 +182,40 @@ export async function handleSubmission(
       // Still verbatim in `raw_body`, and still read by `assessSpam` below,
       // which is given `parsed.values` rather than this stripped copy.
       ...HONEYPOT_FIELD_KEYS,
+      // The multi-step flow's own fields (#37): which partial this visit was
+      // writing to, and which screen it came from. Stripped for the same
+      // reason as everything above it — the inbox shows the customer's fields,
+      // not our plumbing — and note that they are stripped for *every* caller,
+      // not only the hosted form. A raw POST that happens to send `_step` gets
+      // the same treatment as one that sends `_redirect`.
+      ...STEP_FIELD_KEYS,
     ]);
-    const values = omit(parsed.values, reserved);
+    // ...except a key that carried a real file part on this request. Everything
+    // above is our plumbing, and none of it is ever a file input — so a file
+    // arriving on one of these names is the customer's data wearing a reserved
+    // name, not plumbing.
+    //
+    // Stripping it anyway would be a quiet loss of exactly the shape this
+    // product is named against: `submission_files` is written from the parsed
+    // parts rather than from `values`, so the file is stored and the inbox shows
+    // it, while destinations and the CSV export — which both read `values` —
+    // would carry no link to it. The inbox and the webhook would disagree about
+    // whether the lead had an attachment, and the export would silently break
+    // the promise that everything is exportable.
+    //
+    // **Keyed off `parsed.uploads`, never off the shape of `values`.**
+    // `isStoredFileRef` is structural, and a caller can post JSON matching it
+    // exactly — un-reserving on that shape would let a forged object reinstate
+    // any reserved name it liked. `parsed.uploads` is what this request actually
+    // carried, and it is empty for every encoding except multipart, so there is
+    // nothing here for a JSON body to forge.
+    for (const upload of parsed.uploads) reserved.delete(upload.fieldKey);
+
+    // A file-shaped value naming a file this request did not carry is a forgery,
+    // not a reference (#71). Dropped here, before anything downstream can be
+    // asked to sign it — see `dropForgedFileRefs`.
+    const storedIds = new Set(parsed.uploads.map((upload) => upload.publicId));
+    const values = dropForgedFileRefsIn(omit(parsed.values, reserved), storedIds);
 
     const submittedAt = new Date();
 
@@ -269,6 +305,12 @@ export async function handleSubmission(
       spamState: spam.state,
       spamScore: spam.score,
       spamReasons: spam.reasons,
+      // Read and hashed by `parseBody`; written by `storeSubmission` inside the
+      // same transaction as the row (#66). Nothing between here and there can
+      // produce a stored submission whose attachments were not also stored —
+      // the two commit together or neither does.
+      uploads: parsed.uploads,
+      uploadsExpireAt: retentionExpiry(submittedAt),
     });
 
     // Destinations (#41). The row is committed; from here on nothing can cost
@@ -286,6 +328,30 @@ export async function handleSubmission(
         endpointId: endpoint.id,
         submissionPublicId: stored.publicId,
       });
+    }
+
+    // The partial this submission grew out of (#37), closed now that it has
+    // become a lead. This is what stops one visitor being two rows: the inbox
+    // lists open partials only, so a capture that finished stops being one the
+    // instant its submission is committed.
+    //
+    // Placed here, after the write, for the same reason `dispatchSubmission` is:
+    // the row is safe, so nothing beyond this point can cost the lead.
+    // `completePartial` swallows its own errors, and the worst it can do is
+    // leave a row looking open that is not.
+    //
+    // Done on the ingest path rather than in the hosted form's route so that it
+    // is true of every door. A submission carrying a partial key closes that
+    // partial whichever surface it came through.
+    const partialKey = firstField(parsed.values, [PARTIAL_KEY_FIELD]);
+    if (partialKey !== null && PARTIAL_KEY_PATTERN.test(partialKey)) {
+      await completePartial(
+        endpoint.workspaceId,
+        endpoint.id,
+        partialKey,
+        stored.id,
+        submittedAt,
+      );
     }
 
     if (responseMode(request) === "redirect") {
@@ -411,10 +477,35 @@ function deriveIdempotencyKey(
     .update("\n")
     .update(ipHash ?? "")
     .update("\n")
-    .update(canonicalize(values))
+    .update(canonicalize(fingerprintable(values)))
     .digest("hex")
     .slice(0, 32);
   return `auto:${bucket}:${fingerprint}`;
+}
+
+/**
+ * Strips the parts of a payload that differ between two byte-identical posts.
+ *
+ * Only file references so far, and they are the reason this exists. A
+ * `StoredFileRef` carries a freshly generated id and a freshly signed URL, so
+ * the same form submitted twice by a double-click would fingerprint differently
+ * and **the duplicate would not collapse** — two rows, two copies of the bytes,
+ * and the double lead the idempotency key exists to prevent. Reducing a file to
+ * its name, size and content hash restores that, and does it better than the
+ * old behaviour did: two posts now count as the same lead only if the attached
+ * files are byte-for-byte the same file.
+ */
+function fingerprintable(value: JsonValue): JsonValue {
+  if (isStoredFileRef(value)) {
+    return { file: true, filename: value.filename, size: value.size, sha256: value.sha256 };
+  }
+  if (Array.isArray(value)) return value.map(fingerprintable);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, JsonValue> = {};
+    for (const key of Object.keys(value)) out[key] = fingerprintable(value[key]);
+    return out;
+  }
+  return value;
 }
 
 /** Key order in a payload is not meaningful, so it must not change the fingerprint. */

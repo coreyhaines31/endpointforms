@@ -1,3 +1,20 @@
+import { createHash } from "node:crypto";
+
+import { newFilePublicId } from "../../db/ids.ts";
+import {
+  canStoreUploads,
+  linkExpiry,
+  signDownloadUrl,
+  UPLOADS_NOT_CONFIGURED,
+} from "../uploads/links.ts";
+import {
+  allowedTypes,
+  isTypeAllowed,
+  retentionExpiry,
+  uploadLimits,
+} from "../uploads/limits.ts";
+import { detectContentType, sanitizeFilename } from "../uploads/serve.ts";
+import type { PendingUpload, StoredFileRef } from "../uploads/types.ts";
 import {
   MAX_BODY_BYTES,
   MAX_FIELD_NAME_CHARS,
@@ -5,6 +22,7 @@ import {
   MAX_FIELDS,
   MAX_JSON_DEPTH,
   MAX_JSON_NODES,
+  MAX_MULTIPART_RAW_BODY_CHARS,
 } from "./limits.ts";
 import { IngestError } from "./errors.ts";
 
@@ -28,6 +46,13 @@ import { IngestError } from "./errors.ts";
  *     `Object.defineProperty`, which stores an own data property instead of
  *     walking the setter that plain assignment would, so a field named
  *     `__proto__` is an ordinary field rather than a mutation.
+ *   - **A file part is either stored or refused.** There is no third outcome.
+ *     `parseMultipart` reads the bytes, hashes them and hands them to the
+ *     transaction that writes the submission; anything that stops it storing a
+ *     file — a cap, a type this deployment refuses, an instance that cannot
+ *     sign a download link — throws instead, and the submitter is told. The
+ *     `stored: false` reference this module used to produce is gone, and the
+ *     type system is what keeps it gone (`../uploads/types.ts`).
  */
 
 export type JsonValue =
@@ -38,22 +63,21 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
-/** A file part, recorded but not stored. See `parseMultipart`. */
-export type FileRef = {
-  file: true;
-  filename: string;
-  contentType: string;
-  size: number;
-  /** Attachments are a later issue; nothing about the bytes is retained. */
-  stored: false;
-};
-
 export type ParsedBody = {
   values: Record<string, JsonValue>;
   rawBody: string;
   rawContentType: string | null;
   /** How we ended up parsing it, which is not always what the header claimed. */
   parsedAs: "urlencoded" | "multipart" | "json";
+  /**
+   * File parts, read and hashed, waiting for the transaction that writes the
+   * submission (#66). Empty for every encoding except multipart, and for a
+   * multipart post that carried no files.
+   *
+   * These carry the bytes. Never log this, never put it in an error, never
+   * serialise it into a response.
+   */
+  uploads: PendingUpload[];
 };
 
 const REPLACEMENT = "�";
@@ -95,23 +119,42 @@ export function sanitizeString(input: string): string {
 }
 
 /**
+ * The byte cap for this request, which depends on what it says it is.
+ *
+ * A `multipart/form-data` post is the only one that can carry a file, so it —
+ * and only it — gets the larger allowance. **Sniffed multipart does not**: a
+ * body with no `Content-Type` that happens to be multipart is measured at
+ * `MAX_BODY_BYTES` like anything else, because the cap has to be decided from
+ * the headers before a byte of the body is read, and a client that wants to
+ * send 4 MiB can send the header that goes with it.
+ */
+function bodyCap(request: Request): number {
+  const mime = mimeType(request.headers.get("content-type"));
+  return mime === "multipart/form-data"
+    ? uploadLimits().maxMultipartBodyBytes
+    : MAX_BODY_BYTES;
+}
+
+/**
  * Reads the body with a hard byte cap, abandoning the stream once it is
  * exceeded rather than buffering the whole thing first. An oversized post costs
- * us `MAX_BODY_BYTES` of memory and no more.
+ * us one cap's worth of memory and no more.
  */
 export async function readBodyCapped(request: Request): Promise<Uint8Array> {
+  const cap = bodyCap(request);
+
   const declared = request.headers.get("content-length");
   if (declared) {
     const length = Number(declared);
-    if (Number.isFinite(length) && length > MAX_BODY_BYTES) {
-      throw tooLarge();
+    if (Number.isFinite(length) && length > cap) {
+      throw tooLarge(cap);
     }
   }
 
   const body = request.body;
   if (!body) {
     const buffer = await request.arrayBuffer();
-    if (buffer.byteLength > MAX_BODY_BYTES) throw tooLarge();
+    if (buffer.byteLength > cap) throw tooLarge(cap);
     return new Uint8Array(buffer);
   }
 
@@ -125,9 +168,9 @@ export async function readBodyCapped(request: Request): Promise<Uint8Array> {
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
-      if (total > MAX_BODY_BYTES) {
+      if (total > cap) {
         await reader.cancel().catch(() => {});
-        throw tooLarge();
+        throw tooLarge(cap);
       }
       chunks.push(value);
     }
@@ -144,10 +187,10 @@ export async function readBodyCapped(request: Request): Promise<Uint8Array> {
   return out;
 }
 
-function tooLarge(): IngestError {
+function tooLarge(cap: number): IngestError {
   return new IngestError(
     "payload_too_large",
-    `Submission body exceeds the ${MAX_BODY_BYTES} byte limit.`,
+    `Submission body exceeds the ${cap} byte limit.`,
   );
 }
 
@@ -174,27 +217,41 @@ export async function parseBody(request: Request, bytes: Uint8Array): Promise<Pa
   const mime = mimeType(header);
 
   if (mime === "application/x-www-form-urlencoded") {
-    return { values: parseUrlEncoded(rawBody), rawBody, rawContentType, parsedAs: "urlencoded" };
+    return {
+      values: parseUrlEncoded(rawBody),
+      rawBody,
+      rawContentType,
+      parsedAs: "urlencoded",
+      uploads: [],
+    };
   }
 
   if (mime === "multipart/form-data") {
+    const multipart = await parseMultipart(bytes, header ?? "");
     return {
-      values: await parseMultipart(bytes, header ?? ""),
-      rawBody,
+      values: multipart.values,
+      // Truncated rather than verbatim, and only here — see
+      // `MAX_MULTIPART_RAW_BODY_CHARS`. The marker is the same one an over-long
+      // field value gets, so somebody reading the inbox recognises it.
+      rawBody:
+        rawBody.length <= MAX_MULTIPART_RAW_BODY_CHARS
+          ? rawBody
+          : `${rawBody.slice(0, MAX_MULTIPART_RAW_BODY_CHARS)}…[truncated]`,
       rawContentType,
       parsedAs: "multipart",
+      uploads: multipart.uploads,
     };
   }
 
   if (mime === "application/json" || mime.endsWith("+json")) {
-    return { values: parseJson(rawBody), rawBody, rawContentType, parsedAs: "json" };
+    return { values: parseJson(rawBody), rawBody, rawContentType, parsedAs: "json", uploads: [] };
   }
 
   // No content-type, or one we do not recognise. Sniff rather than refuse: the
   // payload is usually perfectly good and the header is the broken part.
   const trimmed = rawBody.trimStart();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    return { values: parseJson(rawBody), rawBody, rawContentType, parsedAs: "json" };
+    return { values: parseJson(rawBody), rawBody, rawContentType, parsedAs: "json", uploads: [] };
   }
 
   // `URLSearchParams` never fails, so "looks like form data" has to mean more
@@ -203,7 +260,7 @@ export async function parseBody(request: Request, bytes: Uint8Array): Promise<Pa
   if (rawBody.includes("=")) {
     const sniffed = parseUrlEncoded(rawBody);
     if (Object.keys(sniffed).length > 0) {
-      return { values: sniffed, rawBody, rawContentType, parsedAs: "urlencoded" };
+      return { values: sniffed, rawBody, rawContentType, parsedAs: "urlencoded", uploads: [] };
     }
   }
 
@@ -225,17 +282,39 @@ function parseUrlEncoded(rawBody: string): Record<string, JsonValue> {
 }
 
 /**
- * File parts are acknowledged and described, never stored.
+ * File parts are read, hashed, capped — and kept (#66).
  *
- * There is no attachment storage in the data model yet, and inventing one here
- * would be worse than the gap. Recording the filename, type and size means a
- * customer whose form has a file input still gets a complete submission row and
- * can see that something was attached, rather than the field vanishing.
+ * ## What this used to do, and why that was the bug
+ *
+ * It described the file and threw the bytes away. The submission row said
+ * `stored: false`, the visitor got a thank-you page, and the CV they attached
+ * did not exist anywhere. **Nothing about that looked like a failure from the
+ * outside**, which is exactly the quiet data loss this product is named
+ * against. There is now no code path from a file part to a stored submission
+ * that does not also store the bytes:
+ *
+ *   - Every cap is checked *here*, before a row is written, and a breach throws
+ *     an `IngestError` — so the request is refused with a status and a sentence
+ *     rather than accepted and quietly reduced.
+ *   - The reference this builds is a `StoredFileRef`, whose `stored` field is
+ *     the literal `true`. There is no longer a type that can say otherwise.
+ *   - The bytes ride out in `uploads` and are inserted **in the same
+ *     transaction** as the submission (`../uploads/store.ts`), so a failed file
+ *     write rolls the submission back rather than leaving a row pointing at
+ *     nothing.
+ *
+ * ## An unfilled file input is not a file
+ *
+ * A browser posts `<input type="file">` with an empty filename and zero bytes
+ * when nobody chose anything. Storing that would put an empty attachment on
+ * every submission from every form with an optional upload. Those parts are
+ * skipped. A zero-byte file with a real filename **is** stored — somebody
+ * attached it, it is empty, and saying so is the honest answer.
  */
 async function parseMultipart(
   bytes: Uint8Array,
   contentType: string,
-): Promise<Record<string, JsonValue>> {
+): Promise<{ values: Record<string, JsonValue>; uploads: PendingUpload[] }> {
   let form: FormData;
   try {
     // The original body has already been consumed by the capped read, so parse
@@ -253,22 +332,128 @@ async function parseMultipart(
     );
   }
 
+  const limits = uploadLimits();
+  const allowList = allowedTypes();
+  const now = new Date();
+  // One expiry for the whole submission, so two files attached together are
+  // swept together rather than a few milliseconds apart.
+  const expiresAt = retentionExpiry(now);
+
   const collector = new Collector();
+  const uploads: PendingUpload[] = [];
+  let totalBytes = 0;
+
   for (const [key, value] of form) {
     if (typeof value === "string") {
       collector.add(key, value);
       continue;
     }
-    const ref: FileRef = {
+
+    const declaredName = value.name ?? "";
+    const declaredSize = value.size ?? 0;
+    if (declaredName === "" && declaredSize === 0) continue;
+
+    // Checked before the bytes are read, so a hostile client cannot make us
+    // materialise a hundred buffers before we refuse.
+    if (uploads.length >= limits.maxFiles) {
+      throw new IngestError(
+        "too_many_files",
+        `This form accepts at most ${limits.maxFiles} attached ${limits.maxFiles === 1 ? "file" : "files"} per submission. Nothing was stored — send it again with fewer.`,
+      );
+    }
+
+    // Checked before the upload is stored rather than at the download, so a
+    // deployment that cannot sign links never accepts a file it could not hand
+    // back. See `canStoreUploads`.
+    if (!canStoreUploads()) {
+      throw new IngestError("uploads_not_configured", UPLOADS_NOT_CONFIGURED);
+    }
+
+    const filename = sanitizeFilename(sanitizeString(declaredName));
+    const declaredType = sanitizeString(value.type ?? "").slice(0, 255);
+
+    if (!isTypeAllowed(declaredType, allowList)) {
+      throw new IngestError(
+        "file_type_not_allowed",
+        `This form does not accept ${declaredType || "files of that type"} (${filename}). Nothing was stored. Accepted types: ${(allowList ?? []).join(", ")}.`,
+      );
+    }
+
+    if (declaredSize > limits.maxFileBytes) {
+      throw new IngestError("file_too_large", fileTooLarge(filename, limits.maxFileBytes));
+    }
+
+    const fileBytes = new Uint8Array(await value.arrayBuffer());
+
+    // `size` on a `File` is metadata; this is the count of bytes we actually
+    // hold. Checking both means a lying `size` cannot get a large file past the
+    // first check and into storage.
+    if (fileBytes.byteLength > limits.maxFileBytes) {
+      throw new IngestError("file_too_large", fileTooLarge(filename, limits.maxFileBytes));
+    }
+
+    totalBytes += fileBytes.byteLength;
+    if (totalBytes > limits.maxTotalBytes) {
+      throw new IngestError(
+        "file_too_large",
+        `The files attached to this submission add up to more than ${megabytes(limits.maxTotalBytes)}. Nothing was stored — send it again with smaller files.`,
+      );
+    }
+
+    const publicId = newFilePublicId();
+    const sha256 = createHash("sha256").update(fileBytes).digest("hex");
+    const detectedContentType = detectContentType(fileBytes);
+
+    // Minted now and stored on the row, so it reaches every destination payload
+    // without `src/lib/destinations` needing to know files exist. The inbox and
+    // the export both ignore it and mint a fresh one; see `StoredFileRef.url`.
+    const url = signDownloadUrl(publicId, "delivery", expiresAt, now);
+    if (url === null) {
+      // Unreachable — `canStoreUploads` above returns false in exactly the case
+      // that makes this null. Kept because "unreachable" and "cannot happen"
+      // are different claims, and this is the one that must never silently
+      // become a reference to a file nobody can fetch.
+      throw new IngestError("uploads_not_configured", UPLOADS_NOT_CONFIGURED);
+    }
+
+    const ref: StoredFileRef = {
       file: true,
-      filename: sanitizeString(value.name ?? "").slice(0, MAX_FIELD_NAME_CHARS),
-      contentType: sanitizeString(value.type ?? "").slice(0, 255),
-      size: value.size ?? 0,
-      stored: false,
+      id: publicId,
+      filename,
+      contentType: declaredType,
+      detectedType: detectedContentType,
+      size: fileBytes.byteLength,
+      sha256,
+      stored: true,
+      url,
+      urlExpiresAt: linkExpiry("delivery", expiresAt, now).toISOString(),
+      expiresAt: expiresAt ? expiresAt.toISOString() : null,
     };
+
+    uploads.push({
+      publicId,
+      fieldKey: checkName(sanitizeString(key)),
+      filename,
+      declaredContentType: declaredType,
+      detectedContentType,
+      size: fileBytes.byteLength,
+      sha256,
+      bytes: fileBytes,
+    });
+
     collector.addValue(key, ref as unknown as JsonValue);
   }
-  return collector.finish();
+
+  return { values: collector.finish(), uploads };
+}
+
+function fileTooLarge(filename: string, cap: number): string {
+  return `${filename} is larger than the ${megabytes(cap)} limit for a single file. Nothing was stored — send it again with a smaller file.`;
+}
+
+/** `4 MB`, for a message a person reads. Decimal, like a file manager. */
+function megabytes(bytes: number): string {
+  return `${Math.round(bytes / 100_000) / 10} MB`;
 }
 
 function parseJson(rawBody: string): Record<string, JsonValue> {

@@ -1,8 +1,15 @@
-import { desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { asc, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 
 // Relative, extension-bearing imports, matching `./queries.ts` and `src/db/`.
 import { withWorkspace } from "../../db/index.ts";
-import { deliveryAttempts, destinations, endpoints, submissions } from "../../db/schema.ts";
+import {
+  deliveryAttempts,
+  destinations,
+  endpoints,
+  submissionFiles,
+  submissions,
+} from "../../db/schema.ts";
+import { NOWHERE_GRACE_SECONDS } from "../destinations/reach.ts";
 import type {
   SubmissionDetail,
   SubmissionExportRow,
@@ -32,6 +39,7 @@ export const PAGE_SIZE = 50;
 export const EXPORT_LIMIT = 10_000;
 
 const ORIGINS = ["human", "agent", "unverified"] as const;
+const LANES = ["submissions", "partials"] as const;
 const VERDICTS = ["won", "lost", "disqualified", "awaiting"] as const;
 
 /**
@@ -67,6 +75,11 @@ export function parseSubmissionFilters(
   const page = Number.parseInt(one("page") ?? "1", 10);
 
   return {
+    // Anything unrecognised is the submissions lane, which is what this screen
+    // was before #37 and what every existing bookmark means.
+    lane: LANES.includes(one("lane") as (typeof LANES)[number])
+      ? (one("lane") as (typeof LANES)[number])
+      : "submissions",
     endpointPublicId: one("endpoint"),
     origin,
     verdict,
@@ -107,6 +120,9 @@ export function filtersToSearchParams(
   overrides: { page?: number } = {},
 ): URLSearchParams {
   const params = new URLSearchParams();
+  // Omitted for the default lane, so a shared inbox URL looks the way it always
+  // did and an export link is unchanged.
+  if (filters.lane !== "submissions") params.set("lane", filters.lane);
   if (filters.endpointPublicId) params.set("endpoint", filters.endpointPublicId);
   if (filters.origin.length > 0) params.set("origin", filters.origin.join(","));
   if (filters.verdict.length > 0) params.set("verdict", filters.verdict.join(","));
@@ -181,6 +197,31 @@ const listColumns = {
   utmMedium: submissions.utmMedium,
   utmCampaign: submissions.utmCampaign,
   referrer: submissions.referrer,
+  /**
+   * This submission was delivered nowhere (#65).
+   *
+   * Not "the endpoint is currently deaf" — that is a different question, asked
+   * about the endpoint by `endpointReach`. This is the historical fact about
+   * one lead: **no attempt to deliver it was ever made**, because at the moment
+   * it arrived there was nothing switched on to deliver it to. It stays true
+   * after a destination is added later, which is exactly the case worth seeing:
+   * the leads that fell in the gap.
+   *
+   * Every delivery writes a row whatever happens — see the `catch` in
+   * `dispatch.ts`, which exists so that a delivery cannot vanish without a
+   * trace — so "no attempt row" means one thing only.
+   *
+   * The age clause is the in-flight guard, and `NOWHERE_GRACE_SECONDS` carries
+   * its reasoning.
+   */
+  deliveredNowhere: sql<boolean>`(
+    ${submissions.submittedAt} < now() - make_interval(secs => ${NOWHERE_GRACE_SECONDS})
+    and not exists (
+      select 1 from ${deliveryAttempts} a
+      where a.submission_id = ${submissions.id}
+        and a.workspace_id = ${submissions.workspaceId}
+    )
+  )`,
 } as const;
 
 /** One page of the inbox, plus the totals the header needs to say anything useful. */
@@ -321,6 +362,29 @@ export async function getSubmission(
       .where(ws.where(deliveryAttempts, eq(deliveryAttempts.submissionId, row.id)))
       .orderBy(desc(deliveryAttempts.createdAt));
 
+    // Read from `submission_files`, not from `values` (#66). The two normally
+    // agree, and where they cannot the table is the one that is right: a file
+    // posted under a reserved field name has its reference stripped from
+    // `values` along with our other plumbing, and reading the attachments off
+    // `values` would make that file invisible in the one screen that exists to
+    // prove nothing was lost.
+    const files = await ws.tx
+      .select({
+        publicId: submissionFiles.publicId,
+        fieldKey: submissionFiles.fieldKey,
+        filename: submissionFiles.filename,
+        declaredContentType: submissionFiles.declaredContentType,
+        detectedContentType: submissionFiles.detectedContentType,
+        size: submissionFiles.size,
+        sha256: submissionFiles.sha256,
+        purgedAt: submissionFiles.purgedAt,
+        expiresAt: submissionFiles.expiresAt,
+        createdAt: submissionFiles.createdAt,
+      })
+      .from(submissionFiles)
+      .where(ws.where(submissionFiles, eq(submissionFiles.submissionId, row.id)))
+      .orderBy(asc(submissionFiles.createdAt), asc(submissionFiles.publicId));
+
     return {
       ...toListItem(row),
       originReasons: asReasons(row.originReasons),
@@ -338,6 +402,7 @@ export async function getSubmission(
       idempotencyKey: row.idempotencyKey,
       createdAt: row.createdAt,
       deliveries,
+      files,
     };
   });
 }
@@ -371,6 +436,7 @@ function toListItem(row: ListRow): SubmissionListItem {
     utmMedium: (row.utmMedium as string | null) ?? null,
     utmCampaign: (row.utmCampaign as string | null) ?? null,
     referrer: (row.referrer as string | null) ?? null,
+    deliveredNowhere: row.deliveredNowhere === true,
   };
 }
 

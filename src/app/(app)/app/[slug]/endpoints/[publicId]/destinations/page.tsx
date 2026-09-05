@@ -8,8 +8,12 @@ import {
   UnavailableKinds,
 } from "@/components/app/destinations-forms";
 import { DeliveryAlert, HealthChip, HealthLine } from "@/components/app/destinations-health";
+import { ReachAlert } from "@/components/app/reach-alert";
 import { DataTable, Td, Th } from "@/components/app/table";
 import { ADAPTER_OPTIONS } from "@/lib/destinations/adapters/index";
+import { isMailConfigured } from "@/lib/destinations/mail";
+import { DEFAULT_NOTIFICATION_BLURB } from "@/lib/destinations/notify";
+import { endpointReach } from "@/lib/destinations/reach";
 import { listDestinations } from "@/lib/destinations/store";
 import { getEndpointByPublicId } from "@/lib/workspaces/endpoints";
 import { requireWorkspace } from "@/lib/workspaces/server";
@@ -41,6 +45,11 @@ export default async function DestinationsPage({
   const rows = await listDestinations(workspace.id, endpoint.publicId);
   const base = `/app/${workspace.slug}/endpoints/${endpoint.publicId}`;
 
+  // #65, on the screen someone lands on to fix it. The mail flag is a
+  // deployment fact, so it is read here rather than in the component.
+  const reach = endpointReach(rows, { mailConfigured: isMailConfigured() });
+  const hasDefaultNotification = rows.some((row) => row.defaultNotification);
+
   return (
     <Container className="max-w-[60rem] pt-10">
       <p className="font-mono text-label uppercase text-muted-foreground">
@@ -64,6 +73,8 @@ export default async function DestinationsPage({
         a destination that breaks costs you a delivery and never a lead. When one
         stops working, this page says so.
       </p>
+
+      <ReachAlert className="mt-8" reach={reach} href={`${base}/destinations`} />
 
       {rows.length > 0 ? (
         <div className="mt-8">
@@ -116,6 +127,11 @@ export default async function DestinationsPage({
                     >
                       {row.name}
                     </Link>
+                    {row.defaultNotification ? (
+                      <span className="ml-2 font-mono text-label uppercase text-muted-foreground">
+                        default
+                      </span>
+                    ) : null}
                   </Td>
                   <Td dim>
                     {ADAPTER_OPTIONS.find((option) => option.kind === row.kind)?.label ??
@@ -132,6 +148,15 @@ export default async function DestinationsPage({
             </tbody>
           </DataTable>
         )}
+        {/* #64. The word "default" in a table cell is a label, not an
+            explanation, and the explanation is the part that stops somebody
+            deleting the thing that tells them about their leads. */}
+        {hasDefaultNotification ? (
+          <PanelBody className="border-t border-border pt-4 text-sm text-muted-foreground">
+            <span className="font-mono text-label uppercase">Default</span> —{" "}
+            {DEFAULT_NOTIFICATION_BLURB}
+          </PanelBody>
+        ) : null}
       </Panel>
 
       {rows.length > 0 ? (

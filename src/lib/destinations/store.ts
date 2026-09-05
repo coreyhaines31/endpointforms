@@ -138,6 +138,14 @@ const healthColumns = {
    *   an alert gets ignored.
    * - A failed attempt **with a retry still scheduled** on some attempt of the
    *   same delivery is pending, not dead.
+   * - A failed attempt **with a later attempt still open** is not dead either.
+   *   Between a claim and its settle there is no schedule to see — the claim
+   *   cleared it — so without this clause every retry in flight would be counted
+   *   as a delivery that gave up. That is the misreport #60 is about: "never
+   *   attempted" and "tried five times and stopped" must not print the same
+   *   sentence. An open row that nobody ever settles is not a way to hide
+   *   forever, because `reapStaleAttempts` closes it within `STALE_ATTEMPT_MS`
+   *   and the count comes back.
    *
    * Counted per **submission**, not per attempt: one submission that failed
    * five times is one lead that did not arrive, not five.
@@ -162,6 +170,13 @@ const healthColumns = {
           and p.submission_id = a.submission_id
           and p.next_retry_at is not null
       )
+      and not exists (
+        select 1 from ${deliveryAttempts} o
+        where o.destination_id = a.destination_id
+          and o.workspace_id = a.workspace_id
+          and o.submission_id = a.submission_id
+          and o.status = 'pending'
+      )
   )`,
 };
 
@@ -183,6 +198,7 @@ export async function listDestinations(
         enabled: destinations.enabled,
         createdAt: destinations.createdAt,
         config: destinations.config,
+        defaultNotification: destinations.defaultNotification,
         ...healthColumns,
       })
       .from(destinations)
@@ -217,6 +233,7 @@ export async function getDestination(
         enabled: destinations.enabled,
         createdAt: destinations.createdAt,
         config: destinations.config,
+        defaultNotification: destinations.defaultNotification,
         ...healthColumns,
       })
       .from(destinations)
@@ -570,6 +587,28 @@ export async function beginAttempt(
   return id;
 }
 
+/**
+ * Fills in the bytes on an attempt row that was opened before they existed.
+ *
+ * Only `claimDueRetries` opens such a row: it runs in a transaction that does
+ * not load the destination's config, so it cannot build the payload. Without
+ * this, a retry that is abandoned mid-flight would be reaped into a failure with
+ * an empty request body — a log line that says something was tried but not what,
+ * which is half of the hole `beginAttempt` exists to close.
+ */
+export async function recordAttemptRequest(
+  workspaceId: string,
+  attemptId: string,
+  requestBody: string | null,
+): Promise<void> {
+  await withWorkspace(workspaceId, async (ws) => {
+    await ws.tx
+      .update(deliveryAttempts)
+      .set({ requestBody })
+      .where(ws.where(deliveryAttempts, eq(deliveryAttempts.id, attemptId)));
+  });
+}
+
 /** Finishes an attempt opened by `beginAttempt`. */
 export async function settleAttempt(
   workspaceId: string,
@@ -627,23 +666,59 @@ export async function lastAttemptNumber(
 }
 
 export type DueRetry = {
+  /**
+   * The **new, `pending`** attempt row this claim opened — not the failed row it
+   * came from. `./dispatch.ts` settles this one rather than opening its own.
+   */
   attemptId: string;
   destinationId: string;
   submissionId: string;
   submissionPublicId: string;
+  /** The number of the attempt now open, i.e. the failed one's plus one. */
   attempt: number;
 };
 
 /**
- * Deliveries whose backoff has elapsed.
+ * Deliveries whose backoff has elapsed, each with its next attempt already open.
  *
  * This is the query the `delivery_attempts_retry_idx` index was built for — the
  * schema calls it "the retry worker's only query", and this is that worker,
  * such as it is. There is no queue in this stack; see `./dispatch.ts` for what
  * actually calls this and what that costs.
  *
- * `nextRetryAt` is cleared on the row we are about to retry, inside the same
- * transaction that reads it, so two concurrent sweeps cannot both pick it up.
+ * ## Why the `pending` row is opened here and not at attempt time (#60)
+ *
+ * This transaction **commits before any request goes out**, and the attempts
+ * then run one after another. A process that dies in that window used to leave
+ * the row `failed` with `next_retry_at` null and no attempt row anywhere — which
+ * matches neither branch of `workspacesWithDeliveryWork`, so nothing ever came
+ * back for it. The lead survived; the redelivery did not, and the screen said
+ * "gave up" about a delivery that was never tried.
+ *
+ * Opening the attempt row inside the claim closes that, because an abandoned
+ * claim now looks exactly like the case this codebase already handles: a
+ * `pending` row nobody finished. `reapStaleAttempts` turns it into an honest
+ * failure and reschedules it under the normal policy — machinery that is
+ * already built, already tested, and already the answer for a delivery whose
+ * process was torn down mid-flight.
+ *
+ * The obvious alternative — leaving a lease in `next_retry_at` so the row simply
+ * becomes due again — was rejected because it lets a **slow but alive** attempt
+ * be re-claimed and delivered a second time. Our delivery id is stable across
+ * retries, so a receiver that dedupes is fine, but one that does not gets the
+ * lead twice. Trading silent loss for silent duplication is not an improvement.
+ * `STALE_ATTEMPT_MS` is the lease here instead, and it is deliberately far
+ * longer than any attempt can run.
+ *
+ * ## The claim itself
+ *
+ * `next_retry_at` is cleared **by an update that also requires it to still be
+ * set**, and the row is only treated as claimed if that update returns it. Under
+ * `read committed` a second transaction blocks on the row lock, then re-checks
+ * the predicate against the committed version, finds the schedule already
+ * cleared, and updates nothing — so two concurrent sweeps cannot both take the
+ * same row. Selecting and then updating unconditionally, which is what this did
+ * before, would have let both of them through.
  */
 export async function claimDueRetries(
   workspaceId: string,
@@ -689,16 +764,65 @@ export async function claimDueRetries(
 
     if (due.length === 0) return [];
 
-    // Claimed by clearing the schedule. The row keeps its failed status and its
-    // bodies — this only stops a second sweep picking the same one up.
+    const claimed: DueRetry[] = [];
+
     for (const row of due) {
-      await ws.tx
+      // Clearing the schedule is the claim. The failed row keeps its status and
+      // its bodies — this only stops a second sweep picking the same one up.
+      const took = await ws.tx
         .update(deliveryAttempts)
         .set({ nextRetryAt: null })
-        .where(ws.where(deliveryAttempts, eq(deliveryAttempts.id, row.attemptId)));
+        .where(
+          ws.where(
+            deliveryAttempts,
+            eq(deliveryAttempts.id, row.attemptId),
+            isNotNull(deliveryAttempts.nextRetryAt),
+          ),
+        )
+        .returning({ id: deliveryAttempts.id });
+
+      if (took.length === 0) continue;
+
+      // The attempt number is taken here rather than at attempt time, because
+      // the row that carries it is written here. `max` is read inside the same
+      // transaction, and this loop's own inserts are visible to it.
+      const [highest] = await ws.tx
+        .select({ attempt: sql<number>`coalesce(max(${deliveryAttempts.attempt}), 0)::int` })
+        .from(deliveryAttempts)
+        .where(
+          ws.where(
+            deliveryAttempts,
+            eq(deliveryAttempts.destinationId, row.destinationId),
+            eq(deliveryAttempts.submissionId, row.submissionId),
+          ),
+        );
+
+      const attempt = (highest?.attempt ?? row.attempt) + 1;
+      const attemptId = newId();
+
+      // No request body yet — the payload needs the destination's config, which
+      // this transaction deliberately does not load. `./dispatch.ts` fills it in
+      // as soon as it has built the bytes.
+      await ws.tx.insert(deliveryAttempts).values({
+        id: attemptId,
+        workspaceId,
+        destinationId: row.destinationId,
+        submissionId: row.submissionId,
+        attempt,
+        status: "pending",
+        startedAt: now,
+      });
+
+      claimed.push({
+        attemptId,
+        destinationId: row.destinationId,
+        submissionId: row.submissionId,
+        submissionPublicId: row.submissionPublicId,
+        attempt,
+      });
     }
 
-    return due;
+    return claimed;
   });
 }
 
@@ -714,6 +838,12 @@ export async function claimDueRetries(
  * Comfortably longer than the 10s adapter timeout plus any plausible pause, so
  * a slow-but-alive delivery is never reaped out from under itself. Short enough
  * that a customer finds out the same hour.
+ *
+ * Since #60 this is also **the claim lease**: `claimDueRetries` opens the
+ * `pending` row, and this constant is the only thing that decides how long a
+ * claimed retry is left alone before something else may take it. It is the
+ * number that keeps "recover an abandoned claim" from becoming "deliver the
+ * same lead twice", so it must stay far larger than any attempt can run.
  */
 export const STALE_ATTEMPT_MS = 5 * 60_000;
 
@@ -728,6 +858,11 @@ export const STALE_ATTEMPT_MS = 5 * 60_000;
  * It is kept as narrow as a query can be — one column, distinct, bounded, and
  * no customer data crosses the boundary. Everything the sweep then *does* runs
  * inside `withWorkspace`, one workspace at a time.
+ *
+ * The two branches are the whole recovery story, and since #60 the second one
+ * carries both cases: an attempt torn down mid-request, and a retry that was
+ * claimed and never attempted at all. Both leave a `pending` row, which is why
+ * `claimDueRetries` opens one.
  */
 export async function workspacesWithDeliveryWork(
   options: { now?: Date; limit?: number } = {},
@@ -774,7 +909,20 @@ export async function reapStaleAttempts(
 
   return withWorkspace(workspaceId, async (ws) => {
     const stale = await ws.tx
-      .select({ id: deliveryAttempts.id, attempt: deliveryAttempts.attempt })
+      .select({
+        id: deliveryAttempts.id,
+        attempt: deliveryAttempts.attempt,
+        // Whether this delivery already arrived by some other attempt. A manual
+        // redeliver can succeed while an abandoned claim is still sitting here
+        // pending, and rescheduling that claim would send the same lead twice.
+        superseded: sql<boolean>`exists (
+          select 1 from ${deliveryAttempts} s
+          where s.workspace_id = ${deliveryAttempts.workspaceId}
+            and s.destination_id = ${deliveryAttempts.destinationId}
+            and s.submission_id = ${deliveryAttempts.submissionId}
+            and s.status = 'succeeded'
+        )`,
+      })
       .from(deliveryAttempts)
       .where(
         ws.where(
@@ -786,6 +934,27 @@ export async function reapStaleAttempts(
       .limit(options.limit ?? 50);
 
     for (const row of stale) {
+      // Already delivered by another attempt. Close the row honestly and
+      // schedule nothing: the lead is not missing, and retrying would put a
+      // second copy in front of a receiver that may not dedupe. Trading silent
+      // loss for silent duplication is what the lease design was rejected for,
+      // and it must not come back by this door.
+      if (row.superseded) {
+        await ws.tx
+          .update(deliveryAttempts)
+          .set({
+            status: "failed",
+            completedAt: now,
+            nextRetryAt: null,
+            error:
+              "This delivery was started and never finished — the process handling it went away. " +
+              "No retry was scheduled, because the submission had already been delivered to this " +
+              "destination by another attempt. Nothing is missing.",
+          })
+          .where(ws.where(deliveryAttempts, eq(deliveryAttempts.id, row.id)));
+        continue;
+      }
+
       // `network` rather than `unknown`: the delivery was started and never came
       // back, which is what a dropped connection looks like, and it is retryable.
       const retry = decideRetry({ attempt: row.attempt, failure: "network", now });
@@ -818,6 +987,7 @@ type HealthRow = {
   enabled: boolean;
   createdAt: Date;
   config: unknown;
+  defaultNotification: boolean;
   consecutiveFailures: number;
   lastSuccessAt: string | Date | null;
   lastFailureAt: string | Date | null;
@@ -836,6 +1006,7 @@ function toListItem(row: HealthRow): DestinationListItem {
     enabled: row.enabled,
     createdAt: row.createdAt,
     config: redactConfig(row.kind, row.config),
+    defaultNotification: row.defaultNotification,
     health: {
       state: healthState(row.enabled, row.consecutiveFailures, lastAttemptAt, lastSuccessAt),
       consecutiveFailures: row.consecutiveFailures,

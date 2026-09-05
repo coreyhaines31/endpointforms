@@ -1,0 +1,1 @@
+ALTER TABLE "destinations" ADD COLUMN "default_notification" boolean DEFAULT false NOT NULL;

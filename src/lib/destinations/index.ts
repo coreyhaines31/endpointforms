@@ -33,7 +33,25 @@ export {
   type TestDeliveryResult,
 } from "./dispatch.ts";
 
+export { isMailConfigured, mailFrom, MAIL_NOT_CONFIGURED } from "./mail.ts";
+
+export {
+  buildDefaultNotification,
+  defaultNotificationConfig,
+  defaultNotificationName,
+  DEFAULT_NOTIFICATION_BLURB,
+  DEFAULT_NOTIFICATION_UNSENDABLE,
+} from "./notify.ts";
+
 export { buildPayload, sampleSource, serialisePayload } from "./payload.ts";
+
+export {
+  endpointReach,
+  NOWHERE_GRACE_SECONDS,
+  type EndpointReach,
+  type ReachInput,
+  type ReachState,
+} from "./reach.ts";
 
 export {
   handleSweep,

@@ -1,6 +1,7 @@
 import type { MembershipRole } from "../../db/schema.ts";
 import type { OriginReason, OriginState } from "../origin/types.ts";
 import type { SpamReason, SpamState } from "../spam/types.ts";
+import type { SubmissionFileRow } from "../uploads/types.ts";
 
 /**
  * The shapes the workspace queries return.
@@ -12,6 +13,7 @@ import type { SpamReason, SpamState } from "../spam/types.ts";
  */
 
 export type { MembershipRole, OriginReason, OriginState, SpamReason, SpamState };
+export type { SubmissionFileRow };
 
 export type WorkspaceSummary = {
   id: string;
@@ -90,7 +92,20 @@ export type EndpointDetail = EndpointListItem;
 
 export type SubmissionVerdict = "won" | "lost" | "disqualified" | "awaiting";
 
+/**
+ * Which lane of the inbox is being looked at (#37).
+ *
+ * Two lanes, never one merged list. `submissions` is what arrived; `partials`
+ * is people who filled something in and never finished. They live in different
+ * tables and their counts are never added together, so that adding partial
+ * capture to a workspace cannot change a single number that was already on the
+ * screen. See `src/lib/workspaces/partials.ts`.
+ */
+export type InboxLane = "submissions" | "partials";
+
 export type SubmissionFilters = {
+  /** Defaults to `submissions`, so every existing link keeps its meaning. */
+  lane: InboxLane;
   endpointPublicId: string | null;
   origin: OriginState[];
   verdict: SubmissionVerdict[];
@@ -123,6 +138,13 @@ export type SubmissionListItem = {
   utmMedium: string | null;
   utmCampaign: string | null;
   referrer: string | null;
+  /**
+   * No attempt was ever made to deliver this one, because the endpoint had
+   * nothing switched on when it arrived (#65). A historical fact about this
+   * submission, not a live reading of the endpoint — it stays true after a
+   * destination is added, which is the whole reason it is worth showing.
+   */
+  deliveredNowhere: boolean;
 };
 
 export type SubmissionPage = {
@@ -164,6 +186,14 @@ export type SubmissionDetail = SubmissionListItem & {
   idempotencyKey: string | null;
   createdAt: Date;
   deliveries: DeliveryAttemptRow[];
+  /**
+   * Attachments (#66), read from `submission_files` rather than from `values`.
+   *
+   * Never carries the bytes — the detail screen mints a signed, short-lived
+   * link per row and the bytes travel through `/api/v1/files/{id}`, so a page
+   * render never puts a customer's CV through React's serialiser.
+   */
+  files: SubmissionFileRow[];
 };
 
 export type SubmissionExportRow = SubmissionListItem & {

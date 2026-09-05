@@ -1,3 +1,4 @@
+import { carriedParams } from "@/lib/embed/params";
 import { readVisitorKey } from "@/lib/hindsight/assign";
 import { resolveVariant } from "@/lib/hindsight/serve";
 import { VISITOR_COOKIE } from "@/lib/hindsight/visitor";
@@ -160,12 +161,21 @@ export async function POST(
     isSecure(request),
   );
 
+  // The embed and attribution parameters have to be put back on (#39). They
+  // reached this route on the form's `action`, and the form the visitor is
+  // about to be shown again is a fresh GET that knows nothing: without them an
+  // embedded form's first validation error is the moment it stops being
+  // embedded — full-height marketing layout inside somebody's section, no
+  // resize handshake, and every retry submitted with the attribution gone.
+  const back = carriedParams(searchParamsOf(request));
+  back.set(ERROR_FLAG, "1");
+
   return new Response(null, {
     // 303, so the browser follows with GET and a refresh of the form cannot
     // repost. Matches `redirectResponse` in the ingest path for the same reason.
     status: 303,
     headers: {
-      location: `/f/${encodeURIComponent(formId)}?${ERROR_FLAG}=1`,
+      location: `/f/${encodeURIComponent(formId)}?${back.toString()}`,
       "set-cookie": cookie,
       "cache-control": "no-store, no-cache, must-revalidate",
     },
@@ -221,6 +231,22 @@ function retainable(
   }
 
   return out;
+}
+
+/**
+ * The query string this route was posted to, or an empty one.
+ *
+ * A `Request` URL is always absolute so the parse cannot realistically fail —
+ * but this is on the path back to a visitor whose submission was refused, and
+ * throwing here would turn a correctable typo into a 500 on a lead that is
+ * still recoverable.
+ */
+function searchParamsOf(request: Request): URLSearchParams {
+  try {
+    return new URL(request.url).searchParams;
+  } catch {
+    return new URLSearchParams();
+  }
 }
 
 /** Answers a body we could not even read, in the shape the caller asked in. */

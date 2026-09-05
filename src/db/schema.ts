@@ -3,6 +3,8 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   boolean,
   char,
+  check,
+  customType,
   date,
   foreignKey,
   index,
@@ -144,6 +146,19 @@ export const splitTestStatus = pgEnum("split_test_status", [
   "stopped",
 ]);
 
+/**
+ * Which denominator a rate is measured against (#59).
+ *
+ * The database twin of `RankingBasis` in `src/lib/hindsight/types.ts`, and it
+ * exists for one column: a pre-registered effect size is meaningless without
+ * it. "A 4% Yield rate" is two different numbers depending on whether the
+ * denominator is people shown the form or submissions received, and the sample
+ * a test needs differs by an order of magnitude between them. Storing the
+ * number without storing which one it is would be pre-registering a quantity
+ * nobody could check.
+ */
+export const splitTestBasis = pgEnum("split_test_basis", ["exposure", "submission"]);
+
 // ---------------------------------------------------------------------------
 // Tenancy
 // ---------------------------------------------------------------------------
@@ -155,6 +170,27 @@ export const workspaces = pgTable(
     /** Becomes the render subdomain (#34), so it is public and effectively permanent. */
     slug: text("slug").notNull(),
     name: text("name").notNull(),
+    /**
+     * When this workspace's **derived** outcome key was killed (#57).
+     *
+     * The original verdict key is an HMAC over the workspace id — nothing is
+     * stored, so there is no row to revoke, and until now killing one meant
+     * rotating the fleet-wide secret and every other customer's key with it.
+     * These two columns are the whole per-tenant fix for that key: a timestamp
+     * that `verifyDerivedKey`'s caller checks, and a last-seen so an operator
+     * can answer "is anything still using it?" *before* revoking rather than
+     * finding out from a support ticket afterwards.
+     *
+     * They live on `workspaces` rather than in `verdict_api_keys` because a
+     * derived key has no stored secret to hash, no label a person chose and no
+     * creation event — it is a property of the workspace, and giving it a row
+     * would mean backfilling one for every existing workspace and minting one
+     * for every future workspace, with a silently keyless workspace as the
+     * failure mode. One nullable column cannot fail that way.
+     */
+    derivedKeyRevokedAt: timestamp("derived_key_revoked_at", { withTimezone: true }),
+    /** Throttled to `DERIVED_KEY_TOUCH_INTERVAL_MS`; see `src/lib/verdict/key-store.ts`. */
+    derivedKeyLastUsedAt: timestamp("derived_key_last_used_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -568,6 +604,250 @@ export const submissions = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Partial captures (#37)
+// ---------------------------------------------------------------------------
+
+/**
+ * Somebody who filled in three screens of five and left.
+ *
+ * ## Why this is not a row in `submissions`
+ *
+ * It would have been fewer lines. It would also have meant that every count in
+ * the product — the inbox headline, `endpoints.submissionCount`, every
+ * denominator `src/lib/yield/compute.ts` reads — silently changed the day this
+ * shipped, unless every query that has ever been written and every query anyone
+ * writes later remembers to filter partials out. Yield is *wins over everything
+ * that arrived*; quietly enlarging "everything that arrived" would move every
+ * customer's number without anybody choosing to.
+ *
+ * A separate table makes that impossible rather than merely unlikely. No
+ * existing query can see these rows, so none of them changed, and none of them
+ * had to be audited to prove it.
+ *
+ * It is also the honest model. **Nobody pressed submit.** A partial is
+ * something we saw, not something we were sent, and the two do not belong in
+ * one bucket.
+ *
+ * ## What the four stamps on a submission mean here
+ *
+ * - **`origin`** — stamped, identically. Only the hosted form has steps, so a
+ *   partial is always a `form` surface, but the human/unverified split still
+ *   applies and is still worth seeing.
+ * - **`variant_id`** — stamped. A partial belongs to the arm that served it.
+ * - **`verdict`** — deliberately absent. A verdict is a downstream outcome on a
+ *   lead that arrived; a partial did not arrive. Recording one would put a win
+ *   in a numerator whose denominator does not contain it, which is exactly the
+ *   invented arithmetic `compute.ts` refuses to do.
+ * - **`spam_state`** — deliberately absent. Scoring runs on complete
+ *   submissions, and `observeVelocity` in particular would be poisoned by it:
+ *   one visitor stepping through four screens looks, to a velocity signal, like
+ *   four submissions from one IP inside a minute. Partials are unscored, and
+ *   the step route never calls the assessor.
+ */
+export const submissionPartials = pgTable(
+  "submission_partials",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    /** What the inbox links to. Never the `partial_key`, which the visitor holds. */
+    publicId: text("public_id").notNull(),
+    /**
+     * The opaque token the visitor's form carries between screens.
+     *
+     * Server-generated and unguessable, because it is the only thing that says
+     * two step posts are the same visit. Unique per endpoint, which is what
+     * makes the write an upsert and therefore what stops one visitor producing
+     * one row per screen.
+     */
+    partialKey: text("partial_key").notNull(),
+
+    /** The definition this was captured under, so it stays readable later. */
+    schemaVersionId: uuid("schema_version_id").references(() => formSchemas.id, {
+      onDelete: "restrict",
+    }),
+    variantId: uuid("variant_id"),
+
+    /** The last step the visitor completed, by id rather than by position. */
+    stepId: text("step_id"),
+    /** Its 1-based place among the screens they were being shown, and how many. */
+    stepNumber: integer("step_number"),
+    stepsTotal: integer("steps_total"),
+
+    /** Everything answered so far. The same shape as `submissions.values`. */
+    values: jsonb("values").notNull().default({}),
+
+    origin: submissionOrigin("origin").notNull().default("unverified"),
+    originReasons: jsonb("origin_reasons").notNull().default([]),
+
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    utmTerm: text("utm_term"),
+    utmContent: text("utm_content"),
+    clickIds: jsonb("click_ids").notNull().default({}),
+    referrer: text("referrer"),
+    userAgent: text("user_agent"),
+    ipHash: text("ip_hash"),
+
+    /**
+     * When this visit turned into a submission, and which one.
+     *
+     * Set once, from the ingest path, after the submission row is committed.
+     * A resolved partial is kept rather than deleted — "they hesitated on the
+     * pricing screen for six minutes and then finished" is the thing this table
+     * exists to be able to say — but it is never counted or listed as an open
+     * partial again, which is what stops one visitor appearing twice.
+     */
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    submissionId: uuid("submission_id"),
+
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.endpointId],
+      foreignColumns: [endpoints.workspaceId, endpoints.id],
+      name: "submission_partials_endpoint_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("submission_partials_public_id_key").on(t.publicId),
+    unique("submission_partials_workspace_id_id_key").on(t.workspaceId, t.id),
+    // The upsert target. Not partial: `partial_key` is never null here, because
+    // a row without one could not be written to a second time.
+    uniqueIndex("submission_partials_endpoint_key").on(t.endpointId, t.partialKey),
+    index("submission_partials_workspace_updated_at_idx").on(
+      t.workspaceId,
+      t.updatedAt.desc(),
+    ),
+    index("submission_partials_endpoint_updated_at_idx").on(
+      t.endpointId,
+      t.updatedAt.desc(),
+    ),
+    // The list the inbox actually shows, and the count in its header: the ones
+    // that never finished.
+    index("submission_partials_open_idx")
+      .on(t.endpointId, t.updatedAt.desc())
+      .where(sql`${t.completedAt} is null and ${t.deletedAt} is null`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Uploaded files (#66)
+// ---------------------------------------------------------------------------
+
+/** Postgres `bytea`, which pg-core has no built-in column type for. */
+const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
+/**
+ * The bytes somebody attached to a form.
+ *
+ * ## Why the bytes are in Postgres and not in an object store
+ *
+ * Because **the file row and the submission row commit together.** An external
+ * store gives you two writes that can disagree: bytes written and the insert
+ * then fails, leaving an orphan nobody will ever find; or the insert succeeds
+ * and the upload fails, leaving a submission that claims an attachment which
+ * does not exist. The second of those is precisely the failure #66 exists to
+ * kill — a submission that *looks* like it kept your file. Here there is one
+ * transaction, so either the lead and its attachments are both in the database
+ * or neither is and the submitter is told. That is a property of the storage
+ * choice, not of care taken by the caller, which is why it is the choice.
+ *
+ * Everything else follows from it. Isolation is the row-level security policy
+ * that already guards `submissions`, rather than a second access-control system
+ * written against a bucket. Retention is a `DELETE`. A self-hoster gets uploads
+ * with no configuration at all, which is a stronger answer than the SMTP gap in
+ * `docs/24` §7. And there is no bucket URL anywhere, so there is no public URL
+ * to leak — the only way to these bytes is `/api/v1/files/…` with a signature.
+ *
+ * The cost is real and is written down in `docs/24` §3.6: bytes in the database
+ * are the most expensive bytes you own, and the caps in
+ * `src/lib/uploads/limits.ts` are what keep the bill sane. The seam for moving
+ * to object storage later is `src/lib/uploads/store.ts` — one module, two
+ * functions — and the day the numbers say to move, the thing that has to be
+ * rebuilt is exactly the atomicity guarantee above.
+ *
+ * ## `bytes` is nullable, and that is not "maybe we stored it"
+ *
+ * Null means **purged**, and `purged_at` says when. A row is never written with
+ * a null `bytes`; the retention sweep nulls it later. The distinction matters
+ * because the inbox has to be able to say "this file was deleted on 3 March
+ * under the 90-day rule" rather than showing a link that 404s.
+ */
+export const submissionFiles = pgTable(
+  "submission_files",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull(),
+    submissionId: uuid("submission_id").notNull(),
+    /** What the download URL names. Never the primary key. */
+    publicId: text("public_id").notNull(),
+
+    /** The form field the file arrived in, so the inbox can say which input. */
+    fieldKey: text("field_key").notNull(),
+    /** The submitter's filename, sanitised. Display only — never a storage path. */
+    filename: text("filename").notNull(),
+    /**
+     * What the client said the file was. **Recorded, never trusted, never
+     * served.** Downloads always go out as `application/octet-stream`; see
+     * `src/app/api/v1/files/[publicId]/route.ts`.
+     */
+    declaredContentType: text("declared_content_type"),
+    /** What the first bytes actually look like, or null when nothing matched. */
+    detectedContentType: text("detected_content_type"),
+
+    size: integer("size").notNull(),
+    /** Hex SHA-256 of the stored bytes. Lets someone prove the file is intact. */
+    sha256: text("sha256").notNull(),
+    bytes: bytea("bytes"),
+
+    /**
+     * When retention takes this file. Null means "kept until deleted by hand",
+     * which is what `UPLOAD_RETENTION_DAYS=0` configures.
+     *
+     * Every signed download link is clamped to this instant, so no link outlives
+     * the bytes it points at.
+     */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** When the sweep actually took them. Null while the bytes are still here. */
+    purgedAt: timestamp("purged_at", { withTimezone: true }),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.workspaceId, t.endpointId],
+      foreignColumns: [endpoints.workspaceId, endpoints.id],
+      name: "submission_files_endpoint_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [t.workspaceId, t.submissionId],
+      foreignColumns: [submissions.workspaceId, submissions.id],
+      name: "submission_files_submission_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("submission_files_public_id_key").on(t.publicId),
+    unique("submission_files_workspace_id_id_key").on(t.workspaceId, t.id),
+    index("submission_files_submission_idx").on(t.workspaceId, t.submissionId),
+    // The sweep's query, and only the sweep's: rows that still hold bytes and
+    // have an expiry that may have passed.
+    index("submission_files_expiry_idx")
+      .on(t.expiresAt)
+      .where(sql`${t.purgedAt} is null and ${t.expiresAt} is not null`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Destinations and delivery
 // ---------------------------------------------------------------------------
 
@@ -584,6 +864,19 @@ export const destinations = pgTable(
     /** Shape depends on `kind`. Secrets get their own handling in #41; not here. */
     config: jsonb("config").notNull().default({}),
     enabled: boolean("enabled").notNull().default(true),
+    /**
+     * True when this row is the notification an endpoint was **created with**
+     * (#64) rather than one a customer went and added.
+     *
+     * It changes nothing about delivery — a default notification is an ordinary
+     * email destination and goes through the same dispatch, the same retries and
+     * the same delivery log, which is the entire reason it is a row here rather
+     * than a flag on `endpoints`. What it changes is what the screen may say
+     * about it: an email destination nobody remembers creating needs a sentence
+     * explaining where it came from, and the alternative — inferring it from the
+     * name — would be wrong the moment somebody renames it.
+     */
+    defaultNotification: boolean("default_notification").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     /** Soft-deleted so the delivery history that references it stays readable. */
@@ -733,6 +1026,113 @@ export const endpointSpamPolicies = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Verdict — outcome API keys (#57)
+// ---------------------------------------------------------------------------
+
+/**
+ * One outcome API key, with an identity that can be killed on its own.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY THESE ARE STORED HASHES AND NOT DERIVED
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * `src/lib/verdict/keys.ts` explains the derived key it replaces: an HMAC over
+ * the workspace id, minted and verified by the same computation, with nothing
+ * written down. That bought "no key table to leak" and cost three things —
+ * fleet-wide rotation, no audit trail, and a key that dies when the slug moves.
+ *
+ * Fixing the first of those means a row per key whatever else is true: a key
+ * that can be revoked individually is by definition a key with an identity, and
+ * an identity has to be stored. So the question is not *whether* to store, only
+ * *what*. Once a row exists either way, storing a hash instead of a key id
+ * costs nothing and removes the derived scheme's real weakness — that anything
+ * holding `VERDICT_API_KEY_SECRET` can recompute every live key for every
+ * workspace on demand, forever, including keys it was never shown. With a hash
+ * the plaintext exists once, in the response that created it, and nothing in
+ * this system can produce it again.
+ *
+ * The price is paid by the customer and is worth naming: a key that cannot be
+ * re-derived cannot be shown twice. The settings page displays it once and
+ * afterwards shows only its identity. That is how every API key surface a
+ * customer has already used behaves, so it is a cost they can predict, unlike
+ * a leak they cannot contain.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IS AND IS NOT STORED
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * `secret_hash` is SHA-256 of the token's secret half, hex. **Never the token.**
+ * A slow KDF (argon2, as `users.password_hash` uses) would be wrong here and
+ * the difference is not laziness: argon2 exists to make *guessing* expensive,
+ * which matters when the input is a human-chosen password with maybe 30 bits in
+ * it. This input is 256 bits from `randomBytes`, so guessing is already beyond
+ * reach and the only property still needed is one-wayness — while the cost of
+ * argon2 would land on every outcome webhook call, on a path a CRM retries.
+ *
+ * Rows are never deleted, including on revoke. `revoked_at` is the tombstone,
+ * because "which key was this, and when did we kill it" is precisely the
+ * question a revocation exists to be able to answer later.
+ */
+export const verdictApiKeys = pgTable(
+  "verdict_api_keys",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /**
+     * The half of the token that travels in the clear, and the lookup handle.
+     *
+     * The key is `efv2.<public_id>.<secret>`. Looking a key up by this rather
+     * than by the workspace slug is what makes renaming a workspace stop
+     * invalidating its keys — cost 3 in `src/lib/verdict/keys.ts` — and it is
+     * one indexed equality instead of a slug resolution followed by a scan.
+     */
+    publicId: text("public_id").notNull(),
+    /** SHA-256 of the secret half, hex. Never the secret. */
+    secretHash: text("secret_hash").notNull(),
+    /** What the customer called it. "Salesforce webhook", not a UUID. */
+    label: text("label").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /**
+     * Last accepted use, to the nearest `TOUCH_INTERVAL_MS`.
+     *
+     * Deliberately coarse. Writing this on every request would put a row update
+     * on the outcome webhook's hot path and serialise every caller sharing a
+     * key behind one row lock; `src/lib/verdict/key-store.ts` describes the
+     * conditional update that avoids both. Coarse is enough for the question it
+     * is here to answer — "is anything still using this key?" — which nobody
+     * asks to the second.
+     */
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /**
+     * Where from, as the caller's IP.
+     *
+     * Stored in the clear, unlike `submissions.ip_hash`, and the difference is
+     * whose address it is: a submission's IP belongs to a member of the public
+     * who filled in a form, while this one belongs to the customer's own CRM or
+     * middleware calling an API with their own credential. "Last used from
+     * 52.x.x.x" is the answer to the first question asked after a suspected
+     * leak, and a hash of it answers nothing.
+     */
+    lastUsedIp: text("last_used_ip"),
+    /** Set once, never cleared. Revocation is not undoable — mint a new key. */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (t) => [
+    uniqueIndex("verdict_api_keys_public_id_key").on(t.publicId),
+    unique("verdict_api_keys_workspace_id_id_key").on(t.workspaceId, t.id),
+    index("verdict_api_keys_workspace_idx").on(t.workspaceId, t.createdAt.desc()),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Hindsight — split tests scored on outcomes (#45)
 // ---------------------------------------------------------------------------
 
@@ -767,6 +1167,50 @@ export const splitTests = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true }),
     /** Stops the split. The report keeps working; it just stops moving. */
     stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+
+    // ── The pre-registered minimum detectable effect (#59) ──────────────────
+    //
+    // Three columns and a timestamp, all null together or all set together.
+    // Null is the pre-#59 behaviour and stays supported forever: a test that
+    // recorded no effect size is judged against the sample the *observed*
+    // difference needs, which is what every test created before this column
+    // existed is already running under.
+    //
+    // Why they exist: `requiredSamplePerArm` fed the observed difference is
+    // circular. If the gap between the arms is noise, the sample derived from
+    // it is too small, so the gate meant to guard against noise is sized by
+    // it — and it is smallest exactly when the noise is largest. Fixing the
+    // effect before any data exists breaks that loop, and buys two things the
+    // observed rule cannot give at any price:
+    //
+    //   1. The requirement is knowable **with no data at all**, so a draft can
+    //      say "this needs N per arm, about D days" before a single visitor is
+    //      committed to it. Some tests should not be started, and today that is
+    //      only discoverable by running one.
+    //   2. `no_difference` becomes reachable. Its threshold currently moves
+    //      with the observed control rate, so the finish line drifts as the
+    //      data arrives and a test can never quite arrive at "these are the
+    //      same". A fixed baseline holds it still.
+    //
+    // Immutable once set, and settable only while the test is a draft —
+    // enforced in `src/lib/hindsight/store.ts`. An effect size that can be
+    // edited after seeing the data is not pre-registered, it is a rationalised
+    // one, and it would restore the circularity through the front door.
+
+    /** Relative improvement worth acting on. 0.2 is "a fifth more closed deals". */
+    mdeRelative: numeric("mde_relative", { precision: 6, scale: 4 }),
+    /** The control Yield rate the requirement is computed from, 0..1. */
+    mdeBaselineRate: numeric("mde_baseline_rate", { precision: 9, scale: 8 }),
+    /** Which denominator that rate is per. See `splitTestBasis`. */
+    mdeBasis: splitTestBasis("mde_basis"),
+    /**
+     * When it was registered.
+     *
+     * The fact that makes "pre-registered" checkable rather than asserted: it
+     * is comparable against `started_at`, and the app refuses to set it on
+     * anything that is not still a draft.
+     */
+    mdeRegisteredAt: timestamp("mde_registered_at", { withTimezone: true }),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -789,6 +1233,27 @@ export const splitTests = pgTable(
     index("split_tests_running_idx")
       .on(t.endpointId)
       .where(sql`${t.status} = 'running' and ${t.deletedAt} is null`),
+
+    // The pre-registration is all-or-nothing (#59). A relative lift with no
+    // baseline rate cannot produce a sample size, and a baseline rate with no
+    // basis is a number whose units are unknown — either half alone would sit
+    // in the row looking like a pre-registration while the code silently fell
+    // back to the observed rule. The application only ever writes all four
+    // together; this makes the half-written row impossible rather than unlikely.
+    check(
+      "split_tests_mde_all_or_nothing",
+      sql`(${t.mdeRelative} is null and ${t.mdeBaselineRate} is null and ${t.mdeBasis} is null and ${t.mdeRegisteredAt} is null) or (${t.mdeRelative} is not null and ${t.mdeBaselineRate} is not null and ${t.mdeBasis} is not null and ${t.mdeRegisteredAt} is not null)`,
+    ),
+    // A pre-registration has to be able to move the finish line, and a zero or
+    // negative one cannot: `requiredSamplePerArm` returns null when the two
+    // rates are equal, so a zero lift would leave the gate unmeasurable while
+    // the row still claimed a pre-registration. That is exactly the "gate that
+    // looks like it is doing work and is quietly not" #59 is about.
+    check("split_tests_mde_relative_positive", sql`${t.mdeRelative} is null or ${t.mdeRelative} > 0`),
+    check(
+      "split_tests_mde_baseline_rate_range",
+      sql`${t.mdeBaselineRate} is null or (${t.mdeBaselineRate} > 0 and ${t.mdeBaselineRate} < 1)`,
+    ),
   ],
 );
 
@@ -904,9 +1369,12 @@ export const workspaceScopedTables = [
   deliveryAttempts,
   spamListEntries,
   endpointSpamPolicies,
+  verdictApiKeys,
   splitTests,
   splitTestVariants,
   splitTestExposures,
+  submissionPartials,
+  submissionFiles,
 ] as const;
 
 export const workspaceScopedTableNames = [
@@ -919,9 +1387,12 @@ export const workspaceScopedTableNames = [
   "delivery_attempts",
   "spam_list_entries",
   "endpoint_spam_policies",
+  "verdict_api_keys",
   "split_tests",
   "split_test_variants",
   "split_test_exposures",
+  "submission_partials",
+  "submission_files",
 ] as const;
 
 export type Workspace = typeof workspaces.$inferSelect;
@@ -934,12 +1405,16 @@ export type FormSchema = typeof formSchemas.$inferSelect;
 export type Submission = typeof submissions.$inferSelect;
 export type Destination = typeof destinations.$inferSelect;
 export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;
+export type SubmissionPartial = typeof submissionPartials.$inferSelect;
+export type SubmissionFile = typeof submissionFiles.$inferSelect;
 export type SpamListEntry = typeof spamListEntries.$inferSelect;
 export type EndpointSpamPolicy = typeof endpointSpamPolicies.$inferSelect;
 export type SubmissionSpamState = (typeof submissionSpamState.enumValues)[number];
 export type SpamListKind = (typeof spamListKind.enumValues)[number];
 export type SpamListEffect = (typeof spamListEffect.enumValues)[number];
+export type VerdictApiKey = typeof verdictApiKeys.$inferSelect;
 export type SplitTest = typeof splitTests.$inferSelect;
 export type SplitTestVariant = typeof splitTestVariants.$inferSelect;
 export type SplitTestExposure = typeof splitTestExposures.$inferSelect;
 export type SplitTestStatus = (typeof splitTestStatus.enumValues)[number];
+export type SplitTestBasis = (typeof splitTestBasis.enumValues)[number];

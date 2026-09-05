@@ -74,6 +74,58 @@ Two fields make this payload ours rather than every other form builder's webhook
   at delivery time, because an outcome lands days after the lead does. `verdictValue` is a
   **decimal string**, never a float — it is money.
 
+### Attached files are linked, never attached (#66)
+
+A file somebody uploaded appears **inside `submission.values`**, in the field it was submitted
+under, as an object:
+
+```json
+"values": {
+  "name": "Priya Raman",
+  "cv": {
+    "file": true,
+    "stored": true,
+    "id": "kQ2r8kLm4TpWvZ9a",
+    "filename": "priya-raman-cv.pdf",
+    "contentType": "application/pdf",
+    "detectedType": "application/pdf",
+    "size": 241305,
+    "sha256": "9f2b…",
+    "url": "https://endpointforms.com/api/v1/files/kQ2r8kLm4TpWvZ9a?e=…&s=…",
+    "urlExpiresAt": "2026-09-07T11:59:58.412Z",
+    "expiresAt": "2026-11-29T11:59:58.412Z"
+  }
+}
+```
+
+**A link rather than the bytes**, for the obvious reason: a receiver expecting a 2 kB JSON body
+does not want four megabytes of base64, and the ones that would fall over are the low-code
+inboxes least able to tell you why. It also means one slow receiver cannot make a large upload
+into a slow submission.
+
+Four things about that URL are load-bearing:
+
+- **It is signed and it expires.** `urlExpiresAt` says when — seven days by default, which is
+  the number a queue that sits over a long weekend needs. It is not a permanent object URL and
+  there is no bucket behind it; the bytes are in our database and this route is the only way to
+  them.
+- **It never outlives the retention rule.** `expiresAt` is when the file itself is deleted, and
+  the link's expiry is clamped to it. If a deployment keeps files for 30 days, a 7-day link
+  minted on day 28 lasts two days, not seven. **Fetch the file if you need to keep it** — this
+  is a link to our copy, not a promise about your archive.
+- **`stored` is always `true`.** There is no other value. Before #66 a file part produced a
+  reference saying `stored: false` while the bytes were discarded; that shape no longer exists,
+  and a file we cannot keep now fails the submission instead of being described in one.
+- **`sha256` is over the bytes**, so a receiver that downloads and archives can prove later that
+  what it holds is what was sent.
+
+If a link has expired, ask again: the same file re-signed appears in the export
+(`GET /app/{slug}/submissions/export`), and every export mints fresh links.
+
+Two things this payload deliberately does not carry: a `files` array parallel to `values`
+(the file is where the submitter put it, and a second listing is a second thing to keep in
+sync), and the bytes under any flag.
+
 ## Headers
 
 | Header | Value |
@@ -188,8 +240,8 @@ the failure mode of a misconfiguration is "nothing runs", never "anyone can run 
 comparison is constant-time and the 401 does not reveal whether a secret is configured.
 
 Bounded per invocation (100 workspaces, 25 retries and 50 stale rows each) and safe to run
-twice: a sweep clears `next_retry_at` on every row it claims, inside the transaction that
-reads it, so a second sweep — or a cron whose previous run overran — finds nothing to take.
+twice: a sweep claims a row with an update that also requires `next_retry_at` to still be set,
+so a second sweep — or a cron whose previous run overran — finds nothing to take.
 `more: true` in the response says a cap was hit and another pass has work.
 
 ### Attempt rows are written before the request, not after
@@ -206,6 +258,37 @@ the normal policy. Left alone it would be worse than a missing row, because
 `consecutiveFailures` does not count a pending row — the destination would read as healthy
 while a lead sat undelivered.
 
+### A claimed retry opens its row at claim time (#60)
+
+Claiming a retry and attempting it are two different moments. The claim commits, and the
+attempts then run one after another — up to five per submission-triggered sweep, at up to ten
+seconds each. **A process that dies in that gap used to lose the redelivery entirely:** the row
+was left `failed` with `next_retry_at` null and no attempt row anywhere, which matches neither
+branch of the discovery query, so nothing ever came back for it. The lead was still stored and
+still visible, but the destinations screen said "gave up" about a delivery that had never been
+tried once.
+
+So **the claim opens the `pending` row itself**, in the same transaction that clears the
+schedule. An abandoned claim then looks exactly like the case already handled above — a
+`pending` row nobody finished — and the reaper covers it with no new machinery.
+
+The obvious alternative, leaving a short lease in `next_retry_at` so the row simply becomes due
+again, was rejected: it lets a **slow but alive** attempt be re-claimed and delivered a second
+time. The delivery id is stable across retries, so a receiver that dedupes is safe, but one
+that does not gets the lead twice, and trading silent loss for silent duplication is not an
+improvement. The five-minute stale window is the lease instead, and it is far longer than the
+ten-second adapter timeout any attempt can run for.
+
+What this costs: a crashed claim now waits up to five minutes to be noticed rather than being
+recovered instantly, and the destination shows one extra `pending` delivery for that window.
+The remaining hole is a process that is frozen for longer than five minutes and then resumes —
+the reaper will already have rescheduled its delivery, and both copies can arrive. That window
+is not new; it is the one the reaper has always had.
+
+A delivery with an attempt still open is **not** counted as dead-lettered. Between a claim and
+its settle there is no schedule to see, so without that rule every retry in flight would be
+reported as a lead that gave up — the same misreport in a smaller window.
+
 ## What we will not do
 
 - **Follow redirects.** A 3xx is a failure, not a hop. Following one re-opens the SSRF hole
@@ -215,6 +298,12 @@ while a lead sat undelivered.
   spelling of them (`0x7f.0.0.1`, `2130706433`, `127.1`, `[::ffff:7f00:1]`) are refused, and
   the URL is re-checked on **every delivery**, not only when it was saved — a hostname that
   resolved publicly in March can resolve to `127.0.0.1` in June.
+- **Resolve a name twice.** Checking a hostname and then handing that hostname to `fetch` lets
+  the second lookup answer differently from the first, which is DNS rebinding and it defeats a
+  hostname check outright. A delivery resolves the name once, requires **every** address the
+  answer contains to pass, and then connects to those addresses — the `Host` header and TLS
+  certificate still belong to the name, so virtual-hosted receivers are unaffected. Between the
+  check and the socket there is no second lookup to poison.
 - **Deliver over plaintext http.** This carries your leads and a signing secret. A self-hoster
   posting to a service on their own network sets `ALLOW_INSECURE_DESTINATIONS=1` deliberately.
 - **Accept credentials in the URL.** `https://user:pass@host/` puts a secret in every log line.
@@ -222,6 +311,8 @@ while a lead sat undelivered.
 - **Let a destination fail a submission.** The row is committed before anything is delivered.
   A destination that is down, misconfigured, or that throws inside our own adapter produces a
   `delivery_attempts` row and never an error the submitter sees.
+- **Attach uploaded files to a delivery.** They are linked (above). A receiver that wants the
+  bytes fetches them; one that does not is not made to carry them.
 
 ## Email
 
@@ -238,6 +329,50 @@ Adding an unverified hand-rolled SMTP client would have failed in production, qu
 one feature whose entire pitch is that it fails loudly. **A self-hoster who only has SMTP has a
 real gap here**, and it is written down rather than papered over.
 
+## The notification an endpoint is created with (#64)
+
+Creating an endpoint creates an **email destination to whoever created it**, switched on, with
+nothing to configure and no provider to connect. It is flagged `default_notification` on the
+row and nothing else about it is special: same dispatch, same retries, same delivery log, same
+health, same test button, same redeliver.
+
+That flag is the whole difference between this and a `notify` column on `endpoints`. The
+column would have meant the one thing every base-tier customer depends on was the only part of
+the product with no delivery log and no health — "we cannot tell you whether your notification
+arrived", which is the enemy this document is written against. The cost of the row is that a
+destination appears the customer did not add; the flag pays it, by letting the screens say
+where the row came from in a way that survives a rename.
+
+It is switchable off — pause it or delete it like any other destination — and switching it off
+is a deliberate act. Doing so is what #65 exists to notice.
+
+**Sending is a deployment fact.** The hosted product supplies the transport. A self-hoster
+brings their own `RESEND_API_KEY`, and where there is none the endpoint screen says so *before*
+the first submission rather than leaving it to be discovered in a delivery log.
+
+## Nobody is being told (#65)
+
+`endpointReach()` answers one question — will anybody hear about a submission to this endpoint?
+— from the destination rows plus whether this deployment has a mail transport.
+
+| State | Meaning |
+|---|---|
+| `reachable` | At least one enabled destination this deployment can deliver to. Says nothing. |
+| `deaf` | Nothing enabled at all. Submissions are stored and nobody hears. |
+| `unsendable` | Something is enabled, but every enabled destination is email and there is no mail transport. |
+
+`unsendable` is separated from `deaf` because the consequence is identical and the fix is not:
+flattening them would send somebody to add a destination they already have.
+
+It is stated on the endpoint screen, above the snippet, and on the destinations screen. It is
+amber rather than red: nothing is broken, nothing has been lost, and one click ends it — red is
+reserved for a destination that has actually stopped delivering.
+
+Individual submissions carry the historical version of the same fact. A row in the inbox is
+marked **went nowhere** when no delivery attempt was ever made for it and it is older than the
+in-flight grace window (`NOWHERE_GRACE_SECONDS`). It stays marked after a destination is added
+later, because it is a fact about that lead rather than a reading of the endpoint.
+
 ## Slack
 
 An incoming webhook, not an OAuth app: nothing to refresh, no scopes, no install flow, and the
@@ -249,11 +384,12 @@ and constrained to `hooks.slack.com` at save time.
 
 | Variable | What it does |
 |---|---|
-| `CRON_SECRET` | Bearer token for the sweep endpoint. **Unset means the sweep refuses everything.** Vercel Cron sets and sends this automatically. |
-| `RESEND_API_KEY` | Mail transport for the email destination. Unset means an email destination fails with a `configuration` error naming this variable — it does not queue and does not report success. |
+| `CRON_SECRET` | Bearer token for the sweep endpoint — and for the file retention sweep at `/api/v1/files/sweep` (#66), which reuses this check rather than inventing a second one. **Unset means both sweeps refuse everything.** Vercel Cron sets and sends this automatically. |
+| `RESEND_API_KEY` | Mail transport for the email destination. Unset means an email destination fails with a `configuration` error naming this variable — it does not queue and does not report success — and an endpoint whose only destinations are email is reported `unsendable` before anything is submitted. |
 | `MAIL_FROM` | Sender address for notifications. Defaults to `Endpoint Forms <notifications@endpointforms.com>`. |
 | `ALLOW_INSECURE_DESTINATIONS=1` | Permits `http://` destinations. For a self-hoster delivering inside their own network. Off everywhere else. |
 | `ALLOW_PRIVATE_DESTINATIONS=1` | Permits loopback and private addresses. **Set only by the test suite.** Never in a deployment. |
+| `UPLOAD_LINK_SECRET` | Signs the file links in a payload, falling back to `AUTH_SECRET`. With neither, a production instance refuses uploads outright rather than delivering a link nobody can use. `docs/24` §3.6a. |
 
 ## Health
 

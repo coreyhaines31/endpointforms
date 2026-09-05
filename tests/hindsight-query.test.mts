@@ -38,6 +38,7 @@ import { listSplitTests, readRunningTest, readSplitTest } from "../src/lib/hinds
 import { resolveVariant } from "../src/lib/hindsight/serve.ts";
 import {
   createSplitTest,
+  preRegisterSplitTestEffect,
   recordExposure,
   SplitTestStoreError,
   startSplitTest,
@@ -728,6 +729,141 @@ async function main() {
       await resolveVariant(space.endpointPublicId, "visitor-one"),
       null,
     );
+  }
+
+  // -------------------------------------------------------------------------
+  console.log("\npre-registering an effect, and refusing to un-register it (#59)");
+  // -------------------------------------------------------------------------
+  //
+  // The value of a pre-registration is entirely in what it refuses. A number
+  // that could be set after the data arrived, or revised once it did, would be
+  // a finish line drawn where the runner already is — so "it can be written
+  // once, while the test is still a draft" is the feature and not a guard rail
+  // around it. Each refusal below is bracketed by the write that succeeds, so a
+  // fixture that silently created nothing cannot pass this section.
+  {
+    const space = await createSpace("hindsight-test-prereg", []);
+
+    const created = await createSplitTest({
+      workspaceId: space.workspaceId,
+      endpointPublicId: space.endpointPublicId,
+      name: "Registered at creation",
+      variants: [{ name: "A", isControl: true }, { name: "B" }],
+      preRegistered: { relativeLift: 0.25, baselineRate: 0.08, basis: "submission" },
+    });
+
+    const atCreation = await readSplitTest(space.workspaceId, created.publicId);
+    t("an effect given at creation is stored", atCreation?.test.preRegistered?.relativeLift, 0.25);
+    t("…with its baseline", atCreation?.test.preRegistered?.baselineRate, 0.08);
+    t("…and its denominator", atCreation?.test.preRegistered?.basis, "submission");
+    ok(
+      "…and a requirement exists with no submissions anywhere",
+      (atCreation?.requirement.perArm ?? 0) > 0,
+    );
+    t("…from the pre-registration", atCreation?.requirement.source, "pre_registered");
+
+    // A test created without one, then registered afterwards while still a draft.
+    const later = await createSplitTest({
+      workspaceId: space.workspaceId,
+      endpointPublicId: space.endpointPublicId,
+      name: "Registered later",
+      variants: [{ name: "A", isControl: true }, { name: "B" }],
+    });
+
+    const before = await readSplitTest(space.workspaceId, later.publicId);
+    t("a test created without one has none", before?.test.preRegistered, null);
+    t("and falls back to the observed rule", before?.requirement.source, "observed");
+
+    await preRegisterSplitTestEffect(space.workspaceId, later.publicId, {
+      relativeLift: 0.2,
+      baselineRate: 0.05,
+      basis: "submission",
+    });
+    const after = await readSplitTest(space.workspaceId, later.publicId);
+    t("registering it on a draft works", after?.test.preRegistered?.relativeLift, 0.2);
+    ok("and it is dated", after?.test.preRegistered?.registeredAt instanceof Date);
+
+    // Once, and only once.
+    let refused: string | null = null;
+    try {
+      await preRegisterSplitTestEffect(space.workspaceId, later.publicId, {
+        relativeLift: 0.9,
+        baselineRate: 0.05,
+        basis: "submission",
+      });
+    } catch (error) {
+      refused = error instanceof SplitTestStoreError ? error.code : "wrong error";
+    }
+    t("a second registration is refused", refused, "already_registered");
+    t(
+      "and the original number is untouched",
+      (await readSplitTest(space.workspaceId, later.publicId))?.test.preRegistered?.relativeLift,
+      0.2,
+    );
+
+    // Not once it is running. This is the refusal the word "pre-registered"
+    // rests on, so it is asserted against a test that was started for real.
+    const running = await createSplitTest({
+      workspaceId: space.workspaceId,
+      endpointPublicId: space.endpointPublicId,
+      name: "Started without one",
+      variants: [{ name: "A", isControl: true }, { name: "B" }],
+    });
+    await startSplitTest(space.workspaceId, running.publicId);
+
+    refused = null;
+    try {
+      await preRegisterSplitTestEffect(space.workspaceId, running.publicId, {
+        relativeLift: 0.2,
+        baselineRate: 0.05,
+        basis: "submission",
+      });
+    } catch (error) {
+      refused = error instanceof SplitTestStoreError ? error.code : "wrong error";
+    }
+    t("registering an effect on a running test is refused", refused, "test_not_draft");
+    t(
+      "and it still has none",
+      (await readSplitTest(space.workspaceId, running.publicId))?.test.preRegistered,
+      null,
+    );
+
+    // Values that cannot produce a sample size are refused rather than stored
+    // and silently ignored later.
+    for (const [label, effect] of [
+      ["a zero lift", { relativeLift: 0, baselineRate: 0.05, basis: "submission" as const }],
+      ["a negative lift", { relativeLift: -0.2, baselineRate: 0.05, basis: "submission" as const }],
+      ["a zero baseline", { relativeLift: 0.2, baselineRate: 0, basis: "submission" as const }],
+      ["a baseline of one", { relativeLift: 0.2, baselineRate: 1, basis: "submission" as const }],
+    ] as const) {
+      const fresh = await createSplitTest({
+        workspaceId: space.workspaceId,
+        endpointPublicId: space.endpointPublicId,
+        name: `Invalid — ${label}`,
+        variants: [{ name: "A", isControl: true }, { name: "B" }],
+      });
+      let code: string | null = null;
+      try {
+        await preRegisterSplitTestEffect(space.workspaceId, fresh.publicId, effect);
+      } catch (error) {
+        code = error instanceof SplitTestStoreError ? error.code : "wrong error";
+      }
+      t(`${label} is refused`, code, "invalid_effect");
+    }
+
+    // A test in another workspace is not reachable by public id.
+    const other = await createSpace("hindsight-test-prereg-other", []);
+    refused = null;
+    try {
+      await preRegisterSplitTestEffect(other.workspaceId, later.publicId, {
+        relativeLift: 0.2,
+        baselineRate: 0.05,
+        basis: "submission",
+      });
+    } catch (error) {
+      refused = error instanceof SplitTestStoreError ? error.code : "wrong error";
+    }
+    t("another workspace cannot register an effect on this test", refused, "test_not_found");
   }
 
   await cleanup();

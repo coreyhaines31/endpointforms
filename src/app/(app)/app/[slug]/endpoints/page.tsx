@@ -58,7 +58,9 @@ export default async function EndpointsPage({
           <EmptyState title="Nothing is pointed here yet.">
             Create an endpoint above, change one attribute on a form you already
             have, and the next person who submits it shows up in the inbox —
-            stamped, timestamped, and yours to export.
+            stamped, timestamped, and yours to export. It emails you about each
+            one from the moment it exists, and the endpoint will offer to read
+            the page your form is already on.
           </EmptyState>
         ) : (
           <EndpointTable slug={workspace.slug} endpoints={live} />

@@ -7,9 +7,11 @@ import {
   claimDueRetries,
   lastAttemptNumber,
   loadDeliveryJob,
+  recordAttemptRequest,
   settleAttempt,
   type Deliverable,
   type DeliveryJob,
+  type DueRetry,
 } from "./store.ts";
 import type { AdapterResult, PayloadSource } from "./types.ts";
 
@@ -38,6 +40,10 @@ import type { AdapterResult, PayloadSource } from "./types.ts";
  *   someone to come and get it. Two things do: the next submission to the same
  *   endpoint sweeps a handful of due retries (`sweepLimit` below), and the
  *   redeliver button in the delivery log runs one immediately.
+ * - **Claiming a retry and attempting it are separate moments**, and the process
+ *   can die between them. `claimDueRetries` therefore opens the attempt's
+ *   `pending` row as part of the claim, so an abandoned claim is recoverable by
+ *   the same reaper that covers an attempt torn down mid-request (#60).
  * - Nothing else. **An endpoint that takes one lead a week and then breaks will
  *   not retry on schedule** — its retry waits for the next lead. That is a real
  *   limitation, not a rounding error, and the fix is a cron calling
@@ -100,7 +106,17 @@ export function dispatchSubmission(input: {
 export async function deliverSubmission(
   workspaceId: string,
   submissionPublicId: string,
-  options: DispatchOptions & { destinationId?: string; force?: boolean } = {},
+  options: DispatchOptions & {
+    destinationId?: string;
+    force?: boolean;
+    /**
+     * An attempt row `claimDueRetries` already opened for this delivery. When
+     * set, that row is used instead of a fresh one — the claim and the attempt
+     * are the same attempt, and opening a second row here would leave the first
+     * pending forever.
+     */
+    claim?: DueRetry;
+  } = {},
 ): Promise<DispatchSummary> {
   const job = await loadDeliveryJob(workspaceId, submissionPublicId, {
     destinationId: options.destinationId,
@@ -136,33 +152,41 @@ async function attemptDelivery(
   workspaceId: string,
   job: DeliveryJob,
   destination: Deliverable,
-  options: DispatchOptions,
+  options: DispatchOptions & { claim?: DueRetry },
 ): Promise<"delivered" | "failed" | "skipped"> {
   const adapter = adapterFor(destination.kind);
   const startedAt = options.now ?? new Date();
 
-  const previous = await lastAttemptNumber(
-    workspaceId,
-    destination.destinationId,
-    job.submissionId,
-  );
-  const attempt = previous + 1;
+  // A claimed retry arrives with its row already open and its number already
+  // taken. The guard on `destinationId` matters: `deliverSubmission` fans out
+  // over every destination on the endpoint, and a claim belongs to exactly one
+  // of them.
+  const claim =
+    options.claim && options.claim.destinationId === destination.destinationId
+      ? options.claim
+      : null;
+
+  const attempt =
+    claim?.attempt ??
+    (await lastAttemptNumber(workspaceId, destination.destinationId, job.submissionId)) + 1;
 
   if (!adapter.available || !adapter.deliver) {
     // Should be unreachable — an unavailable kind cannot be created through the
     // UI — but a row could predate the check, or arrive from a seed. Recorded as
     // a failed attempt rather than silently ignored, so the destinations screen
     // shows a broken destination rather than a quiet one.
-    const id = await safely(() =>
-      beginAttempt(workspaceId, {
-        destinationId: destination.destinationId,
-        submissionId: job.submissionId,
-        attempt,
-        requestBody: null,
-        requestHeaders: null,
-        startedAt,
-      }),
-    );
+    const id =
+      claim?.attemptId ??
+      (await safely(() =>
+        beginAttempt(workspaceId, {
+          destinationId: destination.destinationId,
+          submissionId: job.submissionId,
+          attempt,
+          requestBody: null,
+          requestHeaders: null,
+          startedAt,
+        }),
+      ));
     if (id) {
       await safely(() =>
         settleAttempt(workspaceId, id, {
@@ -194,16 +218,32 @@ async function attemptDelivery(
   // only on completion is what makes a delivery log develop silent holes, and a
   // destination that reads "no failures recorded" while it has been failing for
   // three weeks is exactly the dashboard this product is named against.
-  const attemptId = await safely(() =>
-    beginAttempt(workspaceId, {
-      destinationId: destination.destinationId,
-      submissionId: job.submissionId,
-      attempt,
-      requestBody: serialisePayload(payload),
-      requestHeaders: null,
-      startedAt,
-    }),
-  );
+  //
+  // A claimed retry's row was opened earlier still — by the claim itself, so
+  // that a process dying between the two leaves the same recoverable `pending`
+  // row (#60). All that is missing from it is the bytes, which could not be
+  // built until the config was loaded.
+  let attemptId: string | null;
+  if (claim) {
+    attemptId = claim.attemptId;
+    // Best effort, and it does not gate the delivery: the row already exists and
+    // `settleAttempt` writes the body again on the way out. This only matters
+    // for the attempt that never gets to settle.
+    await safely(() =>
+      recordAttemptRequest(workspaceId, claim.attemptId, serialisePayload(payload)),
+    );
+  } else {
+    attemptId = await safely(() =>
+      beginAttempt(workspaceId, {
+        destinationId: destination.destinationId,
+        submissionId: job.submissionId,
+        attempt,
+        requestBody: serialisePayload(payload),
+        requestHeaders: null,
+        startedAt,
+      }),
+    );
+  }
 
   let result: AdapterResult;
   try {
@@ -281,12 +321,39 @@ export async function sweepDueRetries(
       const result = await deliverSubmission(workspaceId, row.submissionPublicId, {
         ...options,
         destinationId: row.destinationId,
+        claim: row,
       });
       summary.delivered += result.delivered;
       summary.failed += result.failed;
       summary.skipped += result.skipped;
+
+      // The claim opened a row; if nothing was attempted against it, nothing is
+      // going to settle it. That happens when the destination was paused or
+      // deleted between the claim and the delivery — `claimDueRetries` requires
+      // it to be live, `loadDeliveryJob` requires it again a moment later. Left
+      // alone the row would sit pending until the reaper turned it into a
+      // network failure, which would be a lie about what happened.
+      if (result.delivered + result.failed + result.skipped === 0) {
+        await safely(() =>
+          settleAttempt(workspaceId, row.attemptId, {
+            status: "failed",
+            requestBody: null,
+            requestHeaders: null,
+            responseStatus: null,
+            responseBody: null,
+            error:
+              "This retry was picked up, but its destination was paused or removed before it could be sent. Nothing was delivered and nothing was lost — re-enable the destination and send it again from this log.",
+            completedAt: options.now ?? new Date(),
+            nextRetryAt: null,
+          }),
+        );
+      }
     }
   } catch (error) {
+    // Anything still claimed is left `pending` on purpose. `reapStaleAttempts`
+    // finds it and reschedules it — which is the whole reason the claim opens
+    // the row (#60), and is better than this loop trying to unwind a
+    // transaction it does not own.
     console.error("[destinations] retry sweep failed", error);
   }
 

@@ -9,7 +9,7 @@ import {
   HEADER_TIMESTAMP,
   signPayload,
 } from "../signature.ts";
-import { assertDeliverableUrl, DestinationUrlError } from "../url-guard.ts";
+import { assertDeliverableUrl, deliveryFetch, DestinationUrlError } from "../url-guard.ts";
 import type { Adapter, AdapterContext, AdapterResult } from "../types.ts";
 
 /**
@@ -46,7 +46,10 @@ export const webhookAdapter: Adapter = {
 };
 
 export async function deliverWebhook(context: AdapterContext): Promise<AdapterResult> {
-  const doFetch = context.fetchImpl ?? fetch;
+  // Not the global `fetch`: that resolves the hostname a second time at connect
+  // time, which is the DNS-rebinding hole (#58). `deliveryFetch` connects to the
+  // address the guard checked.
+  const doFetch = context.fetchImpl ?? deliveryFetch();
 
   let config;
   try {

@@ -93,8 +93,12 @@ export async function loadForm(formId: string): Promise<FormLookup> {
     endpointName: row.name,
     document,
     title: document.name?.trim() || row.name,
-    // Read from the stored JSON rather than from the parsed document, because
-    // `format.ts` neither carries nor preserves a theme today. See `theme.ts`.
+    // Read from the stored JSON rather than from the parsed document.
+    // `format.ts` now carries a theme and `readStoredDocument` preserves one
+    // (#38), so both would answer the same today — but the raw row is the more
+    // durable source. `readStoredDocument` returns null for a schema this build
+    // cannot read at all, and a form whose *fields* we cannot parse should
+    // still be able to fail in the customer's own colours.
     theme: readTheme(row.schemaFields),
   };
 }

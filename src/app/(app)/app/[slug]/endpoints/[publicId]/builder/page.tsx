@@ -37,16 +37,32 @@ export const dynamic = "force-dynamic";
 
 export default async function BuilderPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string; publicId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const { slug, publicId } = await params;
+  const [{ slug, publicId }, query] = await Promise.all([params, searchParams]);
   const { workspace } = await requireWorkspace(slug);
 
   const endpoint = await getEndpointByPublicId(workspace.id, publicId);
   if (!endpoint) notFound();
 
   const versions = await listSchemaVersions(workspace.id, endpoint.id);
+
+  /**
+   * A page address pasted on the endpoint screen (#68).
+   *
+   * Narrowed to a string and nothing else. It is **not** checked for
+   * fetchability here and must not be: `assertFetchable` in
+   * `src/lib/schema/import-url.ts` is the guard, it runs inside
+   * `importUrlAction` where the fetch actually happens, and a second copy of
+   * the rules on a page that does not fetch is a second copy to keep in step.
+   * All this does is decide what to put in a text field.
+   */
+  const importUrl = typeof query.import === "string" && query.import.trim() !== ""
+    ? query.import.trim()
+    : null;
 
   const active = versions.find((version) => version.active) ?? null;
   const newest = versions[0] ?? null;
@@ -128,10 +144,12 @@ export default async function BuilderPage({
           draft={draftVersion}
           versions={summaries}
           formUrl={`https://${RENDER_DOMAIN}/f/${encoded}`}
+          renderDomain={RENDER_DOMAIN}
           // The strings the hosted page itself passes to `FormView`, verbatim.
           // A preview that draws a different action is drawing a different form.
           formAction={`/f/${encoded}/submit`}
           formRedirect={`/f/${encoded}/thanks`}
+          initialImportUrl={importUrl}
         />
       </div>
     </Container>

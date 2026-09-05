@@ -10,6 +10,12 @@ Worse, completion rate cannot tell a buyer from a bot. Both submit. Both get cou
 
 Endpoint Forms is built on a different premise: a submission is not an outcome, and the only honest way to judge a form is by what its submissions turned out to be worth.
 
+## This repo is a course project
+
+Endpoint Forms was built end to end in the [**AI Marketing Masterclass**](https://swipefiles.com/products/ai-marketing-masterclass) — the category research, the naming and domain, the positioning, the site and its SEO, the emails and social, and then the product itself.
+
+The reasoning is all in [`docs/`](docs/), written down as decisions were made rather than reconstructed afterwards — including the research that **falsified** the first wedge we tried, and what each feature still cannot do. If you want to see how a thing like this actually gets built and marketed, that is the course.
+
 ## Two things that make this different
 
 **1. Your form knows which door was used.**
@@ -28,7 +34,16 @@ Plenty of good marketers already pipe outcomes back to their ad platform. That l
 
 ## Status
 
-**Pre-launch.** The marketing site is built; the product is being built now. Positioning and brand are settled and live in [`docs/`](docs/).
+**Pre-launch, but built.** Not announced yet — the product itself is running.
+
+The submission endpoint, the agent-callable surface, the form builder, conditional logic,
+outcome tracking, Yield, split tests scored on outcomes, spam defenses, destinations with
+signed delivery and retries, and one-command self-host are all shipped and tested. What is
+not done is the commercial side: there is no billing, and email delivery needs a Resend key
+that is deliberately unset, so an email destination says so rather than failing quietly.
+
+Positioning and brand are settled and live in [`docs/`](docs/), along with the decisions
+behind each feature and — deliberately — what each one still cannot do.
 
 ## Run it yourself
 
@@ -70,7 +85,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 | Variable | What it does | If unset |
 |---|---|---|
 | `DATABASE_URL` | Postgres connection. **The role must not be a superuser and must not have `BYPASSRLS`** — a superuser silently ignores `FORCE ROW LEVEL SECURITY`, which switches off tenant isolation while every test still passes | The app refuses to start rather than falling back to a dev database |
-| `AUTH_SECRET` | Signs session cookies. Read by Auth.js | Auth.js throws |
+| `AUTH_SECRET` | Signs session cookies. Read by Auth.js, and — unless `UPLOAD_LINK_SECRET` is set — the file download links for #66 | Auth.js throws, and file uploads are refused rather than accepted with no way to hand them back |
 | `SUBMISSION_IP_SALT` | Salts the hash of submitter IPs. The raw IP is never stored | Falls back to a built-in constant and warns — hashes become guessable |
 | `ORIGIN_TOKEN_SECRET` | Signs the client token, one of nine form-surface origin signals | Falls back to a built-in key and warns |
 | `VERDICT_API_KEY_SECRET` | Signs the outcome API keys. The key is **derived, not stored** — an HMAC over the workspace id, so there is no key table to leak | `POST /api/v1/verdict` answers `503`. This one refuses rather than degrading, because it guards writes into someone else's data |
@@ -82,7 +97,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 | `NEXT_PUBLIC_SITE_URL` | `https://endpointforms.com` |
 | `NEXT_PUBLIC_RENDER_DOMAIN` | `endpointforms.app` — the separate registrable domain customer forms are served from |
 
-**Optional** — `VERDICT_API_KEY_SECRET_PREVIOUS` (still accepted on verify, so a rotation does not break live integrations), `VERDICT_DEFAULT_CURRENCY`, `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`, `AUTH_EMAIL_FROM`, `RESEND_API_KEY` / `MAIL_FROM`, `ENDPOINT_DEFAULT_THANKS_URL`, `ALLOW_INSECURE_DESTINATIONS`, `ALLOW_PRIVATE_DESTINATIONS`, `DATABASE_POOL_MAX`, `DB_TARGET` / `NEON_DEV_DATABASE_URL`, the `INGEST_RATE_LIMIT_*` / `VERDICT_RATE_LIMIT_*` / `AUTH_RATE_LIMIT_*` limits, and `NEXT_PUBLIC_WAITLIST_ENDPOINT_URL` / `WAITLIST_ENDPOINT_URL`.
+**Optional** — `VERDICT_API_KEY_SECRET_PREVIOUS` (still accepted on verify, so a rotation does not break live integrations), `VERDICT_DEFAULT_CURRENCY`, `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`, `AUTH_EMAIL_FROM`, `RESEND_API_KEY` / `MAIL_FROM`, `ENDPOINT_DEFAULT_THANKS_URL`, `ALLOW_INSECURE_DESTINATIONS`, `ALLOW_PRIVATE_DESTINATIONS`, `DATABASE_POOL_MAX`, `DB_TARGET` / `NEON_DEV_DATABASE_URL`, the `UPLOAD_*` caps and retention (`docs/24` §3.6a), the `INGEST_RATE_LIMIT_*` / `VERDICT_RATE_LIMIT_*` / `AUTH_RATE_LIMIT_*` limits, and `NEXT_PUBLIC_WAITLIST_ENDPOINT_URL` / `WAITLIST_ENDPOINT_URL`.
 
 Every one of them, with defaults and what happens when you leave it out: [`docs/24-self-hosting.md`](docs/24-self-hosting.md) §3.
 

@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { newEndpointPublicId, newId } from "../../db/ids.ts";
 import { withWorkspace } from "../../db/scoped.ts";
 import { endpoints, splitTestExposures, splitTestVariants, splitTests } from "../../db/schema.ts";
-import type { SplitTestStatus } from "./types.ts";
+import type { PreRegisteredEffect, RankingBasis, SplitTestStatus } from "./types.ts";
 
 /**
  * Writing split tests down (#45).
@@ -34,7 +34,9 @@ export class SplitTestStoreError extends Error {
     | "test_not_draft"
     | "needs_two_variants"
     | "needs_a_control"
-    | "already_running";
+    | "already_running"
+    | "already_registered"
+    | "invalid_effect";
 
   constructor(code: SplitTestStoreError["code"], message: string) {
     super(message);
@@ -43,11 +45,26 @@ export class SplitTestStoreError extends Error {
   }
 }
 
+/**
+ * The effect a test commits to before it sees data (#59).
+ *
+ * `relativeLift` of 0.2 is "a fifth more closed deals"; `baselineRate` is the
+ * Yield rate that is relative to. Both are needed and neither is derivable
+ * from the other — see `PreRegisteredEffect`.
+ */
+export type PreRegisterInput = {
+  relativeLift: number;
+  baselineRate: number;
+  basis: RankingBasis;
+};
+
 export type CreateSplitTestInput = {
   workspaceId: string;
   endpointPublicId: string;
   name: string;
   createdByUserId?: string | null;
+  /** Optional. Absent means the observed rule, which is what every pre-#59 test uses. */
+  preRegistered?: PreRegisterInput | null;
   /**
    * The arms. Exactly one must be the control; a `schemaVersionId` of null
    * means "whatever the endpoint's active schema is", which is the ordinary
@@ -103,6 +120,9 @@ export async function createSplitTest(
     // form action, but there is no reason for a second alphabet.
     const publicId = newEndpointPublicId();
 
+    const effect = input.preRegistered ? validateEffect(input.preRegistered) : null;
+    const now = new Date();
+
     await ws.tx.insert(splitTests).values({
       id,
       workspaceId: input.workspaceId,
@@ -111,6 +131,14 @@ export async function createSplitTest(
       name: input.name,
       status: "draft",
       createdByUserId: input.createdByUserId ?? null,
+      ...(effect
+        ? {
+            mdeRelative: effect.relativeLift.toFixed(4),
+            mdeBaselineRate: effect.baselineRate.toFixed(8),
+            mdeBasis: effect.basis,
+            mdeRegisteredAt: now,
+          }
+        : {}),
     });
 
     const variants = input.variants.map((variant) => ({
@@ -135,6 +163,98 @@ export async function createSplitTest(
       })),
     };
   });
+}
+
+/**
+ * Records the effect size this test is being run to detect (#59).
+ *
+ * Two refusals, and both are the feature rather than defensiveness:
+ *
+ * 1. **Draft only.** A test that could set its target after seeing which way
+ *    the numbers went would not be pre-registering anything, it would be
+ *    choosing a finish line it had already crossed. The word in the column name
+ *    is only true because this refuses.
+ * 2. **Once.** Editing it while still a draft would be harmless in principle
+ *    and impossible to distinguish afterwards from editing it for the wrong
+ *    reason, since `mde_registered_at` would move with each edit and stop
+ *    meaning "before the data". A draft registered by mistake can be deleted
+ *    and created again; nothing is lost, because a draft has no data.
+ */
+export async function preRegisterSplitTestEffect(
+  workspaceId: string,
+  testPublicId: string,
+  effect: PreRegisterInput,
+  now: Date = new Date(),
+): Promise<PreRegisteredEffect> {
+  const valid = validateEffect(effect);
+
+  return withWorkspace(workspaceId, async (ws) => {
+    const [test] = await ws.tx
+      .select({
+        id: splitTests.id,
+        status: splitTests.status,
+        mdeRegisteredAt: splitTests.mdeRegisteredAt,
+      })
+      .from(splitTests)
+      .where(ws.where(splitTests, eq(splitTests.publicId, testPublicId)))
+      .limit(1);
+
+    if (!test) {
+      throw new SplitTestStoreError("test_not_found", "That split test does not exist.");
+    }
+    if (test.status !== "draft") {
+      throw new SplitTestStoreError(
+        "test_not_draft",
+        `This test is ${test.status}. An effect size can only be registered while a test is still a draft — one chosen after the data arrived is not a pre-registration, it is a finish line drawn where the runner already is.`,
+      );
+    }
+    if (test.mdeRegisteredAt !== null) {
+      throw new SplitTestStoreError(
+        "already_registered",
+        "This test already has a registered effect size, and it cannot be changed. If it is wrong, delete this draft and create another — a draft has no data to lose.",
+      );
+    }
+
+    await ws.tx
+      .update(splitTests)
+      .set({
+        mdeRelative: valid.relativeLift.toFixed(4),
+        mdeBaselineRate: valid.baselineRate.toFixed(8),
+        mdeBasis: valid.basis,
+        mdeRegisteredAt: now,
+        updatedAt: now,
+      })
+      .where(ws.where(splitTests, eq(splitTests.id, test.id)));
+
+    return { ...valid, registeredAt: now };
+  });
+}
+
+/**
+ * The bounds, checked here as well as by `drizzle/0008`'s `CHECK` constraints.
+ *
+ * Both, not either: the constraint is what makes a bad row impossible whatever
+ * writes it, and this is what makes the refusal a sentence a person can read
+ * instead of a Postgres error code.
+ */
+function validateEffect(effect: PreRegisterInput): PreRegisterInput {
+  const relativeLift = Number(effect.relativeLift);
+  const baselineRate = Number(effect.baselineRate);
+
+  if (!Number.isFinite(relativeLift) || relativeLift <= 0 || relativeLift > 10) {
+    throw new SplitTestStoreError(
+      "invalid_effect",
+      "The improvement to detect has to be a positive percentage, and below 1000%. A zero has no sample size at all — no amount of traffic detects a difference of nothing.",
+    );
+  }
+  if (!Number.isFinite(baselineRate) || baselineRate <= 0 || baselineRate >= 1) {
+    throw new SplitTestStoreError(
+      "invalid_effect",
+      "The baseline Yield rate has to be above 0% and below 100%. At zero there is nothing to improve on, and at 100% there is no room to.",
+    );
+  }
+
+  return { relativeLift, baselineRate, basis: effect.basis };
 }
 
 /**
