@@ -101,7 +101,35 @@ export function hasDatabaseUrl(): boolean {
 }
 
 /**
- * Whether this connection must be TLS, decided from the URL itself (#77).
+ * True when the database is on this machine rather than across a network.
+ *
+ * Used for the log label and as the TLS default below. Kept separate from
+ * `sslMode` because they answer different questions: a remote host with
+ * `sslmode=disable` is still remote, and the log line should say so.
+ */
+export function isLoopbackDatabase(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Not parseable: assume the network is hostile rather than assume it is not.
+    return false;
+  }
+
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.startsWith("127.") ||
+    // A unix socket path, which is not a network at all.
+    host === ""
+  );
+}
+
+/**
+ * The `ssl` option for a connection string, decided from the string itself (#77).
  *
  * ## Why not from `DB_TARGET`
  *
@@ -109,52 +137,51 @@ export function hasDatabaseUrl(): boolean {
  * variable the URL came from* rather than about where it points. Anything
  * holding a hosted URL in `DATABASE_URL` — the migrator, a one-off script, a
  * self-hoster following `docs/24` — connected in plaintext and got a bare
- * `28000 connection is insecure`, while the log line above it cheerfully said
- * `migrating local` next to an `aws.neon.tech` host. The only way to make it
- * work was `DB_TARGET=neon` **plus** `NEON_DEV_DATABASE_URL`, i.e. passing a
- * production URL under a variable named `NEON_DEV_` — which is exactly how
- * somebody migrates the wrong database.
+ * `28000 connection is insecure`. The only way to make it work was
+ * `DB_TARGET=neon` **plus** `NEON_DEV_DATABASE_URL`, i.e. passing a production
+ * URL under a variable named `NEON_DEV_` — which is exactly how somebody
+ * migrates the wrong database.
  *
  * ## This is the second time
  *
  * `7227a8a` fixed it once, in August, as a production hotfix. A concurrent
- * rewrite of this file (`b0d4a22`, lazy connection) was branched from before
- * that fix, and when both landed the rewrite's copy of the line won. **Nothing
- * went red, because nothing tested it** — the regression was invisible until a
- * migration failed against production months later.
+ * rewrite of `src/db/client.ts` (`b0d4a22`, lazy connection) was branched from
+ * before that fix, and when both landed the rewrite's copy of the line won.
+ * **Nothing went red, because nothing tested it** — the regression was invisible
+ * until a migration against production failed months later.
  *
- * `tests/db-tls.test.mts` exists so that a third rewrite cannot repeat it.
+ * `tests/db-tls.test.mts` exists so a third rewrite cannot repeat it.
  *
- * ## The rules
+ * ## An explicit `sslmode` is honoured, not overridden
  *
- * An explicit `sslmode` wins, because someone who wrote one meant it. Otherwise
- * loopback is plaintext and **everything else is TLS** — the default is the
- * cautious one, so a new host is encrypted by omission rather than exposed by
- * it. An unparseable URL is treated as hostile for the same reason.
+ * Passed through to the driver rather than collapsed to on/off, because libpq's
+ * modes are not a boolean and postgres.js implements them: `prefer` really does
+ * fall back to plaintext against a server with no TLS, which is the whole point
+ * of writing it. Coercing `prefer` to `require` would break exactly the
+ * self-hoster it was written by. `verify-ca` and `verify-full` ask for more
+ * verification than `require`, so they map to at least it.
+ *
+ * With no `sslmode` at all: loopback is plaintext, **everything else is TLS** —
+ * the default is the cautious one, so a new host is encrypted by omission
+ * rather than exposed by it, and an unparseable URL is treated as hostile.
  */
-export function requiresTls(url: string): boolean {
-  let parsed: URL;
+export function sslMode(url: string): "require" | "prefer" | "allow" | undefined {
+  let parsed: URL | null = null;
   try {
     parsed = new URL(url);
   } catch {
-    // Not parseable: assume the network is hostile rather than assume it is not.
-    return true;
+    return "require";
   }
 
   const sslmode = parsed.searchParams.get("sslmode");
-  if (sslmode) return sslmode !== "disable" && sslmode !== "allow";
+  if (sslmode) {
+    if (sslmode === "disable") return undefined;
+    if (sslmode === "allow") return "allow";
+    if (sslmode === "prefer") return "prefer";
+    return "require";
+  }
 
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const local =
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host.startsWith("127.") ||
-    // A unix socket path, which is not a network at all.
-    host === "";
-
-  return !local;
+  return isLoopbackDatabase(url) ? undefined : "require";
 }
 
 /**
@@ -171,7 +198,7 @@ export function describeDatabase(): string {
   try {
     const url = databaseUrl();
     const { host, pathname } = new URL(url);
-    return `${requiresTls(url) ? "hosted" : "local"} · ${host}${pathname}`;
+    return `${isLoopbackDatabase(url) ? "local" : "hosted"} · ${host}${pathname}`;
   } catch {
     return dbTarget();
   }

@@ -14,7 +14,7 @@
  * lines. The point is that a whole-file rewrite must not be able to quietly
  * revert it a third time.
  */
-import { requiresTls, describeDatabase } from "../src/db/env.ts";
+import { sslMode, describeDatabase } from "../src/db/env.ts";
 
 /**
  * Read the `ssl` option the real client is built with, for a given URL.
@@ -68,39 +68,45 @@ console.log("\nTLS is decided by the URL, not by DB_TARGET");
 
 // Hosted. The case the regression broke: a Neon URL in DATABASE_URL, no
 // DB_TARGET anywhere.
-t("a neon host requires TLS", requiresTls("postgres://u:p@ep-x.aws.neon.tech/neondb"), true);
-t("any non-loopback host requires TLS", requiresTls("postgres://u:p@db.example.com:5432/app"), true);
+t("a neon host requires TLS", sslMode("postgres://u:p@ep-x.aws.neon.tech/neondb"), "require");
+t("any non-loopback host requires TLS", sslMode("postgres://u:p@db.example.com:5432/app"), "require");
 
 // Loopback. The compose database, which has no TLS and must not be asked for it.
-t("localhost does not", requiresTls("postgres://endpoint:endpoint@localhost:5433/endpointforms"), false);
-t("127.0.0.1 does not", requiresTls("postgres://u:p@127.0.0.1:5432/app"), false);
-t("::1 does not", requiresTls("postgres://u:p@[::1]:5432/app"), false);
-t("a .localhost subdomain does not", requiresTls("postgres://u:p@db.localhost:5432/app"), false);
+t("localhost does not", sslMode("postgres://endpoint:endpoint@localhost:5433/endpointforms"), undefined);
+t("127.0.0.1 does not", sslMode("postgres://u:p@127.0.0.1:5432/app"), undefined);
+t("::1 does not", sslMode("postgres://u:p@[::1]:5432/app"), undefined);
+t("a .localhost subdomain does not", sslMode("postgres://u:p@db.localhost:5432/app"), undefined);
 
 // An explicit sslmode wins over the host, because someone who wrote one meant it.
-t("sslmode=require on loopback wins", requiresTls("postgres://u:p@localhost:5432/app?sslmode=require"), true);
-t("sslmode=disable on a remote host wins", requiresTls("postgres://u:p@db.example.com/app?sslmode=disable"), false);
-t("sslmode=allow is treated as opt-out", requiresTls("postgres://u:p@db.example.com/app?sslmode=allow"), false);
-t("sslmode=verify-full requires TLS", requiresTls("postgres://u:p@db.example.com/app?sslmode=verify-full"), true);
+t("sslmode=require on loopback wins", sslMode("postgres://u:p@localhost:5432/app?sslmode=require"), "require");
+t("sslmode=disable on a remote host wins", sslMode("postgres://u:p@db.example.com/app?sslmode=disable"), undefined);
+// Passed through rather than collapsed to on/off: postgres.js implements
+// libpq's modes, and `prefer` really does fall back to plaintext against a
+// server with no TLS. Coercing it to `require` would break the self-hoster who
+// wrote it.
+t("sslmode=allow is honoured as allow", sslMode("postgres://u:p@db.example.com/app?sslmode=allow"), "allow");
+t("sslmode=prefer is honoured as prefer", sslMode("postgres://u:p@db.example.com/app?sslmode=prefer"), "prefer");
+t("sslmode=verify-ca asks for at least require", sslMode("postgres://u:p@db.example.com/app?sslmode=verify-ca"), "require");
+t("sslmode=verify-full requires TLS", sslMode("postgres://u:p@db.example.com/app?sslmode=verify-full"), "require");
 
 // Unparseable is treated as hostile rather than as safe.
-t("garbage requires TLS", requiresTls("not a url"), true);
-t("an empty string requires TLS", requiresTls(""), true);
+t("garbage requires TLS", sslMode("not a url"), "require");
+t("an empty string requires TLS", sslMode(""), "require");
 
 // DB_TARGET must not enter into it — this is the exact regression.
 const saved = process.env.DB_TARGET;
 try {
   delete process.env.DB_TARGET;
-  const withoutTarget = requiresTls("postgres://u:p@ep-x.aws.neon.tech/neondb");
+  const withoutTarget = sslMode("postgres://u:p@ep-x.aws.neon.tech/neondb");
   process.env.DB_TARGET = "neon";
-  const withTarget = requiresTls("postgres://u:p@ep-x.aws.neon.tech/neondb");
-  t("the same URL decides the same way with DB_TARGET unset and set", [withoutTarget, withTarget], [true, true]);
+  const withTarget = sslMode("postgres://u:p@ep-x.aws.neon.tech/neondb");
+  t("the same URL decides the same way with DB_TARGET unset and set", [withoutTarget, withTarget], ["require", "require"]);
 
   process.env.DB_TARGET = "neon";
   t(
     "and a loopback URL stays plaintext even with DB_TARGET=neon",
-    requiresTls("postgres://u:p@localhost:5432/app"),
-    false,
+    sslMode("postgres://u:p@localhost:5432/app"),
+    undefined,
   );
 } finally {
   if (saved === undefined) delete process.env.DB_TARGET;
