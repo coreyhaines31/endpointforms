@@ -3,7 +3,7 @@
 > Generated from GitHub issues by `npm run roadmap`. Don't hand-edit —
 > edit the issue and re-run, or the two will drift.
 
-Last synced: 2026-09-04 23:27 UTC
+Last synced: 2026-09-05 05:11 UTC
 
 ## Phase 1 — Foundation
 
