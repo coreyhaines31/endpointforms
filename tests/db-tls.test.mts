@@ -10,9 +10,8 @@
  * it.** The regression stayed invisible until a migration against production
  * failed months later with a bare `28000 connection is insecure`.
  *
- * So the point of this file is not that `requiresTls` is subtle — it is nine
- * lines. The point is that a whole-file rewrite must not be able to quietly
- * revert it a third time.
+ * So the point of this file is not that `sslMode` is subtle. The point is that
+ * a whole-file rewrite must not be able to quietly revert it a third time.
  */
 import { sslMode, describeDatabase } from "../src/db/env.ts";
 
@@ -20,7 +19,7 @@ import { sslMode, describeDatabase } from "../src/db/env.ts";
  * Read the `ssl` option the real client is built with, for a given URL.
  *
  * **This is the assertion that would have caught the original regression.**
- * Testing `requiresTls` alone proves the helper is correct; it does not prove
+ * Testing `sslMode` alone proves the helper is correct; it does not prove
  * `client.ts` still calls it, and "stopped calling it" is precisely what
  * happened. `postgres()` opens no socket, and the client is lazy, so reading
  * `.options` against a made-up host costs nothing and touches no database.
@@ -90,6 +89,16 @@ t("sslmode=verify-ca asks for at least require", sslMode("postgres://u:p@db.exam
 t("sslmode=verify-full requires TLS", sslMode("postgres://u:p@db.example.com/app?sslmode=verify-full"), "require");
 
 // Unparseable is treated as hostile rather than as safe.
+// A value we do not recognise falls back to TLS rather than to plaintext, and
+// that direction is deliberate. libpq matches `sslmode` case-sensitively and
+// accepts only these lowercase spellings, so `DISABLE` is not a valid opt-out
+// anywhere — treating it as one would let a typo silently drop encryption.
+// Pinned here so the fallback stays a decision rather than an accident.
+t("an uppercase DISABLE does not disable", sslMode("postgres://u:p@h.example.com/d?sslmode=DISABLE"), "require");
+t("a miscased Prefer is not honoured either", sslMode("postgres://u:p@h.example.com/d?sslmode=Prefer"), "require");
+t("an unknown sslmode falls back to TLS", sslMode("postgres://u:p@h.example.com/d?sslmode=nonsense"), "require");
+t("and so does a miscased key", sslMode("postgres://u:p@h.example.com/d?SSLMODE=disable"), "require");
+
 t("garbage requires TLS", sslMode("not a url"), "require");
 t("an empty string requires TLS", sslMode(""), "require");
 
