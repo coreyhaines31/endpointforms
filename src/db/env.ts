@@ -161,6 +161,11 @@ export function isLoopbackDatabase(url: string): boolean {
  * self-hoster it was written by. `verify-ca` and `verify-full` ask for more
  * verification than `require`, so they map to at least it.
  *
+ * A spelling we do not recognise — `DISABLE`, `Prefer`, a typo — falls back to
+ * TLS rather than to plaintext. libpq matches these case-sensitively and accepts
+ * only the lowercase forms, so an uppercase one is not a valid opt-out anywhere;
+ * honouring it would let a typo silently drop encryption.
+ *
  * With no `sslmode` at all: loopback is plaintext, **everything else is TLS** —
  * the default is the cautious one, so a new host is encrypted by omission
  * rather than exposed by it, and an unparseable URL is treated as hostile.
