@@ -3,6 +3,7 @@ import { GITHUB_URL, SITE_URL } from "@/lib/site";
 import { FONT_VARIABLES } from "@/lib/fonts";
 import "../globals.css";
 import { RootShell } from "@/components/root-shell";
+import { TracerKit } from "@/components/tracerkit";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 
@@ -93,6 +94,7 @@ const structuredData = {
 export default function SiteLayout({ children }: { children: React.ReactNode }) {
   return (
     <RootShell htmlClassName={FONT_VARIABLES}>
+      <TracerKit />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
