@@ -7,7 +7,7 @@ import { GITHUB_URL } from "@/lib/site";
 
 const title = "Privacy";
 const description =
-  "What Endpoint Forms collects right now: one email address, if you type it into the waitlist form. No analytics, no cookies, no ad-platform audiences. Written specifically for what this site actually does.";
+  "What Endpoint Forms collects right now: one email address, if you type it into the waitlist form, plus cookieless page counts on this site only. No cookies, no ad-platform audiences, and nothing at all on a form we host for a customer. Written specifically for what this site actually does.";
 
 export const metadata: Metadata = {
   title: `${title} — Endpoint Forms`,
@@ -76,10 +76,28 @@ export default function PrivacyPage() {
 
           <h2>Analytics, cookies, and tracking</h2>
           <p>
-            This site runs no analytics. No Google Analytics, no Meta pixel, no session
-            recording, no heatmaps, no A/B testing script. If that changes — and it probably
-            will, because we sell to people who run paid acquisition and we will eventually
-            run some ourselves — this page will change first and will name the specific tool.
+            This page said “no analytics” until September 2026, and promised that if that
+            changed it would change first and name the tool. It changed, so here is the tool:
+            this site counts page views with{" "}
+            <a href="https://usefathom.com" rel="noreferrer">Fathom Analytics</a>, loaded
+            through <a href="https://tracerkit.com" rel="noreferrer">TracerKit</a>, which is
+            our own tag manager. Still no Google Analytics, no Meta pixel, no session
+            recording, no heatmaps.
+          </p>
+          <p>
+            <strong>It does not run on a form we host for a customer.</strong> A hosted form is
+            somebody else’s lead capture, on traffic they paid for; measuring their visitors
+            would make us a third party on their page. The analytics tag is loaded by the
+            marketing site alone, and a test in the repo fails the build if it ever becomes
+            reachable from the form.
+          </p>
+          <p>
+            Fathom is cookieless, and that is checkable rather than a promise we are asking you
+            to take: the script it serves never touches <code>document.cookie</code>. It records
+            the page you looked at, where you arrived from, and coarse device and country
+            information, aggregated. It does not build a profile of you, follow you to other
+            sites, or know who you are. The one thing it stores in your browser is a
+            <code>blockFathomTracking</code> flag, and only if you opt out.
           </p>
           <p>
             This site sets no cookies. If you switch the theme, the word <code>light</code> or{" "}
