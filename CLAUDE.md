@@ -181,6 +181,31 @@ For **frontend-only changes**, passing checks are not enough: open it in `agent-
 screenshot it, and look at the image in both themes before reporting it done. A computed style
 confirms the code does what you wrote, not what was asked.
 
+**A hotfix merged to `main` is not finished until it is back-merged.** Two were
+not: the database TLS fix and the seed guard both went straight to `main` and
+never returned, and `development` carried neither for over a month — including
+the guard that stops `npm run db:seed` reaching a hosted database, which is the
+branch everyone works from.
+
+Nothing caught it, and the reason is worth remembering: **the release PRs merged
+cleanly the whole time.** The divergence did not touch the same lines until it
+finally did, so "CI is green and the PR merged" was never evidence the branches
+agreed. It cost a wrong diagnosis before anyone noticed — a fix was reported as
+reverted and production as affected, when `main` had been correct all along and
+only the local checkout of `development` was stale.
+
+`scripts/check-branch-divergence.sh` now fails when `main` has commits
+`development` does not, on every push to `development` and every PR into `main`.
+Run it by hand before cutting a release. When it fires, back-merge rather than
+resolving the conflict inside the release PR — the release is not the place to
+discover what the two branches disagree about.
+
+One more, for diagnosing this class of thing: `git log -S` on the branch you
+happen to be standing on answers a different question from "is this commit an
+ancestor of the branch I am about to ship". Use `git merge-base --is-ancestor`
+against the specific branch, or you will conclude a fix was reverted when it was
+merely never merged here.
+
 ## Stack
 
 - Next.js 16 App Router, React 19, TypeScript
