@@ -100,11 +100,110 @@ export function hasDatabaseUrl(): boolean {
   }
 }
 
-/** Host and database only — safe to log. Never returns credentials. */
+/**
+ * True when the database is on this machine rather than across a network.
+ *
+ * Used for the log label and as the TLS default below. Kept separate from
+ * `sslMode` because they answer different questions: a remote host with
+ * `sslmode=disable` is still remote, and the log line should say so.
+ */
+export function isLoopbackDatabase(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Not parseable: assume the network is hostile rather than assume it is not.
+    return false;
+  }
+
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.startsWith("127.") ||
+    // A unix socket path, which is not a network at all.
+    host === ""
+  );
+}
+
+/**
+ * The `ssl` option for a connection string, decided from the string itself (#77).
+ *
+ * ## Why not from `DB_TARGET`
+ *
+ * It used to be `dbTarget() === "neon"`, which is a statement about *which
+ * variable the URL came from* rather than about where it points. Anything
+ * holding a hosted URL in `DATABASE_URL` — the migrator, a one-off script, a
+ * self-hoster following `docs/24` — connected in plaintext and got a bare
+ * `28000 connection is insecure`. The only way to make it work was
+ * `DB_TARGET=neon` **plus** `NEON_DEV_DATABASE_URL`, i.e. passing a production
+ * URL under a variable named `NEON_DEV_` — which is exactly how somebody
+ * migrates the wrong database.
+ *
+ * ## This is the second time
+ *
+ * `7227a8a` fixed it once, in August, as a production hotfix. A concurrent
+ * rewrite of `src/db/client.ts` (`b0d4a22`, lazy connection) was branched from
+ * before that fix, and when both landed the rewrite's copy of the line won.
+ * **Nothing went red, because nothing tested it** — the regression was invisible
+ * until a migration against production failed months later.
+ *
+ * `tests/db-tls.test.mts` exists so a third rewrite cannot repeat it.
+ *
+ * ## An explicit `sslmode` is honoured, not overridden
+ *
+ * Passed through to the driver rather than collapsed to on/off, because libpq's
+ * modes are not a boolean and postgres.js implements them: `prefer` really does
+ * fall back to plaintext against a server with no TLS, which is the whole point
+ * of writing it. Coercing `prefer` to `require` would break exactly the
+ * self-hoster it was written by. `verify-ca` and `verify-full` ask for more
+ * verification than `require`, so they map to at least it.
+ *
+ * A spelling we do not recognise — `DISABLE`, `Prefer`, a typo — falls back to
+ * TLS rather than to plaintext. libpq matches these case-sensitively and accepts
+ * only the lowercase forms, so an uppercase one is not a valid opt-out anywhere;
+ * honouring it would let a typo silently drop encryption.
+ *
+ * With no `sslmode` at all: loopback is plaintext, **everything else is TLS** —
+ * the default is the cautious one, so a new host is encrypted by omission
+ * rather than exposed by it, and an unparseable URL is treated as hostile.
+ */
+export function sslMode(url: string): "require" | "prefer" | "allow" | undefined {
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "require";
+  }
+
+  const sslmode = parsed.searchParams.get("sslmode");
+  if (sslmode) {
+    if (sslmode === "disable") return undefined;
+    if (sslmode === "allow") return "allow";
+    if (sslmode === "prefer") return "prefer";
+    return "require";
+  }
+
+  return isLoopbackDatabase(url) ? undefined : "require";
+}
+
+/**
+ * Host and database only — safe to log. Never returns credentials.
+ *
+ * **The label comes from the URL, not from `DB_TARGET`.** It used to print
+ * `dbTarget()`, so a migration aimed at a hosted database announced itself as
+ * `migrating local · ep-....aws.neon.tech/neondb` — the one line whose whole job
+ * is to stop you migrating the wrong database, disagreeing with itself. It now
+ * cannot say `local` next to a remote host, because both halves are decided by
+ * the same function.
+ */
 export function describeDatabase(): string {
   try {
-    const { host, pathname } = new URL(databaseUrl());
-    return `${dbTarget()} · ${host}${pathname}`;
+    const url = databaseUrl();
+    const { host, pathname } = new URL(url);
+    return `${isLoopbackDatabase(url) ? "local" : "hosted"} · ${host}${pathname}`;
   } catch {
     return dbTarget();
   }
