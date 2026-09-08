@@ -1,0 +1,34 @@
+# Fails when `main` carries commits `development` does not (#86).
+#
+# Two fixes went straight to `main` and never came back — the database TLS fix
+# and the seed guard — and `development` carried neither for over a month. The
+# release PRs merged cleanly the whole time, because the divergence did not
+# touch the same lines until it finally did, so a green CI run and a clean merge
+# were never evidence that the branches agreed.
+#
+# This turns that silent condition into a red check. It runs where the cost of
+# missing it is highest: on any PR into `main` (a release), and on every push to
+# `development`, so the gap is reported the day it opens rather than at release.
+name: branch-divergence
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [development]
+
+jobs:
+  divergence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The check compares two branches, so it needs their history. The
+          # default shallow clone would make `git log a..b` meaningless.
+          fetch-depth: 0
+
+      - name: Fetch both branches
+        run: git fetch --no-tags origin main development
+
+      - name: main must not be ahead of development
+        run: scripts/check-branch-divergence.sh origin/main origin/development
