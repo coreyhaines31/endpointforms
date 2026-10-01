@@ -50,6 +50,26 @@ For frontend changes, passing checks are not enough. Open it, screenshot it, and
 image in both light and dark themes. A computed style confirms the code does what you wrote, not
 what was asked.
 
+### Browser end-to-end tests
+
+```bash
+AI_GATEWAY_API_KEY=... npm run test:e2e
+```
+
+Not part of `verify`, because it needs a key: agent steps call a model through Vercel AI
+Gateway. With the project linked (`vercel link`) the gateway uses the project's OIDC token and
+no key is needed. The runner starts its own `next dev` on a free port, so a dev server you
+already have running is fine. Tests live in `tests/*.e2e.ts`; config in `e2e.config.ts`.
+
+| Variable | Purpose |
+| - | - |
+| `AI_GATEWAY_API_KEY` | Gateway key for agent steps. Also a repo secret for the `e2e` CI job. |
+| `E2E_MODEL` | Gateway model id for agent steps. Defaults to `openai/gpt-6-luna-fast`. |
+
+The waitlist endpoint is blanked for the run, so signups go to the local `.waitlist.jsonl`
+sink and never reach a live endpoint; the test removes its own line afterwards. Add `--headed`
+to watch a run. Results land in `.e2e/`.
+
 ## Two invariants
 
 Both have already been broken once. Both fail invisibly.
