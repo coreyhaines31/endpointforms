@@ -1,0 +1,61 @@
+# Browser end-to-end tests (tester-army/e2e). Kept apart from verify.yml on
+# purpose: verify proves a stranger can build the repo with no secrets, and this
+# job needs one — AI_GATEWAY_API_KEY, for the agent steps. Fork PRs get no
+# secrets, so their agent steps fail here; that is expected, not a regression.
+name: e2e
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install browsers
+        run: npx playwright install chromium --with-deps
+
+      # e2e.config.ts starts `next dev` itself and blanks the waitlist endpoint,
+      # so signups land in the dev-only file sink, never a live endpoint.
+      - name: Run e2e
+        run: npx e2e run --reporter list,junit
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          E2E_TELEMETRY_DISABLED: "1"
+
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            .e2e/report.json
+            .e2e/junit.xml
+            .e2e/logs
+          if-no-files-found: warn
+
+      - name: Upload artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: .e2e/artifacts
+          if-no-files-found: warn
+          retention-days: 7
