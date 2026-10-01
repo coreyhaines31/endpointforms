@@ -60,7 +60,8 @@
     "prebuild": "npm run build:form-css",
     "test:form-css": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/form-css.test.mts",
     "test:db-tls": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/db-tls.test.mts",
-    "test:analytics-scope": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/analytics-scope.test.mts"
+    "test:analytics-scope": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/analytics-scope.test.mts",
+    "test:e2e": "e2e run"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
@@ -84,13 +85,17 @@
     "zod": "^4.5.1"
   },
   "devDependencies": {
+    "@e2e-dev/web": "^0.11.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "ai": "^7.0.0",
     "drizzle-kit": "^0.31.10",
+    "e2e": "^0.15.1",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
+    "playwright": "^1.63.0",
     "server-only": "^0.0.1",
     "tailwindcss": "^4",
     "typescript": "^5"
