@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { test } from '@e2e-dev/web';
@@ -8,9 +8,23 @@ import { expect, unique } from 'e2e';
 // e2e.config.ts blanks the endpoint vars so every signup here lands in it.
 const SINK = path.join(import.meta.dirname, '..', '.waitlist.jsonl');
 
-async function sinkContains(email: string): Promise<boolean> {
+async function sinkLines(): Promise<string[]> {
   const contents = await readFile(SINK, 'utf8').catch(() => '');
-  return contents.split('\n').some((line) => line.includes(`"email":"${email}"`));
+  return contents.split('\n').filter(Boolean);
+}
+
+const isFor = (email: string) => (line: string) => line.includes(`"email":"${email}"`);
+
+async function sinkContains(email: string): Promise<boolean> {
+  return (await sinkLines()).some(isFor(email));
+}
+
+// So local runs don't pile test addresses into the sink a developer reads.
+async function removeFromSink(email: string): Promise<void> {
+  const lines = await sinkLines();
+  const kept = lines.filter((line) => !isFor(email)(line));
+  if (kept.length === lines.length) return;
+  await writeFile(SINK, kept.map((line) => `${line}\n`).join(''), 'utf8');
 }
 
 test('the homepage renders the hero and the waitlist', async ({ app, screen }) => {
@@ -37,12 +51,16 @@ test('a visitor joins the waitlist and the address is actually stored', async ({
   const email = `e2e+${Date.now()}@example.test`;
   await app.open('/');
 
-  await agent.act('join the waitlist with the email {email}', { params: { email: unique(email) } });
+  try {
+    await agent.act('join the waitlist with the email {email}', { params: { email: unique(email) } });
 
-  await expect(screen.getByText('On the list')).toBeVisible();
-  await expect(screen.getByText('You’re on the list.', { exact: false })).toBeVisible();
+    await expect(screen.getByText('On the list')).toBeVisible();
+    await expect(screen.getByText('You’re on the list.', { exact: false })).toBeVisible();
 
-  // The success message alone proves nothing: the site's whole claim is that it
-  // never says "on the list" without having written the address down.
-  expect(await sinkContains(email)).toBe(true);
+    // The success message alone proves nothing: the site's whole claim is that it
+    // never says "on the list" without having written the address down.
+    expect(await sinkContains(email)).toBe(true);
+  } finally {
+    await removeFromSink(email);
+  }
 });
