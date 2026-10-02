@@ -1,7 +1,8 @@
 # 30 — Licensing: AGPL + commercial
 
-Issue #90. Status: **draft for the owner's decision.** The CLA half is implemented; the
-commercial offer below is a proposal, not a policy. Nothing here goes on the marketing site,
+Issue #90. Status: **direction decided 2026-10-01: Option C now, graduating to Option A**
+(§6). The CLA half is implemented. The commercial licence itself — terms, licensor, price — is
+still open (§8). Nothing here goes on the marketing site,
 and no price in this repository is a published price.
 
 **Not legal advice.** Nothing in this document, `CLA.md` included, has been reviewed by a
@@ -215,12 +216,12 @@ licensing section.
 
 Every one of these is a decision this document does not make.
 
-- **Q1. Which option?** A, B, C, or C-graduating-to-A as recommended.
+- ~~**Q1. Which option?**~~ **Decided 2026-10-01:** Option C now, graduating to Option A, as
+  recommended in §6.
 - **Q2. Who is the licensor?** Corey Haines personally, or a company? The CLA names Corey and
   includes an assignment clause so a future company can take it over, but the commercial
   licence should be issued by whichever entity will carry the liability.
-- **Q3. Governing law.** `CLA.md` §10 says "the State of **[TO BE CONFIRMED]**". Which state?
-  This should be filled in before the first outside pull request is merged.
+- ~~**Q3. Governing law.**~~ **Decided 2026-10-01:** California. `CLA.md` §10 says so.
 - **Q4. Pricing unit and number** for any commercial licence: per deployment, per
   organisation, per workspace, or per-deal OEM — and the amount. Nothing here is researched;
   do not publish a number until it is.
@@ -238,16 +239,16 @@ Every one of these is a decision this document does not make.
   separate licence for `docs/25` (for example CC BY 4.0) would make that explicit. AGPL on a
   spec document is an odd fit.
 - **Q10. README "Licensing" section** — wording and timing. Proposed for step 1 of the
-  recommendation; not written yet, because its content depends on Q1.
+  recommendation. Unblocked now that Q1 is decided; not written yet.
 - **Q11. File ENDPOINT FORMS** as a trademark, and adopt a trademark policy?
 
 ## 9. Setup the CLA still needs
 
 Repository state the workflow cannot create for itself, deliberately not done in code:
 
-1. Create a `cla-signatures` branch. The action commits signatures there and cannot create
-   the branch; it is kept off `main` and `development` so the bot never commits to a branch
-   people work from.
+1. ~~Create a `cla-signatures` branch.~~ Done 2026-10-01. The action commits signatures there
+   and cannot create the branch; it is kept off `main` and `development` so the bot never
+   commits to a branch people work from.
 2. Mark the `CLAAssistant` check as **required** on `development` and `main`. Until then it
    reports on pull requests but does not block a merge.
 3. `CLA.md`'s link in the workflow points at `main`, so the bot's link resolves once this
