@@ -61,6 +61,11 @@ Gateway. With the project linked (`vercel link`) the gateway uses the project's 
 no key is needed. The runner starts its own `next dev` on a free port, so a dev server you
 already have running is fine. Tests live in `tests/*.e2e.ts`; config in `e2e.config.ts`.
 
+The core-flow test signs up and creates real rows, so it needs the local database
+(`npm run db:up && npm run db:migrate`). The dev server is pinned to it — a `DATABASE_URL` in
+`.env.local` is ignored for the run, so it can never reach a hosted database. Set
+`E2E_DATABASE_URL` to point it at a different local one.
+
 | Variable | Purpose |
 | - | - |
 | `AI_GATEWAY_API_KEY` | Gateway key for agent steps. Also a repo secret for the `e2e` CI job. |
