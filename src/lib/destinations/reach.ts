@@ -21,8 +21,9 @@ import type { DestinationKind } from "./types.ts";
  *   actually deliver to. Says nothing; a banner that is always there is
  *   furniture (`destinations-health.tsx` makes the same argument).
  * - `deaf` — nothing enabled at all. Submissions are stored and nobody hears.
- * - `unsendable` — something is enabled, but every enabled destination is email
- *   and this deployment has no mail transport. The consequence is identical to
+ * - `unsendable` — something is enabled, but every enabled destination needs a
+ *   transport this deployment does not have: email with no mail key, or Google
+ *   Sheets with no OAuth client (#67). The consequence is identical to
  *   `deaf` and the fix is completely different, so flattening the two into one
  *   sentence would send somebody to add a destination they already have.
  *
@@ -65,7 +66,7 @@ const REACHABLE: EndpointReach = {
 
 export function endpointReach(
   destinations: readonly ReachInput[],
-  options: { mailConfigured: boolean },
+  options: { mailConfigured: boolean; sheetsConfigured: boolean },
 ): EndpointReach {
   const enabled = destinations.filter((destination) => destination.enabled);
 
@@ -79,13 +80,42 @@ export function endpointReach(
     };
   }
 
-  if (!options.mailConfigured && enabled.every((destination) => destination.kind === "email")) {
+  // A kind this deployment has no transport for. Email without a mail key, and
+  // since #67 Google Sheets without an OAuth client — a Sheets destination
+  // connected while the client existed fails every delivery once it is gone.
+  const cannotSend = (kind: DestinationKind) =>
+    (kind === "email" && !options.mailConfigured) ||
+    (kind === "google_sheets" && !options.sheetsConfigured);
+
+  if (enabled.every((destination) => cannotSend(destination.kind))) {
+    const kinds = new Set(enabled.map((destination) => destination.kind));
+
+    if (kinds.size === 1 && kinds.has("email")) {
+      return {
+        state: "unsendable",
+        enabledCount: enabled.length,
+        title: "Nobody will be told about a submission here",
+        detail:
+          "Every destination switched on here sends email, and email delivery is not switched on for this deployment. Submissions still arrive and are still stored — nothing is lost, and anything that arrives can be sent again from the delivery log once mail is on. (Self-hosting? Set RESEND_API_KEY, and MAIL_FROM for the sender address.)",
+      };
+    }
+
+    const missing = [
+      ...(kinds.has("email") ? ["email delivery"] : []),
+      ...(kinds.has("google_sheets") ? ["Google Sheets"] : []),
+    ].join(" and ");
+    const variables = [
+      ...(kinds.has("email") ? ["RESEND_API_KEY"] : []),
+      ...(kinds.has("google_sheets")
+        ? ["GOOGLE_SHEETS_CLIENT_ID and GOOGLE_SHEETS_CLIENT_SECRET"]
+        : []),
+    ].join(", and ");
+
     return {
       state: "unsendable",
       enabledCount: enabled.length,
       title: "Nobody will be told about a submission here",
-      detail:
-        "Every destination switched on here sends email, and email delivery is not switched on for this deployment. Submissions still arrive and are still stored — nothing is lost, and anything that arrives can be sent again from the delivery log once mail is on. (Self-hosting? Set RESEND_API_KEY, and MAIL_FROM for the sender address.)",
+      detail: `Every destination switched on here needs ${missing}, which ${kinds.size === 1 ? "is" : "are"} not switched on for this deployment. Submissions still arrive and are still stored — nothing is lost, and anything that arrives can be sent again from the delivery log once ${kinds.size === 1 ? "it is" : "they are"} on. (Self-hosting? Set ${variables}.)`,
     };
   }
 

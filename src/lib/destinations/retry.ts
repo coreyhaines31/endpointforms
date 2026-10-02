@@ -110,6 +110,7 @@ export function backoffMs(attempt: number, random: () => number = Math.random): 
  */
 const NOT_RETRYABLE: Partial<Record<FailureKind, string>> = {
   auth: "Not retried — an hour would not change the answer.",
+  revoked: "Not retried — nothing will be delivered here until it is reconnected.",
   rejected: "Not retried — the same bytes would be refused again.",
   missing: "Not retried — there is nothing at that URL to retry against.",
   configuration: "Fix its settings, then send it again from this log.",
@@ -211,6 +212,8 @@ export function describeFailure(failure: FailureKind, destinationName: string): 
   switch (failure) {
     case "auth":
       return `${destinationName} rejected our credentials. A token or key has expired or been revoked — replace it, then redeliver.`;
+    case "revoked":
+      return `${destinationName} lost its connection: the account that authorised it has revoked access, or the grant expired. Reconnect it, then send what was missed again from this log.`;
     case "rejected":
       return `${destinationName} refused the payload. It is reachable and authenticated, so this is the shape of the data, not the connection.`;
     case "missing":

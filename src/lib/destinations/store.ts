@@ -19,6 +19,7 @@ import type {
   DestinationHealth,
   DestinationKind,
   DestinationListItem,
+  FailureKind,
   PayloadSource,
   RedactedConfig,
 } from "./types.ts";
@@ -62,9 +63,11 @@ function healthState(
   consecutiveFailures: number,
   lastAttemptAt: Date | null,
   lastSuccessAt: Date | null,
+  disconnected: boolean,
 ): DestinationHealth["state"] {
   if (!enabled) return "paused";
   if (lastAttemptAt === null) return "untested";
+  if (disconnected) return "disconnected";
   if (consecutiveFailures >= FAILING_AT) return "failing";
   if (consecutiveFailures >= DEGRADED_AT) return "degraded";
   // A destination whose only attempts are still `pending` has no failures and no
@@ -122,6 +125,19 @@ const healthColumns = {
     where a.destination_id = ${destinations.id}
       and a.workspace_id = ${destinations.workspaceId}
       and a.status = 'pending'
+  )`,
+  /**
+   * How the most recent *settled* attempt failed, or null if it succeeded.
+   * Pending rows are skipped: an attempt still in flight has not told us
+   * anything yet, and must not hide the revoked grant behind it.
+   */
+  lastSettledFailure: sql<string | null>`(
+    select a.failure from ${deliveryAttempts} a
+    where a.destination_id = ${destinations.id}
+      and a.workspace_id = ${destinations.workspaceId}
+      and a.status <> 'pending'
+    order by a.created_at desc
+    limit 1
   )`,
   /**
    * Deliveries that stopped and never arrived. The dead-letter queue — not a
@@ -620,6 +636,8 @@ export async function settleAttempt(
     responseStatus: number | null;
     responseBody: string | null;
     error: string | null;
+    /** Null on success. What the health query reads; `error` is what a person reads. */
+    failure: FailureKind | null;
     completedAt: Date;
     nextRetryAt: Date | null;
   },
@@ -629,6 +647,7 @@ export async function settleAttempt(
       .update(deliveryAttempts)
       .set({
         status: outcome.status,
+        failure: outcome.status === "failed" ? outcome.failure : null,
         // Re-written on settle because an adapter that refused before opening a
         // socket has no body to report until it has run.
         requestBody: outcome.requestBody,
@@ -944,6 +963,7 @@ export async function reapStaleAttempts(
           .update(deliveryAttempts)
           .set({
             status: "failed",
+            failure: "network",
             completedAt: now,
             nextRetryAt: null,
             error:
@@ -962,6 +982,7 @@ export async function reapStaleAttempts(
         .update(deliveryAttempts)
         .set({
           status: "failed",
+          failure: "network",
           completedAt: now,
           nextRetryAt: retry.nextRetryAt,
           error: `This delivery was started and never finished — the process handling it went away before it could report back. Recorded as a failure rather than left pending, so it cannot sit here looking like nothing happened. ${retry.reason}`,
@@ -994,11 +1015,32 @@ type HealthRow = {
   lastAttemptAt: string | Date | null;
   pendingCount: number;
   deadLetterCount: number;
+  lastSettledFailure: string | null;
 };
+
+/**
+ * Whether the grant behind a destination is gone and nobody has replaced it.
+ *
+ * The last settled attempt failing as `revoked` is the signal, and reconnecting
+ * is what clears it — **not** the next success. Reconnecting writes
+ * `connectedAt` into the config, and a revoked failure older than that is about
+ * the grant that was replaced, not the one in use. Without that comparison the
+ * screen would keep saying "reconnect" to somebody who just did, until a lead
+ * happened to arrive and prove otherwise.
+ */
+function isDisconnected(row: HealthRow, lastFailureAt: Date | null): boolean {
+  if (row.lastSettledFailure !== "revoked") return false;
+  const config = (row.config ?? {}) as Record<string, unknown>;
+  const connectedAt =
+    typeof config.connectedAt === "string" ? toDate(config.connectedAt) : null;
+  if (connectedAt === null || lastFailureAt === null) return true;
+  return lastFailureAt.getTime() > connectedAt.getTime();
+}
 
 function toListItem(row: HealthRow): DestinationListItem {
   const lastAttemptAt = toDate(row.lastAttemptAt);
   const lastSuccessAt = toDate(row.lastSuccessAt);
+  const lastFailureAt = toDate(row.lastFailureAt);
   return {
     id: row.id,
     kind: row.kind,
@@ -1008,10 +1050,16 @@ function toListItem(row: HealthRow): DestinationListItem {
     config: redactConfig(row.kind, row.config),
     defaultNotification: row.defaultNotification,
     health: {
-      state: healthState(row.enabled, row.consecutiveFailures, lastAttemptAt, lastSuccessAt),
+      state: healthState(
+        row.enabled,
+        row.consecutiveFailures,
+        lastAttemptAt,
+        lastSuccessAt,
+        isDisconnected(row, lastFailureAt),
+      ),
       consecutiveFailures: row.consecutiveFailures,
       lastSuccessAt,
-      lastFailureAt: toDate(row.lastFailureAt),
+      lastFailureAt,
       lastAttemptAt,
       pendingCount: row.pendingCount,
       deadLetterCount: row.deadLetterCount,

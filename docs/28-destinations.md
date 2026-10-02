@@ -15,11 +15,11 @@ and says so when it doesn't"* (`docs/00-positioning-spine.md`).
 | `webhook` | **Works.** Signed JSON POST to any https URL. |
 | `email` | **Works**, when a mail transport is configured. See "Email" below. |
 | `slack` | **Works.** Incoming webhook, Block Kit message. |
-| `google_sheets` | Not available. Needs OAuth and token refresh. |
+| `google_sheets` | **Works**, when an OAuth client is configured. One row per submission, matched to the header. See "Google Sheets" below. |
 | `hubspot` | Not available. Needs property mapping first. |
 | `salesforce` | Not available. Send a webhook — Flow can receive one. |
 
-The three unbuilt kinds appear in the UI **labelled as unavailable** rather than being hidden
+The two unbuilt kinds appear in the UI **labelled as unavailable** rather than being hidden
 or, much worse, offered as a working option that would accept a lead and drop it. That failure
 mode is the enemy in the positioning spine wearing our own logo.
 
@@ -196,6 +196,7 @@ one alert into five and delays the moment you find out your token expired.
 | Classification | Retried? | Cause |
 |---|---|---|
 | `auth` | no | 401, 403 |
+| `revoked` | no | an OAuth grant Google no longer accepts (`invalid_grant`). Drives `disconnected`. |
 | `rejected` | no | 400, 422 — reachable, authenticated, refused the payload |
 | `missing` | no | 404, 410 |
 | `configuration` | no | the destination's own settings, or a blocked URL |
@@ -359,7 +360,7 @@ the first submission rather than leaving it to be discovered in a delivery log.
 |---|---|
 | `reachable` | At least one enabled destination this deployment can deliver to. Says nothing. |
 | `deaf` | Nothing enabled at all. Submissions are stored and nobody hears. |
-| `unsendable` | Something is enabled, but every enabled destination is email and there is no mail transport. |
+| `unsendable` | Something is enabled, but every enabled destination needs a transport this deployment lacks: email with no mail key, or Google Sheets with no OAuth client. |
 
 `unsendable` is separated from `deaf` because the consequence is identical and the fix is not:
 flattening them would send somebody to add a destination they already have.
@@ -380,6 +381,104 @@ customer creates it in a minute. The trade is that **the URL is the credential**
 masked in the UI, never rendered back into the edit form, never written into the delivery log,
 and constrained to `hooks.slack.com` at save time.
 
+## Google Sheets (#67)
+
+One row per submission, appended to a tab of a spreadsheet the customer already uses. It exists
+because the sheet is what the base-tier customer is leaving, and the colleague who reads it is
+usually happy with it — "keep your sheet, we will keep it filled" makes moving to us an addition
+rather than a migration.
+
+### Connecting
+
+The customer pastes the spreadsheet's browser URL (and optionally a tab name; empty means the
+first tab), presses **Continue to Google**, and approves access on Google's own consent screen.
+The callback (`/api/v1/integrations/google-sheets/callback`) then, in order:
+
+1. checks the pending-connection cookie is ours, unexpired, and carries the nonce Google handed
+   back in `state` — a callback completed in somebody else's browser creates nothing;
+2. re-checks the person is still a member of the workspace;
+3. exchanges the code, and refuses a grant without the Sheets scope or without a refresh token;
+4. opens the spreadsheet with the new token and resolves the tab, so a link to a sheet the account
+   cannot see is said on screen rather than in a delivery log.
+
+Only then is the destination written. That check proves the account can **open** the sheet, not
+that it can **write** to it — a view-only collaborator passes. "Send a test delivery" is what
+proves a row can be written (it adds one obviously fake row), and a view-only grant fails its first
+delivery as `auth` with a sentence saying so.
+
+**OAuth client, not a service account.** A service account has no token to expire, but it asks the
+base-tier customer to share a document with a robot's email address — invisible from our side
+until the first delivery fails. OAuth asks once, on Google's screen. The scope is `spreadsheets`
+(edit every sheet the account can edit); the narrower `drive.file` only reaches files picked
+through Google's Picker, which would need a browser API key and a client-side script we do not
+otherwise load. Both choices are isolated in `src/lib/destinations/google.ts`.
+
+### Columns
+
+The tab's first row is the header. Each delivery reads it and writes the row **by column name**
+(trimmed, case-insensitive), in whatever order the header is in today:
+
+- **Reordering columns corrupts nothing.** The order is read at delivery time, never remembered.
+- **A field with no column gets one**, added at the right of the header before the row is written.
+  An empty tab gets the whole header on the first delivery.
+- **Columns we do not write stay empty** on our rows — a colleague's "Called back?" column is left
+  alone.
+- **Renaming a header** is the one thing that changes the mapping: the next delivery finds no
+  column with the old name and adds one. We cannot know two names mean the same thing, and a new
+  visible column is better than values silently landing somewhere.
+
+Ours are `Submitted at`, `Origin` (`Human` · `Agent` · `Unverified`) and `Submission ID`, then the
+form's fields, then `utm_*` columns once one of them has a value. A form field whose name matches
+one of ours is written to `<name> (field)` instead — on an open endpoint the submitter chooses
+field names, and `Origin=Human` must not overwrite the stamp. An uploaded file is written as its
+filename and its link; **the link expires** (see #66 above), the filename does not.
+
+**Values are written `RAW`.** `USER_ENTERED` would parse a submitted `=IMPORTXML(…)` as a formula
+running with the sheet owner's access, which is a known way to exfiltrate a spreadsheet. The cost
+is that `Submitted at` arrives as ISO-8601 text — it sorts correctly and formats in one click.
+
+**Retries do not duplicate rows.** From attempt 2 on, the `Submission ID` column is read first and
+the row is not appended again if it is already there.
+
+### What is stored, and what happens when it stops working
+
+The refresh token lives in `destinations.config` beside every other destination secret and under
+the same rule: never returned by `redactConfig`, never in the delivery log (the log shows
+`authorization: [redacted]`, the spreadsheet id and the tab). The access token is minted at the
+start of each delivery and thrown away — one extra request per lead, in exchange for an adapter
+that never writes back to the database.
+
+**A refresh token can die for reasons nobody on our side chose**: the customer revokes access in
+their Google account, changes their password, or the OAuth client is still in Google's *Testing*
+publishing status, where **every refresh token expires after seven days**. Google answers all of
+these with `400 invalid_grant`, and that one answer is classified `revoked`:
+
+- the attempt fails and is **not retried** — an hour will not bring the grant back;
+- the destination's health goes straight to **`disconnected`** (red, in the delivery banner), not
+  through `degraded` — one revoked grant already means nothing will be delivered until a person
+  acts;
+- the destination page puts **Reconnect Google** at the top. Reconnecting goes through the same
+  consent screen, updates the destination in place (its log and history survive) and writes a new
+  `connectedAt`; a `revoked` failure older than that no longer counts, so the state clears the
+  moment the grant is replaced rather than when the next lead happens to arrive;
+- every submission is still stored, and the ones that missed it are in the log for "Send again".
+
+Other failures, in the words of whoever fixes them: a renamed tab is `configuration` (rename it
+back, or change the tab in settings); a sheet that was unshared or made read-only is `auth`; a
+deleted spreadsheet is `missing`; the Sheets API switched off in the deployment's Cloud project is
+`configuration` and says it is not the customer's doing; 429 and 5xx retry as usual.
+
+### Self-hosting
+
+Create an OAuth client (type *Web application*) in a Google Cloud project, enable the **Google
+Sheets API** in that project, and register
+`https://<your host>/api/v1/integrations/google-sheets/callback` as an authorised redirect URI.
+Publish the consent screen to *In production* — in *Testing*, connections stop working after
+seven days (they show as `disconnected`, as above). The `spreadsheets` scope is a sensitive scope,
+so a production consent screen used by people outside your organisation needs Google's
+verification. Without a client the option is listed as not switched on, and an existing Sheets
+destination fails as `configuration` and makes its endpoint `unsendable`.
+
 ## Environment
 
 | Variable | What it does |
@@ -387,6 +486,8 @@ and constrained to `hooks.slack.com` at save time.
 | `CRON_SECRET` | Bearer token for the sweep endpoint — and for the file retention sweep at `/api/v1/files/sweep` (#66), which reuses this check rather than inventing a second one. **Unset means both sweeps refuse everything.** Vercel Cron sets and sends this automatically. |
 | `RESEND_API_KEY` | Mail transport for the email destination. Unset means an email destination fails with a `configuration` error naming this variable — it does not queue and does not report success — and an endpoint whose only destinations are email is reported `unsendable` before anything is submitted. |
 | `MAIL_FROM` | Sender address for notifications. Defaults to `Endpoint Forms <notifications@endpointforms.com>`. |
+| `GOOGLE_SHEETS_CLIENT_ID` / `GOOGLE_SHEETS_CLIENT_SECRET` | The OAuth client for the Google Sheets destination (#67). Deliberately not `AUTH_GOOGLE_ID`: adding the sensitive Sheets scope to the sign-in client would put Google sign-in behind the same verification review. Unset means Sheets is listed as not switched on, and an existing Sheets destination fails as `configuration`. |
+| `GOOGLE_SHEETS_REDIRECT_URI` | Optional. Overrides the callback URL, which is otherwise derived from the request's host — for a deployment behind a proxy that rewrites it. |
 | `ALLOW_INSECURE_DESTINATIONS=1` | Permits `http://` destinations. For a self-hoster delivering inside their own network. Off everywhere else. |
 | `ALLOW_PRIVATE_DESTINATIONS=1` | Permits loopback and private addresses. **Set only by the test suite.** Never in a deployment. |
 | `UPLOAD_LINK_SECRET` | Signs the file links in a payload, falling back to `AUTH_SECRET`. With neither, a production instance refuses uploads outright rather than delivering a link nobody can use. `docs/24` §3.6a. |
@@ -402,6 +503,7 @@ failure time, and a dead-letter count.
 | `healthy` | The last delivery succeeded. |
 | `degraded` | 1–2 failures since the last success. |
 | `failing` | 3 or more. Said in red, with a banner. |
+| `disconnected` | The last settled attempt failed as `revoked` and nothing has been reconnected since. Red at once, with a banner. |
 | `paused` | Turned off deliberately. Submissions still arrive and are still stored. |
 
 `untested` is its own state on purpose. A green tick that is green because nothing has been
