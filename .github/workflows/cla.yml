@@ -1,0 +1,64 @@
+# Asks every outside contributor to sign CLA.md before their pull request can merge.
+#
+# Why this exists: Endpoint Forms is AGPL-3.0 and intends to also sell a commercial
+# licence. That is only possible for code the maintainer can relicense. One merged
+# contribution without a CLA would permanently block dual-licensing that code.
+# See docs/30-licensing.md.
+#
+# CLA Assistant Lite stores signatures as a JSON file in this repository — no
+# third-party service, no account, only GITHUB_TOKEN.
+#
+# pull_request_target runs with write access in the context of the base repo, so it
+# must never check out or run code from the pull request. This workflow does neither:
+# the action only reads PR metadata through the API and writes the signature file.
+#
+# Setup the maintainer does once (repo state, deliberately not done in code):
+#   1. Create the `cla-signatures` branch. The action commits signatures there and
+#      cannot create the branch itself. It is kept off main and development so the
+#      bot never commits to a branch people work from.
+#   2. Add the "CLAAssistant" check as required on `development` and `main`, or it
+#      reports but does not block a merge.
+name: CLA
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+# Two people signing at once would race on the same signatures file.
+concurrency:
+  group: cla-signatures
+  cancel-in-progress: false
+
+jobs:
+  CLAAssistant:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+        (github.event.comment.body == 'recheck' ||
+         github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'))
+    steps:
+      - name: CLA Assistant Lite
+        # v2.6.1, pinned by commit SHA so a moved tag cannot change what runs with write access.
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: https://github.com/coreyhaines31/endpointforms/blob/main/CLA.md
+          # Bump the directory when CLA.md changes materially, so people re-sign the new text.
+          path-to-signatures: signatures/version1/cla.json
+          branch: cla-signatures
+          # The maintainer owns the copyright already and does not sign. Bots cannot sign.
+          # A pattern with * is an unanchored regex, so *[bot] matches every GitHub App
+          # account; logins cannot contain brackets, so no person can match it.
+          allowlist: coreyhaines31,*[bot]
+          create-file-commit-message: Create the CLA signatures file
+          signed-commit-message: $contributorName signed the CLA in $owner/$repo#$pullRequestNo
