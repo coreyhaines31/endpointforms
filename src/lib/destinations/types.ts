@@ -118,6 +118,17 @@ export type PayloadSource = {
 export type FailureKind =
   /** 401/403. Credentials are wrong, expired, or were revoked. */
   | "auth"
+  /**
+   * An OAuth grant that is gone — revoked by the person who gave it, expired
+   * under the provider's own rules, or invalidated by a password change (#67).
+   *
+   * Separate from `auth` because the fix is different and so is what the screen
+   * must say. A 401 from a webhook receiver is somebody's key to retype; a dead
+   * refresh token is a button that sends a person back through Google's consent
+   * screen, and it is the first failure in this product that no amount of
+   * editing a settings form can fix. It drives the `disconnected` health state.
+   */
+  | "revoked"
   /** 400/422. The target understood us and rejected the shape of the payload. */
   | "rejected"
   /** 404/410. The URL is gone. */
@@ -225,9 +236,15 @@ export type RedactedConfig = {
  * `untested` is a first-class state, not a synonym for healthy. A destination
  * nobody has ever delivered to is unproven, and saying it is fine would be the
  * dashboard `docs/00-positioning-spine.md` names as the enemy.
+ *
+ * `disconnected` is the state for a grant that is gone (#67): the most recent
+ * attempt failed as `revoked`, and nobody has reconnected since. It skips the
+ * degraded step entirely — one revoked token is already a destination that
+ * will deliver nothing until a person acts, and easing into red over three
+ * leads would spend two of them finding that out.
  */
 export type DestinationHealth = {
-  state: "untested" | "healthy" | "degraded" | "failing" | "paused";
+  state: "untested" | "healthy" | "degraded" | "failing" | "disconnected" | "paused";
   consecutiveFailures: number;
   lastSuccessAt: Date | null;
   lastFailureAt: Date | null;

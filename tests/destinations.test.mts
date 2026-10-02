@@ -312,7 +312,7 @@ console.log("\nretries");
 {
   // Failures that will still be failures in an hour are not retried. Retrying a
   // 401 four times turns one alert into five and delays the one that matters.
-  for (const failure of ["auth", "rejected", "missing", "configuration"] as const) {
+  for (const failure of ["auth", "revoked", "rejected", "missing", "configuration"] as const) {
     const decision = decideRetry({ attempt: 1, failure, now: NOW });
     ok(`does not retry ${failure}`, !decision.willRetry && decision.nextRetryAt === null);
     ok(`says why it did not retry ${failure}`, decision.reason.trim().length > 10, decision.reason);

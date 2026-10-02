@@ -79,7 +79,9 @@ export default async function DestinationsPage({
       {rows.length > 0 ? (
         <div className="mt-8">
           <DeliveryAlert
-            failing={rows.filter((row) => row.health.state === "failing")}
+            failing={rows.filter(
+              (row) => row.health.state === "failing" || row.health.state === "disconnected",
+            )}
             degraded={rows.filter((row) => row.health.state === "degraded")}
             href={`${base}/destinations`}
           />

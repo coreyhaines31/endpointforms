@@ -230,6 +230,7 @@ async function main() {
     await deliveryWritesRows(fixture, receiver);
     await retriesAppend(fixture, receiver);
     await health(fixture, receiver);
+    await disconnectedHealth(fixture, receiver);
     await crud(fixture);
     await testDelivery(fixture, receiver);
     await pendingRowsAndTheSweep(fixture, receiver);
@@ -758,6 +759,80 @@ async function health(fixture: Fixture, receiver: Receiver) {
   const skipped = await deliverSubmission(fixture.workspaceId, ack.id, { timeoutMs: 3_000 });
   t("a paused destination receives nothing", skipped.delivered + skipped.failed, 0);
   t("and no request was made", receiver.received.length, 0);
+
+  await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
+  await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * A grant that is gone reads as `disconnected`, at once, and reconnecting
+ * clears it (#67).
+ *
+ * Driven with a webhook and the failure kind rewritten on the row, because the
+ * rule under test belongs to the health query rather than to any adapter: the
+ * last settled attempt failed as `revoked`, and nothing has been reconnected
+ * since. The Google Sheets path that produces a real `revoked` row is covered
+ * end to end in `googleSheets` below.
+ */
+async function disconnectedHealth(fixture: Fixture, receiver: Receiver) {
+  console.log("\ndisconnected (#67)");
+
+  const created = await createDestination(fixture.workspaceId, fixture.endpointPublicId, {
+    kind: "webhook",
+    name: "Revoked grant",
+    config: { url: `${receiver.url}/revoked`, secret: SECRET },
+  });
+  if (!created) return;
+
+  receiver.reply.status = 500;
+  receiver.reply.body = "down";
+  await submit(fixture.endpointPublicId, { email: "revoked@test.example" });
+  await drainDispatch();
+  receiver.reply.status = 200;
+  receiver.reply.body = '{"ok":true}';
+
+  const read = async () =>
+    (await getDestination(fixture.workspaceId, fixture.endpointPublicId, created.id))?.health;
+
+  // The control: the same single failure, classified as an ordinary 5xx, is
+  // degraded. Without it, "disconnected" below could be the state every
+  // failure now gets.
+  t("an ordinary failure is degraded", (await read())?.state, "degraded");
+
+  await unsafeDb
+    .update(deliveryAttempts)
+    .set({ failure: "revoked" })
+    .where(eq(deliveryAttempts.destinationId, created.id));
+  t("one revoked failure is disconnected straight away", (await read())?.state, "disconnected");
+
+  // An attempt still in flight has said nothing yet, and must not hide the
+  // revoked one behind it.
+  const [attempt] = await attemptsFor(created.id);
+  await unsafeDb.insert(deliveryAttempts).values({
+    id: newId(),
+    workspaceId: fixture.workspaceId,
+    destinationId: created.id,
+    submissionId: attempt.submissionId,
+    attempt: 2,
+    status: "pending",
+    startedAt: new Date(),
+  });
+  t("a pending attempt after it does not hide it", (await read())?.state, "disconnected");
+
+  // Reconnecting writes `connectedAt`. The revoked failure is older than the
+  // new grant, so it is about the grant that was replaced.
+  await updateDestination(fixture.workspaceId, created.id, {
+    config: {
+      url: `${receiver.url}/revoked`,
+      secret: SECRET,
+      connectedAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+  });
+  const after = await read();
+  t("reconnecting clears it", after?.state, "degraded");
+  t("without pretending the failure did not happen", after?.consecutiveFailures, 1);
 
   await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
   await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));

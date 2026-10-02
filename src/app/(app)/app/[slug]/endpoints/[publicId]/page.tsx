@@ -263,7 +263,9 @@ export default async function EndpointDetailPage({
           problem to visit. */}
       <div className="mt-6 grid gap-6">
         <DeliveryAlert
-          failing={destinationRows.filter((row) => row.health.state === "failing")}
+          failing={destinationRows.filter(
+            (row) => row.health.state === "failing" || row.health.state === "disconnected",
+          )}
           degraded={destinationRows.filter((row) => row.health.state === "degraded")}
           href={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/destinations`}
         />
