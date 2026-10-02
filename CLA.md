@@ -138,5 +138,5 @@ assignee.
 
 ## 10. Governing law
 
-This Agreement is governed by the laws of the State of **[TO BE CONFIRMED]**, United States of
-America, without regard to its conflict-of-laws rules.
+This Agreement is governed by the laws of the State of California, United States of America,
+without regard to its conflict-of-laws rules.
