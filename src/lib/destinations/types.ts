@@ -223,6 +223,13 @@ export type RedactedConfig = {
   headerNames: string[];
   /** True when this kind holds a signing secret at all. Drives the rotate button. */
   hasSecret: boolean;
+  /**
+   * Which spreadsheet a Google Sheets destination writes to (#67), for the edit
+   * form and the reconnect button. Null for every other kind. The refresh
+   * token is deliberately not in here — there is no shape of this type that
+   * can carry it.
+   */
+  sheet: { spreadsheetId: string; sheetName: string; account: string | null } | null;
 };
 
 /**
