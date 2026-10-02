@@ -11,6 +11,7 @@ import { DeliveryAlert, HealthChip, HealthLine } from "@/components/app/destinat
 import { ReachAlert } from "@/components/app/reach-alert";
 import { DataTable, Td, Th } from "@/components/app/table";
 import { ADAPTER_OPTIONS } from "@/lib/destinations/adapters/index";
+import { isGoogleSheetsConfigured } from "@/lib/destinations/google";
 import { isMailConfigured } from "@/lib/destinations/mail";
 import { DEFAULT_NOTIFICATION_BLURB } from "@/lib/destinations/notify";
 import { endpointReach } from "@/lib/destinations/reach";
@@ -47,7 +48,10 @@ export default async function DestinationsPage({
 
   // #65, on the screen someone lands on to fix it. The mail flag is a
   // deployment fact, so it is read here rather than in the component.
-  const reach = endpointReach(rows, { mailConfigured: isMailConfigured() });
+  const reach = endpointReach(rows, {
+    mailConfigured: isMailConfigured(),
+    sheetsConfigured: isGoogleSheetsConfigured(),
+  });
   const hasDefaultNotification = rows.some((row) => row.defaultNotification);
 
   return (
