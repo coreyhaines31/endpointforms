@@ -249,7 +249,12 @@ Repository state the workflow cannot create for itself, deliberately not done in
 1. ~~Create a `cla-signatures` branch.~~ Done 2026-10-01. The action commits signatures there
    and cannot create the branch; it is kept off `main` and `development` so the bot never
    commits to a branch people work from.
-2. Mark the `CLAAssistant` check as **required** on `development` and `main`. Until then it
-   reports on pull requests but does not block a merge.
-3. `CLA.md`'s link in the workflow points at `main`, so the bot's link resolves once this
-   reaches a release.
+2. ~~Mark the `CLAAssistant` check as required.~~ Done 2026-10-01: the "Require signed CLA"
+   ruleset requires it on `main` and `development`. Repository admins can bypass it, so a
+   broken bot cannot lock the maintainer out.
+3. ~~Release to `main`.~~ Done 2026-10-01 (#102). The workflow only runs from `main`:
+   `pull_request_target` and `issue_comment` always use the default branch's copy, so a change
+   to `cla.yml` takes effect only once it is released.
+
+The action's first run creates the signatures file and then fails unconditionally, even with
+nobody to sign; every run after that is normal. That first run happened on 2026-10-01.
