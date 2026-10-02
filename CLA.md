@@ -17,7 +17,7 @@
     by signing in a pull request comment, recorded by CLA Assistant Lite.
 
   NOT LEGAL ADVICE. This has not been reviewed by a lawyer. See docs/30-licensing.md
-  for the open questions, including the governing-law state in §10.
+  for the open questions.
 -->
 
 # Endpoint Forms Individual Contributor License Agreement
