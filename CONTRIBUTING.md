@@ -6,7 +6,8 @@ commercial offering.
 ## Right now
 
 **Outside pull requests are not being merged yet.** The foundations are still moving too fast
-for a PR to be a good use of your time — you would rebase more than you would build.
+for a PR to be a good use of your time — you would rebase more than you would build. When they
+are, every pull request will need a signed CLA — see [Licence and the CLA](#licence-and-the-cla).
 
 What is genuinely useful today:
 
@@ -60,6 +61,11 @@ Not part of `verify`, because it needs a key: agent steps call a model through V
 Gateway. With the project linked (`vercel link`) the gateway uses the project's OIDC token and
 no key is needed. The runner starts its own `next dev` on a free port, so a dev server you
 already have running is fine. Tests live in `tests/*.e2e.ts`; config in `e2e.config.ts`.
+
+The core-flow test signs up and creates real rows, so it needs the local database
+(`npm run db:up && npm run db:migrate`). The dev server is pinned to it — a `DATABASE_URL` in
+`.env.local` is ignored for the run, so it can never reach a hosted database. Set
+`E2E_DATABASE_URL` to point it at a different local one.
 
 | Variable | Purpose |
 | - | - |
@@ -137,7 +143,36 @@ stamp can be forged with one `curl` command carrying copied browser headers. Tha
 [`docs/27-provenance.md`](docs/27-provenance.md), asserted in the test suite on purpose, and
 never claimed otherwise. Origin is a provenance record, not a security control.
 
-## Licence
+## Licence and the CLA
 
-By contributing you agree your contributions are licensed under the AGPL-3.0, the same as the
-rest of the project.
+Endpoint Forms is AGPL-3.0, and the plan is to also offer it under a commercial licence for
+companies that cannot meet the AGPL's terms. That only works for code the maintainer can
+relicense, so **every pull request needs a signed [Contributor License Agreement](CLA.md)
+before it can merge.**
+
+Signing takes one comment. When you open your first pull request, a bot will comment asking you
+to sign. Read [`CLA.md`](CLA.md), then reply on the pull request with exactly:
+
+```
+I have read the CLA Document and I hereby sign the CLA
+```
+
+The bot records your GitHub username, the pull request, and the time in this repository, and
+the check turns green. You sign once; later pull requests pass automatically. If the check does
+not update, comment `recheck`.
+
+What you are agreeing to, in plain terms — the [document](CLA.md) is what binds:
+
+- **You keep your copyright.** You grant a licence; you do not assign ownership.
+- **The maintainer may license your contribution under other terms**, including a commercial
+  licence. This is the reason the CLA exists.
+- **Your contribution stays open source.** The CLA commits the maintainer to keeping every
+  contribution available under the AGPL-3.0 or another OSI-approved licence.
+- **You confirm it is yours to give**, including that your employer is fine with it.
+
+It is adapted from the Apache Individual Contributor License Agreement, which most people who
+have contributed to open source have seen before.
+
+Every commit author on the pull request has to have signed, not only the person who opened it.
+The check reads commit authors; it does not read `Co-authored-by:` trailers, so a co-author who
+did not author a commit is not asked — if that applies to you, say so on the pull request.
