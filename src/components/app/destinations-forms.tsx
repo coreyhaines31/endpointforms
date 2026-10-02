@@ -5,6 +5,7 @@ import { useActionState, useId, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
+  connectGoogleSheetsAction,
   createDestinationAction,
   deleteDestinationAction,
   redeliverAction,
@@ -347,7 +348,143 @@ function KindFields({
     );
   }
 
+  // Only the tab is editable here. The spreadsheet and the account change by
+  // reconnecting, because only Google's consent screen can prove the new pair
+  // is one this person may write to.
+  if (kind === "google_sheets" && editing) {
+    return (
+      <Field
+        label="Tab"
+        name="sheetName"
+        type="text"
+        defaultValue={config?.sheet?.sheetName ?? ""}
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        hint="The tab rows are added to. To use a different spreadsheet or Google account, reconnect it instead."
+      />
+    );
+  }
+
   return null;
+}
+
+/**
+ * The Google Sheets fields, for adding one or reconnecting one (#67).
+ *
+ * No credential is typed here — the button sends the person to Google, and the
+ * destination is written when they come back. The spreadsheet is asked for
+ * first so the callback can open it with the new token and say so on this
+ * screen if it cannot, rather than in a delivery log after the first lead.
+ */
+function GoogleSheetsFields({ reconnecting }: { reconnecting: boolean }) {
+  return (
+    <>
+      <Field
+        label="Spreadsheet link"
+        name="spreadsheet"
+        type="url"
+        inputMode="url"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        placeholder="https://docs.google.com/spreadsheets/d/…"
+        required={!reconnecting}
+        hint={
+          reconnecting
+            ? "Leave empty to keep the spreadsheet it writes to now."
+            : "Paste the address from your browser while the spreadsheet is open."
+        }
+      />
+      <Field
+        label="Tab"
+        name="sheetName"
+        type="text"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        placeholder={reconnecting ? "Leave empty to keep the current tab" : "Leave empty for the first tab"}
+        hint="Each submission becomes a row under this tab’s header row, matched to your columns by name. Reorder them freely; a field with no column gets one added at the end."
+      />
+    </>
+  );
+}
+
+function ConnectGoogleSheetsForm({
+  slug,
+  endpointPublicId,
+}: {
+  slug: string;
+  endpointPublicId: string;
+}) {
+  const [state, action] = useActionState(connectGoogleSheetsAction, idleDestinationState);
+
+  return (
+    <form action={action} noValidate>
+      <input type="hidden" name="slug" value={slug} />
+      <input type="hidden" name="endpointPublicId" value={endpointPublicId} />
+
+      <div className="grid gap-5">
+        <Field
+          label="Name"
+          name="name"
+          placeholder="Leads sheet"
+          required
+          hint="Yours alone. It is what the delivery log and the health banner call this."
+        />
+        <GoogleSheetsFields reconnecting={false} />
+      </div>
+
+      <p className="mt-5 max-w-[62ch] text-sm text-muted-foreground">
+        Google will ask you to let Endpoint Forms edit your spreadsheets. The permission
+        is kept on our side and never shown again; revoke it from your Google account
+        at any time, and this destination says so the next time it tries.
+      </p>
+      <div className="mt-6">
+        <SubmitButton pendingLabel="Opening Google…">Continue to Google</SubmitButton>
+      </div>
+      <FormMessage state={state} />
+    </form>
+  );
+}
+
+/**
+ * Reconnecting — the one fix for a `disconnected` destination.
+ *
+ * Updates the destination in place, so its delivery log, its health history and
+ * its id all survive. Deleting and re-adding would work too, and would throw
+ * away the record of exactly which leads missed it.
+ */
+export function ReconnectGoogleSheetsForm({
+  slug,
+  endpointPublicId,
+  destinationId,
+  urgent,
+}: {
+  slug: string;
+  endpointPublicId: string;
+  destinationId: string;
+  urgent: boolean;
+}) {
+  const [state, action] = useActionState(connectGoogleSheetsAction, idleDestinationState);
+
+  return (
+    <form action={action} noValidate>
+      <input type="hidden" name="slug" value={slug} />
+      <input type="hidden" name="endpointPublicId" value={endpointPublicId} />
+      <input type="hidden" name="destinationId" value={destinationId} />
+
+      <div className="grid gap-5">
+        <GoogleSheetsFields reconnecting />
+      </div>
+      <div className="mt-6">
+        <SubmitButton pendingLabel="Opening Google…" variant={urgent ? undefined : "quiet"}>
+          Reconnect Google
+        </SubmitButton>
+      </div>
+      <FormMessage state={state} />
+    </form>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -363,31 +500,55 @@ export function AddDestinationForm({
   endpointPublicId: string;
   options: AdapterOption[];
 }) {
-  const [state, action] = useActionState(createDestinationAction, idleDestinationState);
   const available = options.filter((option) => option.available);
   const [kind, setKind] = useState<DestinationKind>(available[0]?.kind ?? "webhook");
   const selected = options.find((option) => option.kind === kind);
+
+  // The kind picker sits outside both forms: Google Sheets is not saved by this
+  // form at all but by a round trip through Google, so it gets its own form
+  // and its own action rather than a branch inside `createDestinationAction`.
+  return (
+    <div className="grid gap-5">
+      <Select
+        label="Where to"
+        value={kind}
+        onChange={(event) => setKind(event.target.value as DestinationKind)}
+        hint={selected?.blurb}
+      >
+        {available.map((option) => (
+          <option key={option.kind} value={option.kind}>
+            {option.label}
+          </option>
+        ))}
+      </Select>
+
+      {kind === "google_sheets" ? (
+        <ConnectGoogleSheetsForm slug={slug} endpointPublicId={endpointPublicId} />
+      ) : (
+        <CreateDestinationForm slug={slug} endpointPublicId={endpointPublicId} kind={kind} />
+      )}
+    </div>
+  );
+}
+
+function CreateDestinationForm({
+  slug,
+  endpointPublicId,
+  kind,
+}: {
+  slug: string;
+  endpointPublicId: string;
+  kind: DestinationKind;
+}) {
+  const [state, action] = useActionState(createDestinationAction, idleDestinationState);
 
   return (
     <form action={action} noValidate>
       <input type="hidden" name="slug" value={slug} />
       <input type="hidden" name="endpointPublicId" value={endpointPublicId} />
+      <input type="hidden" name="kind" value={kind} />
 
       <div className="grid gap-5">
-        <Select
-          label="Where to"
-          name="kind"
-          value={kind}
-          onChange={(event) => setKind(event.target.value as DestinationKind)}
-          hint={selected?.blurb}
-        >
-          {available.map((option) => (
-            <option key={option.kind} value={option.kind}>
-              {option.label}
-            </option>
-          ))}
-        </Select>
-
         <Field
           label="Name"
           name="name"

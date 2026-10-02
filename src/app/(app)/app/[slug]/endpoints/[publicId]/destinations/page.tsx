@@ -8,6 +8,7 @@ import {
   UnavailableKinds,
 } from "@/components/app/destinations-forms";
 import { DeliveryAlert, HealthChip, HealthLine } from "@/components/app/destinations-health";
+import { GoogleConnectNotice } from "@/components/app/google-connect-notice";
 import { ReachAlert } from "@/components/app/reach-alert";
 import { DataTable, Td, Th } from "@/components/app/table";
 import { ADAPTER_OPTIONS } from "@/lib/destinations/adapters/index";
@@ -34,10 +35,13 @@ import { requireWorkspace } from "@/lib/workspaces/server";
  */
 export default async function DestinationsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string; publicId: string }>;
+  searchParams: Promise<{ google?: string | string[] }>;
 }) {
   const { slug, publicId } = await params;
+  const { google } = await searchParams;
   const { workspace } = await requireWorkspace(slug);
 
   const endpoint = await getEndpointByPublicId(workspace.id, publicId);
@@ -53,6 +57,20 @@ export default async function DestinationsPage({
     sheetsConfigured: isGoogleSheetsConfigured(),
   });
   const hasDefaultNotification = rows.some((row) => row.defaultNotification);
+
+  // Built, but not on this deployment: without an OAuth client the option
+  // would send somebody to Google and fail there. It moves to the "not yet"
+  // list with the reason instead (#67).
+  const options = ADAPTER_OPTIONS.map((option) =>
+    option.kind === "google_sheets" && !isGoogleSheetsConfigured()
+      ? {
+          ...option,
+          available: false,
+          blurb:
+            "Not switched on for this deployment. (Self-hosting? Set GOOGLE_SHEETS_CLIENT_ID and GOOGLE_SHEETS_CLIENT_SECRET.)",
+        }
+      : option,
+  );
 
   return (
     <Container className="max-w-[60rem] pt-10">
@@ -77,6 +95,8 @@ export default async function DestinationsPage({
         a destination that breaks costs you a delivery and never a lead. When one
         stops working, this page says so.
       </p>
+
+      <GoogleConnectNotice className="mt-8" result={google} />
 
       <ReachAlert className="mt-8" reach={reach} href={`${base}/destinations`} />
 
@@ -198,15 +218,15 @@ export default async function DestinationsPage({
       <Panel className="mt-6">
         <PanelHeader
           title="Add a destination"
-          description="Webhook, email and Slack work today. The rest are named below so you know what is coming rather than finding out by trying one."
+          description="Everything in the menu works today. The rest are named below so you know what is coming rather than finding out by trying one."
         />
         <PanelBody>
           <AddDestinationForm
             slug={workspace.slug}
             endpointPublicId={endpoint.publicId}
-            options={[...ADAPTER_OPTIONS]}
+            options={options}
           />
-          <UnavailableKinds options={[...ADAPTER_OPTIONS]} />
+          <UnavailableKinds options={options} />
         </PanelBody>
       </Panel>
     </Container>
