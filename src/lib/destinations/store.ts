@@ -19,6 +19,7 @@ import type {
   DestinationHealth,
   DestinationKind,
   DestinationListItem,
+  FailureKind,
   PayloadSource,
   RedactedConfig,
 } from "./types.ts";
@@ -620,6 +621,8 @@ export async function settleAttempt(
     responseStatus: number | null;
     responseBody: string | null;
     error: string | null;
+    /** Null on success. What the health query reads; `error` is what a person reads. */
+    failure: FailureKind | null;
     completedAt: Date;
     nextRetryAt: Date | null;
   },
@@ -629,6 +632,7 @@ export async function settleAttempt(
       .update(deliveryAttempts)
       .set({
         status: outcome.status,
+        failure: outcome.status === "failed" ? outcome.failure : null,
         // Re-written on settle because an adapter that refused before opening a
         // socket has no body to report until it has run.
         requestBody: outcome.requestBody,
@@ -944,6 +948,7 @@ export async function reapStaleAttempts(
           .update(deliveryAttempts)
           .set({
             status: "failed",
+            failure: "network",
             completedAt: now,
             nextRetryAt: null,
             error:
@@ -962,6 +967,7 @@ export async function reapStaleAttempts(
         .update(deliveryAttempts)
         .set({
           status: "failed",
+          failure: "network",
           completedAt: now,
           nextRetryAt: retry.nextRetryAt,
           error: `This delivery was started and never finished — the process handling it went away before it could report back. Recorded as a failure rather than left pending, so it cannot sit here looking like nothing happened. ${retry.reason}`,

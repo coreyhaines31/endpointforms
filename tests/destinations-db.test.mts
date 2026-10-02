@@ -597,6 +597,11 @@ async function retriesAppend(fixture: Fixture, receiver: Receiver) {
   ok("a retry is scheduled", log[0].nextRetryAt !== null);
   ok("and the log says when", /Retrying in/.test(log[0].error ?? ""), log[0].error);
   ok("and keeps the target's own response", log[0].responseBody === "upstream unavailable");
+  t(
+    "and the classification is stored, not only the sentence",
+    (await attemptsFor(created.id))[0]?.failure,
+    "target_down",
+  );
 
   // Nothing is due yet, so a sweep now must not fire anything — otherwise the
   // backoff is decorative.
@@ -628,6 +633,11 @@ async function retriesAppend(fixture: Fixture, receiver: Receiver) {
   t("and the failed one is still there, with its evidence", failed.length, 1);
   t("the retry is attempt 2", succeeded[0].attempt, 2);
   ok("and the failed row's schedule was cleared when it was claimed", failed[0].nextRetryAt === null);
+  t(
+    "a success carries no classification",
+    (await attemptsFor(created.id)).find((row) => row.status === "succeeded")?.failure,
+    null,
+  );
 
   // A second sweep must not re-deliver something already claimed and done.
   const again = await sweepDueRetries(fixture.workspaceId, {
