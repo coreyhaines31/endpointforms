@@ -21,8 +21,8 @@ import type { FailureKind } from "./types.ts";
  * likely to be got wrong — sharing a document with a robot's email address —
  * on the base-tier customer the issue is about, and because sharing is
  * invisible from our side until the first delivery fails. OAuth asks the person
- * once, on Google's own screen, and we can check the sheet is writable before
- * the destination exists. A self-hoster who prefers a service account has a
+ * once, on Google's own screen, and we can check the account can open the
+ * sheet before the destination exists. A self-hoster who prefers a service account has a
  * small change to make here and in `refreshAccessToken`, and nothing else in
  * the delivery engine would notice.
  *

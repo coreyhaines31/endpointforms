@@ -353,6 +353,81 @@ function firstRow(json: Record<string, unknown>): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Checking a spreadsheet before a destination points at it
+// ---------------------------------------------------------------------------
+
+export type SpreadsheetCheck =
+  | { ok: true; title: string; sheetName: string }
+  | { ok: false; reason: "forbidden" | "missing" | "no_tab" | "unreachable"; detail: string };
+
+/**
+ * Whether the connected account can open this spreadsheet, and which tab to use.
+ *
+ * Run once, at connection time, so the common mistakes — a link to a sheet the
+ * account cannot see, a tab name with a typo — are said on the screen where
+ * they were made rather than in a delivery log after the first lead. An empty
+ * tab name means the first tab, resolved here and stored by name.
+ *
+ * What it does **not** prove is write access: reading the metadata succeeds for
+ * a view-only collaborator. "Send a test delivery" is what proves a row can be
+ * written, and a view-only grant fails its first delivery as `auth` with a
+ * sentence saying so.
+ */
+export async function inspectSpreadsheet(input: {
+  accessToken: string;
+  spreadsheetId: string;
+  sheetName: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<SpreadsheetCheck> {
+  const response = await sheetsRequest(
+    input.fetchImpl ?? fetch,
+    input.accessToken,
+    input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    {
+      method: "GET",
+      url: `${SHEETS_API}/${input.spreadsheetId}?fields=${encodeURIComponent("properties.title,sheets.properties.title")}`,
+    },
+  );
+
+  if (!response.ok) {
+    if (response.status === 403) {
+      return { ok: false, reason: "forbidden", detail: response.text ?? "" };
+    }
+    if (response.status === 404) return { ok: false, reason: "missing", detail: response.text ?? "" };
+    return {
+      ok: false,
+      reason: "unreachable",
+      detail:
+        response.status === null
+          ? transportDetail(response.transport)
+          : `Google Sheets answered ${response.status}`,
+    };
+  }
+
+  const properties = (response.json.properties ?? {}) as Record<string, unknown>;
+  const title = typeof properties.title === "string" ? properties.title : "";
+  const tabs = (Array.isArray(response.json.sheets) ? response.json.sheets : [])
+    .map((sheet) => ((sheet as { properties?: { title?: unknown } }).properties?.title))
+    .filter((name): name is string => typeof name === "string");
+
+  const wanted = input.sheetName.trim();
+  if (wanted === "") {
+    return tabs[0]
+      ? { ok: true, title, sheetName: tabs[0] }
+      : { ok: false, reason: "no_tab", detail: "The spreadsheet has no tabs." };
+  }
+  // Exact first, then ignoring case — "leads" for a tab called "Leads" is a
+  // typo, not a different tab, and the stored name is Google's spelling.
+  const match =
+    tabs.find((name) => name === wanted) ??
+    tabs.find((name) => name.toLowerCase() === wanted.toLowerCase());
+  return match
+    ? { ok: true, title, sheetName: match }
+    : { ok: false, reason: "no_tab", detail: `Tabs: ${tabs.join(", ")}` };
+}
+
+// ---------------------------------------------------------------------------
 // Talking to the Sheets API
 // ---------------------------------------------------------------------------
 

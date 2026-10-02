@@ -34,6 +34,7 @@ import {
   deliveryAttempts,
   destinations,
   endpoints,
+  memberships,
   submissions,
   users,
   workspaces,
@@ -65,6 +66,13 @@ import {
 // call the claim on its own, without the delivery that normally follows it,
 // because that gap *is* the thing under test.
 import { claimDueRetries, workspacesWithDeliveryWork } from "../src/lib/destinations/store.ts";
+// #67: the OAuth callback, called the way the route calls it, against a fake Google.
+import { completeGoogleConnection } from "../src/lib/destinations/connect.ts";
+import {
+  GOOGLE_TOKEN_ENDPOINT,
+  newNonce,
+  sealPendingConnection,
+} from "../src/lib/destinations/google.ts";
 // #64 and #65: the notification an endpoint is created with, and the inbox
 // marker for a submission nothing was ever attempted for.
 import { createEndpoint } from "../src/lib/workspaces/endpoints.ts";
@@ -231,6 +239,7 @@ async function main() {
     await retriesAppend(fixture, receiver);
     await health(fixture, receiver);
     await disconnectedHealth(fixture, receiver);
+    await googleSheets(fixture);
     await crud(fixture);
     await testDelivery(fixture, receiver);
     await pendingRowsAndTheSweep(fixture, receiver);
@@ -836,6 +845,309 @@ async function disconnectedHealth(fixture: Fixture, receiver: Receiver) {
 
   await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, created.id));
   await unsafeDb.delete(destinations).where(eq(destinations.id, created.id));
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * A spreadsheet that behaves like one, behind a `fetch` that behaves like Google.
+ *
+ * Stateful on purpose: the header read returns what an earlier delivery wrote,
+ * an append adds a row a later read can see. A fake that answered every call
+ * with a canned 200 would pass a mapping that put every value in the wrong
+ * column.
+ */
+function fakeGoogleSheet() {
+  const state = {
+    rows: [] as string[][],
+    tabs: ["Sheet1", "Archive"],
+    refreshRevoked: false,
+    calls: [] as { url: string; method: string; body: string; authorization: string }[],
+  };
+
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  const impl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? init.body : "";
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    state.calls.push({ url: url.toString(), method, body, authorization: headers.authorization ?? "" });
+
+    if (url.toString() === GOOGLE_TOKEN_ENDPOINT) {
+      const params = new URLSearchParams(body);
+      if (params.get("grant_type") === "authorization_code") {
+        const claims = Buffer.from(JSON.stringify({ email: "ops@dorsetmetal.example" })).toString("base64url");
+        return json(200, {
+          access_token: "ya29.from-code",
+          refresh_token: `1//refresh-${params.get("code")}`,
+          scope: "openid https://www.googleapis.com/auth/spreadsheets",
+          id_token: `e30.${claims}.sig`,
+        });
+      }
+      if (state.refreshRevoked) {
+        return json(400, { error: "invalid_grant", error_description: "Token has been expired or revoked." });
+      }
+      return json(200, { access_token: "ya29.from-refresh" });
+    }
+
+    if (url.host !== "sheets.googleapis.com") return json(599, { error: "not google" });
+
+    const path = decodeURIComponent(url.pathname);
+    if (!path.includes("/values/")) {
+      return json(200, {
+        properties: { title: "Inbound leads" },
+        sheets: state.tabs.map((title) => ({ properties: { title } })),
+      });
+    }
+
+    if (method === "GET" && path.endsWith("!1:1")) {
+      return json(200, state.rows[0] ? { values: [state.rows[0]] } : {});
+    }
+    if (method === "GET") {
+      // A single column, as `'Sheet1'!C:C`.
+      const letter = /!([A-Z]+):/.exec(path)?.[1] ?? "A";
+      const index = letter.charCodeAt(0) - 65;
+      return json(200, { values: [state.rows.map((row) => row[index] ?? "")] });
+    }
+    if (method === "PUT") {
+      const letter = /!([A-Z]+)1$/.exec(path)?.[1] ?? "A";
+      const start = letter.charCodeAt(0) - 65;
+      const cells = (JSON.parse(body) as { values: string[][] }).values[0];
+      state.rows[0] ??= [];
+      cells.forEach((cell, offset) => {
+        state.rows[0][start + offset] = cell;
+      });
+      return json(200, { updatedCells: cells.length });
+    }
+    if (method === "POST" && path.endsWith(":append")) {
+      const row = (JSON.parse(body) as { values: unknown[][] }).values[0];
+      state.rows.push(row.map((cell) => String(cell)));
+      return json(200, { updates: { updatedRange: `Sheet1!A${state.rows.length}`, updatedRows: 1 } });
+    }
+    return json(400, { error: { message: "unexpected" } });
+  }) as unknown as typeof fetch;
+
+  /** The sheet as `{ header: value }` per data row, so a test reads by name. */
+  const records = () =>
+    state.rows.slice(1).map((row) =>
+      Object.fromEntries((state.rows[0] ?? []).map((name, index) => [name, row[index] ?? ""])),
+    );
+
+  return { state, impl, records };
+}
+
+/**
+ * Google Sheets end to end (#67): connect through the callback, deliver through
+ * the real ingest path, survive a reordered sheet, go `disconnected` when the
+ * grant is revoked, and come back by reconnecting.
+ *
+ * The global `fetch` is swapped for the fake for the length of this section,
+ * because the ingest path dispatches with no `fetchImpl` and the Sheets adapter
+ * falls back to the global. Webhooks are unaffected — they use the pinned
+ * transport, not the global — and the swap is undone in `finally`.
+ */
+async function googleSheets(fixture: Fixture) {
+  console.log("\ngoogle sheets (#67)");
+
+  const google = fakeGoogleSheet();
+  const realFetch = globalThis.fetch;
+  const previousEnv = {
+    id: process.env.GOOGLE_SHEETS_CLIENT_ID,
+    secret: process.env.GOOGLE_SHEETS_CLIENT_SECRET,
+  };
+  process.env.GOOGLE_SHEETS_CLIENT_ID = "client-id.apps.googleusercontent.com";
+  process.env.GOOGLE_SHEETS_CLIENT_SECRET = "client-secret";
+  globalThis.fetch = google.impl;
+
+  const [user] = await unsafeDb.select({ id: users.id }).from(users).where(eq(users.email, EMAIL));
+  const membershipId = newId();
+  await unsafeDb
+    .insert(memberships)
+    .values({ id: membershipId, workspaceId: fixture.workspaceId, userId: user.id, role: "owner" });
+
+  const pending = (overrides: { destinationId?: string | null; nonce?: string } = {}) => {
+    const nonce = overrides.nonce ?? newNonce();
+    return {
+      nonce,
+      sealed: sealPendingConnection({
+        slug: SLUG,
+        endpointPublicId: fixture.endpointPublicId,
+        destinationId: overrides.destinationId ?? null,
+        name: "Leads sheet",
+        spreadsheetId: "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+        sheetName: "",
+        nonce,
+        expiresAt: Date.now() + 600_000,
+      }),
+    };
+  };
+  const sheetsRows = async () =>
+    (await listDestinations(fixture.workspaceId, fixture.endpointPublicId)).filter(
+      (row) => row.kind === "google_sheets",
+    );
+
+  try {
+    // Somebody who is not a member of the workspace finishes a flow for it.
+    const stranger = pending();
+    const refused = await completeGoogleConnection({
+      code: "code-stranger",
+      state: stranger.nonce,
+      error: null,
+      sealed: stranger.sealed,
+      userId: newId(),
+      redirectUri: "https://app.example.com/cb",
+    });
+    t("a non-member's callback is refused", refused.result, "expired");
+    t("before a code is spent", google.state.calls.length, 0);
+    t("and nothing is created", (await sheetsRows()).length, 0);
+
+    // The OAuth CSRF case: the right cookie, somebody else's state.
+    const crossed = pending();
+    const forged = await completeGoogleConnection({
+      code: "code-attacker",
+      state: newNonce(),
+      error: null,
+      sealed: crossed.sealed,
+      userId: user.id,
+      redirectUri: "https://app.example.com/cb",
+    });
+    t("a state that does not match this browser's cookie is refused", forged.result, "expired");
+    t("and nothing is created", (await sheetsRows()).length, 0);
+
+    const denied = pending();
+    const no = await completeGoogleConnection({
+      code: null,
+      state: denied.nonce,
+      error: "access_denied",
+      sealed: denied.sealed,
+      userId: user.id,
+      redirectUri: "https://app.example.com/cb",
+    });
+    t("saying no on Google's screen is said back", no.result, "denied");
+    ok("on the screen it started from", no.location.endsWith("/destinations?google=denied"), no.location);
+
+    // The control for all three: the same call, as a member, with the right
+    // state, does create one — so the refusals above were the checks.
+    const real = pending();
+    const connected = await completeGoogleConnection({
+      code: "code-real",
+      state: real.nonce,
+      error: null,
+      sealed: real.sealed,
+      userId: user.id,
+      redirectUri: "https://app.example.com/cb",
+    });
+    t("a member's callback connects", connected.result, "connected");
+    t(
+      "and lands back on the destinations screen",
+      connected.location,
+      `/app/${SLUG}/endpoints/${fixture.endpointPublicId}/destinations?google=connected`,
+    );
+
+    const [row] = await sheetsRows();
+    ok("the destination exists", row !== undefined);
+    if (!row) return;
+    t("an empty tab means the first one", row.config.sheet?.sheetName, "Sheet1");
+    t("named for the spreadsheet's own title", row.config.summary[0]?.value, "Inbound leads");
+    t("with the account it is connected as", row.config.sheet?.account, "ops@dorsetmetal.example");
+    ok("and the screen's shape has no token", !JSON.stringify(row).includes("1//refresh"), row.config);
+    t("untested until something is delivered", row.health.state, "untested");
+
+    // Through the real ingest path.
+    await submit(fixture.endpointPublicId, { name: "Priya Raman", email: "priya@dorsetmetal.example" });
+    await drainDispatch();
+
+    let log = await listDeliveryAttempts(fixture.workspaceId, row.id);
+    t("the submission was delivered", log[0]?.status, "succeeded");
+    t("into the sheet, as one row", google.records().length, 1);
+    t("under the right column", google.records()[0]?.email, "priya@dorsetmetal.example");
+    ok(
+      "stamped with the origin a person reads",
+      ["Human", "Agent", "Unverified"].includes(google.records()[0]?.Origin ?? ""),
+      google.records()[0],
+    );
+    const logged = JSON.stringify(log);
+    ok("the delivery log holds no access token", !logged.includes("ya29."), logged.slice(0, 400));
+    ok("and no refresh token", !logged.includes("1//refresh"));
+    ok(
+      "though one really was sent to Google",
+      google.state.calls.some((call) => call.authorization === "Bearer ya29.from-refresh"),
+    );
+
+    // Somebody reorders the columns and adds their own.
+    const [header, first] = google.state.rows;
+    const order = [...header].reverse();
+    google.state.rows = [
+      [order[0], "Called back?", ...order.slice(1)],
+      [first[header.indexOf(order[0])], "yes", ...order.slice(1).map((name) => first[header.indexOf(name)])],
+    ];
+    await submit(fixture.endpointPublicId, { name: "Second Lead", email: "second@dorsetmetal.example" });
+    await drainDispatch();
+    const records = google.records();
+    t("a reordered sheet still gets the next row", records.length, 2);
+    t("with every value under its own name", records[1]?.email, "second@dorsetmetal.example");
+    t("and the earlier row untouched", records[0]?.email, "priya@dorsetmetal.example");
+    t("and their own column left alone", records[1]?.["Called back?"], "");
+
+    // The grant is revoked on Google's side.
+    google.state.refreshRevoked = true;
+    const missedResponse = await submit(fixture.endpointPublicId, { email: "missed@dorsetmetal.example" });
+    const missed = (await missedResponse.json()) as { id: string };
+    await drainDispatch();
+
+    log = await listDeliveryAttempts(fixture.workspaceId, row.id);
+    t("a revoked grant fails the delivery", log[0]?.status, "failed");
+    ok("without a retry that cannot help", log[0]?.nextRetryAt === null);
+    ok("and says to reconnect", /Reconnect/.test(log[0]?.error ?? ""), log[0]?.error);
+    t("no row was written", google.records().length, 2);
+    t(
+      "the destination reads disconnected, not degraded",
+      (await getDestination(fixture.workspaceId, fixture.endpointPublicId, row.id))?.health.state,
+      "disconnected",
+    );
+
+    // Reconnecting, through the same callback.
+    google.state.refreshRevoked = false;
+    const again = pending({ destinationId: row.id });
+    const reconnected = await completeGoogleConnection({
+      code: "code-again",
+      state: again.nonce,
+      error: null,
+      sealed: again.sealed,
+      userId: user.id,
+      redirectUri: "https://app.example.com/cb",
+    });
+    t("reconnecting succeeds", reconnected.result, "reconnected");
+    ok("and lands on that destination", reconnected.location.includes(`/destinations/${row.id}?`), reconnected.location);
+    t("it is still one destination, not two", (await sheetsRows()).length, 1);
+    const afterReconnect = await getDestination(fixture.workspaceId, fixture.endpointPublicId, row.id);
+    ok("and is no longer disconnected", afterReconnect?.health.state !== "disconnected", afterReconnect?.health);
+
+    // What was missed is sent from the log, as the error said.
+    const replay = await deliverSubmission(fixture.workspaceId, missed.id, {
+      destinationId: row.id,
+      force: true,
+    });
+    t("the missed lead is delivered after reconnecting", replay.delivered, 1);
+    t("and is in the sheet", google.records().at(-1)?.email, "missed@dorsetmetal.example");
+    t(
+      "and the destination is healthy again",
+      (await getDestination(fixture.workspaceId, fixture.endpointPublicId, row.id))?.health.state,
+      "healthy",
+    );
+
+    await unsafeDb.delete(deliveryAttempts).where(eq(deliveryAttempts.destinationId, row.id));
+    await unsafeDb.delete(destinations).where(eq(destinations.id, row.id));
+  } finally {
+    globalThis.fetch = realFetch;
+    if (previousEnv.id === undefined) delete process.env.GOOGLE_SHEETS_CLIENT_ID;
+    else process.env.GOOGLE_SHEETS_CLIENT_ID = previousEnv.id;
+    if (previousEnv.secret === undefined) delete process.env.GOOGLE_SHEETS_CLIENT_SECRET;
+    else process.env.GOOGLE_SHEETS_CLIENT_SECRET = previousEnv.secret;
+    await unsafeDb.delete(memberships).where(eq(memberships.id, membershipId));
+  }
 }
 
 // ---------------------------------------------------------------------------
