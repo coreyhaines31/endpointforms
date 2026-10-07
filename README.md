@@ -95,6 +95,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 | Variable | Default |
 |---|---|
 | `NEXT_PUBLIC_SITE_URL` | `https://endpointforms.com` |
+| `NEXT_PUBLIC_APP_URL` | `https://app.endpointforms.com` — the signed-in app's own host |
 | `NEXT_PUBLIC_RENDER_DOMAIN` | `endpointforms.app` — the separate registrable domain customer forms are served from |
 
 **Optional** — `VERDICT_API_KEY_SECRET_PREVIOUS` (still accepted on verify, so a rotation does not break live integrations), `VERDICT_DEFAULT_CURRENCY`, `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`, `AUTH_EMAIL_FROM`, `RESEND_API_KEY` / `MAIL_FROM`, `ENDPOINT_DEFAULT_THANKS_URL`, `ALLOW_INSECURE_DESTINATIONS`, `ALLOW_PRIVATE_DESTINATIONS`, `DATABASE_POOL_MAX`, `DB_TARGET` / `NEON_DEV_DATABASE_URL`, the `UPLOAD_*` caps and retention (`docs/24` §3.6a), the `INGEST_RATE_LIMIT_*` / `VERDICT_RATE_LIMIT_*` / `AUTH_RATE_LIMIT_*` limits, and `NEXT_PUBLIC_WAITLIST_ENDPOINT_URL` / `WAITLIST_ENDPOINT_URL`.
