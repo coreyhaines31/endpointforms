@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { unsafeDb } from "../../db/client.ts";
-import { endpoints, formSchemas } from "../../db/schema.ts";
+import { endpoints, formSchemas, workspaces } from "../../db/schema.ts";
 import { readStoredDocument, type FormSchemaDocument } from "../schema/format.ts";
 import { readTheme, type FormTheme } from "./theme.ts";
 
@@ -13,7 +13,7 @@ import { readTheme, type FormTheme } from "./theme.ts";
  * A visitor arrives with a public form ID and no session. There is no workspace
  * to scope to until this query answers which one it is — the same category
  * `src/db/scoped.ts` names, and the same one `src/lib/ingest/store.ts` sits in.
- * It is kept as narrow as a read can be: two tables joined on a primary key,
+ * It is kept as narrow as a read can be: three tables joined on primary keys,
  * one indexed unique column in the predicate, and **no submission data of any
  * kind**. The only rows it can return are a form definition its owner published
  * to be shown to the public.
@@ -38,6 +38,8 @@ export type RenderableForm = {
   publicId: string;
   /** The endpoint's name, used as the page title when the schema names nothing. */
   endpointName: string;
+  /** The owning workspace's slug — which `{slug}.<render-domain>` may serve it (#109). */
+  workspaceSlug: string;
   document: FormSchemaDocument;
   /** The title the form shows, from the schema's name or the endpoint's. */
   title: string;
@@ -49,9 +51,14 @@ export type FormLookup =
   /** No such endpoint, or it was deleted. */
   | { status: "not_found" }
   /** A live endpoint with no active schema — #50's case, not an error. */
-  | { status: "no_schema"; publicId: string; endpointName: string }
+  | { status: "no_schema"; publicId: string; endpointName: string; workspaceSlug: string }
   /** A schema row this build cannot read. Our bug; say so rather than 404. */
-  | { status: "unreadable_schema"; publicId: string; endpointName: string };
+  | {
+      status: "unreadable_schema";
+      publicId: string;
+      endpointName: string;
+      workspaceSlug: string;
+    };
 
 /** Matches the ingest path's shape check, so a junk ID never reaches Postgres. */
 const PUBLIC_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -63,11 +70,13 @@ export async function loadForm(formId: string): Promise<FormLookup> {
     .select({
       publicId: endpoints.publicId,
       name: endpoints.name,
+      workspaceSlug: workspaces.slug,
       deletedAt: endpoints.deletedAt,
       activeSchemaVersionId: endpoints.activeSchemaVersionId,
       schemaFields: formSchemas.fields,
     })
     .from(endpoints)
+    .innerJoin(workspaces, eq(workspaces.id, endpoints.workspaceId))
     .leftJoin(formSchemas, eq(formSchemas.id, endpoints.activeSchemaVersionId))
     .where(eq(endpoints.publicId, formId))
     .limit(1);
@@ -79,18 +88,29 @@ export async function loadForm(formId: string): Promise<FormLookup> {
   if (!row || row.deletedAt) return { status: "not_found" };
 
   if (row.activeSchemaVersionId === null) {
-    return { status: "no_schema", publicId: row.publicId, endpointName: row.name };
+    return {
+      status: "no_schema",
+      publicId: row.publicId,
+      endpointName: row.name,
+      workspaceSlug: row.workspaceSlug,
+    };
   }
 
   const document = readStoredDocument(row.schemaFields);
   if (!document) {
-    return { status: "unreadable_schema", publicId: row.publicId, endpointName: row.name };
+    return {
+      status: "unreadable_schema",
+      publicId: row.publicId,
+      endpointName: row.name,
+      workspaceSlug: row.workspaceSlug,
+    };
   }
 
   return {
     status: "ok",
     publicId: row.publicId,
     endpointName: row.name,
+    workspaceSlug: row.workspaceSlug,
     document,
     title: document.name?.trim() || row.name,
     // Read from the stored JSON rather than from the parsed document.
@@ -101,6 +121,23 @@ export async function loadForm(formId: string): Promise<FormLookup> {
     // still be able to fail in the customer's own colours.
     theme: readTheme(row.schemaFields),
   };
+}
+
+/**
+ * The slug of a workspace, by id — for `/f/{id}/step`, which resolves its
+ * endpoint through the ingest path's `resolveEndpoint` rather than `loadForm`,
+ * and still has to know whose subdomain it is on (#109).
+ *
+ * Unscoped for the reason `loadForm` is, and narrower: one primary-key lookup
+ * returning one public column.
+ */
+export async function workspaceSlugOf(workspaceId: string): Promise<string | null> {
+  const rows = await unsafeDb
+    .select({ slug: workspaces.slug })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  return rows[0]?.slug ?? null;
 }
 
 /**
