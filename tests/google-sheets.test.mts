@@ -380,6 +380,7 @@ async function roundTrip() {
 
   const now = new Date("2026-10-01T12:00:00Z");
   const pending: PendingConnection = {
+    userId: "0199a0fa-0000-7000-8000-000000000001",
     slug: "acme",
     endpointPublicId: "ep_abc",
     destinationId: null,

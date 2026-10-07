@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { DestinationState } from "@/actions/destinations-state";
 import { formError, formSuccess } from "@/actions/form-state";
 import { requireMember } from "@/actions/guards";
+import { requireUser } from "@/lib/auth/session";
 import {
   buildConfig,
   createDestination,
@@ -210,7 +211,11 @@ export async function connectGoogleSheetsAction(
   if (sheetName.length > 100) return formError("That tab name is too long.");
 
   const nonce = newNonce();
+  // `requireMember` above already required a session; this is the same cached
+  // read, for the id the callback will compare against (L2).
+  const user = await requireUser();
   const sealed = sealPendingConnection({
+    userId: user.id,
     slug: access.workspace.slug,
     endpointPublicId,
     destinationId: destinationId === "" ? null : destinationId,

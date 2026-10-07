@@ -1019,11 +1019,14 @@ async function googleSheets(fixture: Fixture) {
     .insert(memberships)
     .values({ id: membershipId, workspaceId: fixture.workspaceId, userId: user.id, role: "owner" });
 
-  const pending = (overrides: { destinationId?: string | null; nonce?: string } = {}) => {
+  const pending = (
+    overrides: { destinationId?: string | null; nonce?: string; userId?: string } = {},
+  ) => {
     const nonce = overrides.nonce ?? newNonce();
     return {
       nonce,
       sealed: sealPendingConnection({
+        userId: overrides.userId ?? user.id,
         slug: SLUG,
         endpointPublicId: fixture.endpointPublicId,
         destinationId: overrides.destinationId ?? null,
@@ -1042,18 +1045,40 @@ async function googleSheets(fixture: Fixture) {
 
   try {
     // Somebody who is not a member of the workspace finishes a flow for it.
-    const stranger = pending();
+    const strangerId = newId();
+    const stranger = pending({ userId: strangerId });
     const refused = await completeGoogleConnection({
       code: "code-stranger",
       state: stranger.nonce,
       error: null,
       sealed: stranger.sealed,
-      userId: newId(),
+      userId: strangerId,
       redirectUri: "https://app.example.com/cb",
     });
     t("a non-member's callback is refused", refused.result, "expired");
     t("before a code is spent", google.state.calls.length, 0);
     t("and nothing is created", (await sheetsRows()).length, 0);
+
+    // L2: another *member* finishes a flow somebody else started — a shared
+    // machine, a cookie left behind. Membership alone would let it through.
+    const colleagueId = newId();
+    await unsafeDb.insert(users).values({ id: colleagueId, email: `colleague-${EMAIL}` });
+    await unsafeDb
+      .insert(memberships)
+      .values({ id: newId(), workspaceId: fixture.workspaceId, userId: colleagueId, role: "member" });
+    const theirs = pending();
+    const swapped = await completeGoogleConnection({
+      code: "code-colleague",
+      state: theirs.nonce,
+      error: null,
+      sealed: theirs.sealed,
+      userId: colleagueId,
+      redirectUri: "https://app.example.com/cb",
+    });
+    t("a different member's session cannot finish someone else's connection", swapped.result, "expired");
+    t("before a code is spent on it", google.state.calls.length, 0);
+    t("and nothing is created", (await sheetsRows()).length, 0);
+    await unsafeDb.delete(users).where(eq(users.id, colleagueId));
 
     // The OAuth CSRF case: the right cookie, somebody else's state.
     const crossed = pending();

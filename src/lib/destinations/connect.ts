@@ -62,6 +62,9 @@ export async function completeGoogleConnection(input: {
   const now = input.now ?? new Date();
   const pending = openPendingConnection(input.sealed, input.state, now);
   if (!pending) return { result: "expired", location: "/app" };
+  // Same treatment as a bad nonce: nothing in the cookie is used, not even to
+  // choose where to send the person.
+  if (pending.userId !== input.userId) return { result: "expired", location: "/app" };
 
   const back = (result: ConnectResult, detail?: string): ConnectOutcome => ({
     result,

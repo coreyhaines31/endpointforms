@@ -416,6 +416,13 @@ function parseJsonObject(text: string): Record<string, unknown> {
  * guarantees these are the values *we* wrote, not that the person may use them.
  */
 export type PendingConnection = {
+  /**
+   * Who started it (security review L2). The callback refuses a session that
+   * is anyone else — a shared machine where one member started the flow and
+   * another finished it would otherwise connect the second person's Google
+   * account in the first person's name.
+   */
+  userId: string;
   slug: string;
   endpointPublicId: string;
   /** Set when reconnecting an existing destination rather than adding one. */
