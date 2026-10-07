@@ -1,6 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { readVisitorKey } from "@/lib/hindsight/assign";
+import { decideHost } from "@/lib/hosts";
+import { APP_URL, SITE_URL } from "@/lib/site";
+import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 import {
   newVisitorKey,
   VISITOR_COOKIE,
@@ -8,12 +11,15 @@ import {
 } from "@/lib/hindsight/visitor";
 
 /**
- * Route protection for the authenticated app.
+ * Host routing, then route protection for the authenticated app.
  *
  * **This file was `middleware.ts` in the brief.** Next.js 16 deprecated that
  * convention and renamed it to `proxy.ts` — same position in the request
- * lifecycle, same `config.matcher`, only the file and export names changed. Host
- * routing for the render domain belongs here when it arrives.
+ * lifecycle, same `config.matcher`, only the file and export names changed.
+ *
+ * Host routing comes first and is the reason this runs on every path: one
+ * deployment answers on the site, the app host and the render domain, and
+ * `src/lib/hosts.ts` decides which surface each host may serve.
  *
  * ## What this is, and what it is not
  *
@@ -36,8 +42,13 @@ import {
 /** Auth.js's session cookie. `__Secure-` prefixed once cookies are secure. */
 const SESSION_COOKIES = ["authjs.session-token", "__Secure-authjs.session-token"];
 
+const HOSTS = { siteUrl: SITE_URL, appUrl: APP_URL, renderDomain: RENDER_DOMAIN };
+
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+
+  const host = decideHost(request.headers.get("host"), pathname, search, HOSTS);
+  if (host.action === "redirect") return NextResponse.redirect(host.location, host.status);
 
   // Hosted forms (#45). Nothing here is a security decision — it mints an
   // opaque id so a visitor sees the same variant on their second visit as on
@@ -45,6 +56,9 @@ export function proxy(request: NextRequest) {
   // cannot set a cookie. See `src/lib/hindsight/visitor.ts` for why this is a
   // random value rather than a fingerprint, and who it deliberately excludes.
   if (pathname.startsWith("/f/")) return withVisitorCookie(request);
+
+  // Everything else this file sees is here only for host routing above.
+  if (pathname !== "/app" && !pathname.startsWith("/app/")) return NextResponse.next();
 
   const signedIn = SESSION_COOKIES.some((name) => request.cookies.has(name));
   if (signedIn) return NextResponse.next();
@@ -93,7 +107,11 @@ function withVisitorCookie(request: NextRequest) {
 }
 
 /**
- * `/app` and `/f`, and nothing else.
+ * Every path except Next's own build output, because host routing has to see
+ * every request a host could answer. Everything below the routing decision is
+ * still scoped by path inside `proxy`: the session redirect to `/app`, the
+ * visitor cookie to `/f`. What follows is why those two scopes are what they
+ * are.
  *
  * `/signup` used to be matched here so it could 308 to `/login` — there was no
  * separate sign-up when the first magic link both created the account and
@@ -107,5 +125,5 @@ function withVisitorCookie(request: NextRequest) {
  * are all untouched, and none of them renders a variant.
  */
 export const config = {
-  matcher: ["/app/:path*", "/f/:path*"],
+  matcher: ["/((?!_next/static|_next/image).*)"],
 };
