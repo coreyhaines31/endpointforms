@@ -118,7 +118,7 @@ function isUnder(pathname: string, prefix: string): boolean {
 }
 
 /** Lowercased, port stripped. `Host` may carry either. */
-function normaliseHost(host: string | null): string | null {
+export function normaliseHost(host: string | null): string | null {
   if (!host) return null;
   const trimmed = host.trim().toLowerCase();
   if (!trimmed) return null;
