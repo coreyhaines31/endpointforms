@@ -19,6 +19,20 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: endpointforms
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +42,19 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # Same non-superuser role as verify.yml: a superuser bypasses row-level
+      # security, and the app should run here the way it runs everywhere else.
+      - name: Create the app role and migrate
+        env:
+          PGPASSWORD: postgres
+          DATABASE_URL: postgres://endpoint:endpoint@localhost:5433/endpointforms
+        run: |
+          psql -h localhost -p 5433 -U postgres -d endpointforms \
+            -c "CREATE ROLE endpoint LOGIN PASSWORD 'endpoint';" \
+            -c "GRANT ALL ON DATABASE endpointforms TO endpoint;" \
+            -c "ALTER DATABASE endpointforms OWNER TO endpoint;"
+          npm run db:migrate
 
       - name: Install browsers
         run: npx playwright install chromium --with-deps

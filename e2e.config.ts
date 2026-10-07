@@ -30,6 +30,12 @@ export default {
           WAITLIST_ENDPOINT_URL: '',
           NEXT_PUBLIC_WAITLIST_ENDPOINT_URL: '',
           NEXT_TELEMETRY_DISABLED: '1',
+          // Pinned, so a DATABASE_URL in .env.local can never point a run at a
+          // hosted database: the product tests create real users and rows.
+          DATABASE_URL:
+            process.env.E2E_DATABASE_URL ??
+            'postgres://endpoint:endpoint@localhost:5433/endpointforms',
+          AUTH_SECRET: 'e2e-not-a-real-secret-value-for-tests-only',
         },
         log: '.e2e/logs/app.log',
         startupTimeout: 120_000,
