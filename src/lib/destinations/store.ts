@@ -9,8 +9,10 @@ import {
   deliveryAttempts,
   destinations,
   endpoints,
+  formSchemas,
   submissions,
 } from "../../db/schema.ts";
+import { readStoredDocument } from "../schema/format.ts";
 import { redactConfig } from "./config.ts";
 import { decideRetry } from "./retry.ts";
 import type {
@@ -433,6 +435,13 @@ export type DeliveryJob = {
   submissionId: string;
   source: PayloadSource;
   destinations: Deliverable[];
+  /**
+   * The keys the endpoint's active schema declares, or null when it has none
+   * (#67, security review M3/M4). An adapter that creates or targets columns by
+   * field name uses this to tell fields the owner defined from names a
+   * submitter made up.
+   */
+  declaredFields: string[] | null;
 };
 
 /**
@@ -471,6 +480,7 @@ export async function loadDeliveryJob(
         endpointId: submissions.endpointId,
         endpointPublicId: endpoints.publicId,
         endpointName: endpoints.name,
+        schemaFields: formSchemas.fields,
       })
       .from(submissions)
       .innerJoin(
@@ -478,6 +488,13 @@ export async function loadDeliveryJob(
         and(
           eq(endpoints.id, submissions.endpointId),
           eq(endpoints.workspaceId, workspaceId),
+        ),
+      )
+      .leftJoin(
+        formSchemas,
+        and(
+          eq(formSchemas.id, endpoints.activeSchemaVersionId),
+          eq(formSchemas.workspaceId, workspaceId),
         ),
       )
       .where(ws.where(submissions, eq(submissions.publicId, submissionPublicId)))
@@ -524,6 +541,14 @@ export async function loadDeliveryJob(
         referrer: row.referrer,
         schemaVersionId: row.schemaVersionId,
       },
+      // The schema in force *now*, not the one the submission arrived under: a
+      // redelivery after the owner declared a field should be able to give it
+      // a column. An unreadable stored schema is treated as none, the same rule
+      // the ingest path follows.
+      declaredFields:
+        row.schemaFields === null
+          ? null
+          : (readStoredDocument(row.schemaFields)?.fields.map((field) => field.key) ?? null),
       destinations: targets
         .filter((target) => options.includeDisabled === true || target.enabled)
         .map((target) => ({

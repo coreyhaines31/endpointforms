@@ -178,6 +178,12 @@ export type AdapterContext = {
   /** Injected by the tests. Defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * Field keys the endpoint's active schema declares, or null without one.
+   * Everything else in `payload.submission.values` was named by whoever
+   * submitted it.
+   */
+  declaredFields?: readonly string[] | null;
 };
 
 export type Adapter = {

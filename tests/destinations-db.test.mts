@@ -65,7 +65,13 @@ import {
 // Not part of the public surface in `index.ts` — the abandonment test has to
 // call the claim on its own, without the delivery that normally follows it,
 // because that gap *is* the thing under test.
-import { claimDueRetries, workspacesWithDeliveryWork } from "../src/lib/destinations/store.ts";
+import {
+  claimDueRetries,
+  loadDeliveryJob,
+  workspacesWithDeliveryWork,
+} from "../src/lib/destinations/store.ts";
+import { parseSchemaDocument } from "../src/lib/schema/format.ts";
+import { clearActiveSchema, publishSchemaVersion } from "../src/lib/schema/store.ts";
 // #67: the OAuth callback, called the way the route calls it, against a fake Google.
 import { completeGoogleConnection } from "../src/lib/destinations/connect.ts";
 import {
@@ -239,6 +245,7 @@ async function main() {
     await retriesAppend(fixture, receiver);
     await health(fixture, receiver);
     await disconnectedHealth(fixture, receiver);
+    await declaredFieldsReachTheJob(fixture);
     await googleSheets(fixture);
     await crud(fixture);
     await testDelivery(fixture, receiver);
@@ -848,6 +855,51 @@ async function disconnectedHealth(fixture: Fixture, receiver: Receiver) {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * The endpoint's active schema reaches the adapter as `declaredFields`, so the
+ * Sheets adapter can tell owner-defined fields from submitter-invented ones
+ * (#67, security review M3/M4). Null without a schema — and the control below
+ * shows the same query returning keys once there is one.
+ */
+async function declaredFieldsReachTheJob(fixture: Fixture) {
+  console.log("\ndeclared fields (#67)");
+
+  const response = await submit(fixture.endpointPublicId, { email: "declared@test.example" });
+  const ack = (await response.json()) as { id: string };
+  await drainDispatch();
+
+  t("no schema means no declared fields", (await loadDeliveryJob(fixture.workspaceId, ack.id))?.declaredFields, null);
+
+  const parsed = parseSchemaDocument([
+    { key: "email", label: "Email", type: "email" },
+    { key: "company", label: "Company", type: "text" },
+  ]);
+  if (!parsed.ok) {
+    ok("the test schema parses", false, parsed.errors);
+    return;
+  }
+  await publishSchemaVersion({
+    workspaceId: fixture.workspaceId,
+    endpointId: fixture.endpointId,
+    document: parsed.document,
+    source: "file",
+  });
+  try {
+    t(
+      "an active schema's keys reach the job",
+      (await loadDeliveryJob(fixture.workspaceId, ack.id))?.declaredFields,
+      ["email", "company"],
+    );
+  } finally {
+    await clearActiveSchema(fixture.workspaceId, fixture.endpointId);
+  }
+  t(
+    "and clearing it clears them",
+    (await loadDeliveryJob(fixture.workspaceId, ack.id))?.declaredFields,
+    null,
+  );
+}
 
 /**
  * A spreadsheet that behaves like one, behind a `fetch` that behaves like Google.

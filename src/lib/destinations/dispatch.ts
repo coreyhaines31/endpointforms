@@ -254,6 +254,7 @@ async function attemptDelivery(
       config: destination.config,
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
+      declaredFields: job.declaredFields,
     });
   } catch (error) {
     result = {
