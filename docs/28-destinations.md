@@ -419,8 +419,21 @@ The tab's first row is the header. Each delivery reads it and writes the row **b
 (trimmed, case-insensitive), in whatever order the header is in today:
 
 - **Reordering columns corrupts nothing.** The order is read at delivery time, never remembered.
-- **A field with no column gets one**, added at the right of the header before the row is written.
+- **A field with no column gets one**, added at the right of the header before the row is written —
+  within limits, because on an open endpoint the submitter chooses the field names. With an active
+  schema, only **declared** fields get new columns. Without one, the header stops at **100
+  columns**. Anything that may not have a column of its own goes into a single **`Other fields`**
+  column as JSON, keyed by the field name as submitted. Header names are cut at 100 characters.
   An empty tab gets the whole header on the first delivery.
+- **With a schema, only declared fields write into existing columns.** An undeclared field named
+  after a colleague's "Approved" column goes to `Other fields`, not into "Approved". Without a
+  schema every name is the submitter's and matching by name is the feature, so a field named after
+  an existing column does fill it — declare a schema to close that.
+- **Adding columns is checked.** Two deliveries that need a new column at the same moment write
+  to the same cell. The header is read back after writing; if our columns did not survive, the
+  row is planned again against the header as it now is (up to three times, then the delivery fails
+  as retryable with nothing appended). The gap between that read-back and the append is one
+  request wide — Sheets has no lock to close it with.
 - **Columns we do not write stay empty** on our rows — a colleague's "Called back?" column is left
   alone.
 - **Renaming a header** is the one thing that changes the mapping: the next delivery finds no
@@ -429,9 +442,12 @@ The tab's first row is the header. Each delivery reads it and writes the row **b
 
 Ours are `Submitted at`, `Origin` (`Human` · `Agent` · `Unverified`) and `Submission ID`, then the
 form's fields, then `utm_*` columns once one of them has a value. A form field whose name matches
-one of ours is written to `<name> (field)` instead — on an open endpoint the submitter chooses
+one of ours — compared after NFKC normalisation with zero-width and other format characters
+removed, so `Origin` plus a zero-width space or fullwidth `Ｏｒｉｇｉｎ` counts — is written to
+`<name> (field)` instead. A cross-script lookalike (a Cyrillic `О`) is a different letter to
+Unicode and is not folded: it gets a column that looks like ours, never ours — on an open endpoint the submitter chooses
 field names, and `Origin=Human` must not overwrite the stamp. An uploaded file is written as its
-filename and its link; **the link expires** (see #66 above), the filename does not.
+filename and its link; **the link expires** (see #66 above), the filename does not. Only a value that is a whole stored-file reference with a link to our own download route for that file gets this form — file-shaped JSON a submitter made up is written as the JSON it is.
 
 **Values are written `RAW`.** `USER_ENTERED` would parse a submitted `=IMPORTXML(…)` as a formula
 running with the sheet owner's access, which is a known way to exfiltrate a spreadsheet. The cost

@@ -29,8 +29,9 @@ import { readCapped } from "./webhook.ts";
  * - **Reordering columns corrupts nothing.** The order is read at delivery
  *   time, never remembered.
  * - **A field the header does not have gets a new column**, added at the right
- *   of the header before the row is written. A form that grows a field fills a
- *   sheet that grows a column, which is the behaviour a person would do by hand.
+ *   of the header before the row is written — within the limits `planRow`
+ *   sets, because on an open endpoint the submitter chooses the names. What
+ *   may not have a column of its own goes into `Other fields`.
  * - **Columns we do not write stay empty** on our rows, so a colleague's own
  *   "Called back?" column next to ours is left alone.
  * - **An empty tab** gets the header written for it on the first delivery.
