@@ -1,3 +1,4 @@
+import type { OriginState } from "../origin/types.ts";
 import type { IngestErrorCode } from "./errors.ts";
 
 /**
@@ -54,6 +55,11 @@ export type SubmissionAck = {
   submittedAt: string;
   /** True when an existing submission was returned instead of a new one. */
   duplicate: boolean;
+  /**
+   * The stamp the database holds for this row. Present only when the caller
+   * passed `reportOrigin` and the row is new; absent on the form surface.
+   */
+  origin?: OriginState;
   /**
    * Ways the payload did not match the endpoint's schema (#51), when it has one
    * and something did not match. **The submission was still stored** — this is
