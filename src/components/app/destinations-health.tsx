@@ -16,7 +16,7 @@ import type { DestinationHealth } from "@/lib/destinations/types";
  *   not healthy; it is unproven, and it says so and offers the test button.
  * - **Shape, label and colour ship together**, the same rule
  *   `verdict-chip.tsx` and `provenance-chip.tsx` follow — colour alone cannot
- *   carry five states accessibly (docs/03 §8).
+ *   carry six states accessibly (docs/03 §8).
  * - **One failure is not red.** `degraded` exists so a single 502 during
  *   somebody's deploy does not paint the screen red, because a banner that is
  *   red every week is a banner nobody reads. Three in a row is red.
@@ -33,6 +33,10 @@ const glyphs: Record<DestinationHealth["state"], React.ReactNode> = {
   ),
   // A cross. It is broken.
   failing: <path d="M1.6 1.6 8.4 8.4M8.4 1.6 1.6 8.4" fill="none" stroke="currentColor" strokeWidth="1.8" />,
+  // A broken link. The connection itself is gone, not one delivery.
+  disconnected: (
+    <path d="M1.2 5h2.6M6.2 5h2.6M4.4 2.2 5.6 7.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  ),
   // Two bars. Stopped on purpose.
   paused: (
     <path d="M3.4 1.6v6.8M6.6 1.6v6.8" fill="none" stroke="currentColor" strokeWidth="1.8" />
@@ -44,6 +48,7 @@ const styles: Record<DestinationHealth["state"], string> = {
   untested: "border-border text-muted-foreground",
   degraded: "border-bot-edge bg-bot-surface text-bot",
   failing: "border-destructive/40 bg-destructive-surface text-destructive",
+  disconnected: "border-destructive/40 bg-destructive-surface text-destructive",
   paused: "border-border text-muted-foreground",
 };
 
@@ -52,6 +57,7 @@ const labels: Record<DestinationHealth["state"], string> = {
   untested: "Untested",
   degraded: "Degraded",
   failing: "Failing",
+  disconnected: "Disconnected",
   paused: "Paused",
 };
 
@@ -121,6 +127,25 @@ export function HealthLine({ health }: { health: DestinationHealth }) {
             {health.deadLetterCount === 1 ? "is" : "are"} still waiting to be sent again.
           </>
         ) : null}
+      </>
+    );
+  }
+
+  // #67. Not "N failures in a row" — the count is not the news. The grant is
+  // gone, no retry will bring it back, and the sentence has to say what to do.
+  if (health.state === "disconnected") {
+    return (
+      <>
+        <span className="text-foreground">Disconnected</span>
+        {health.lastFailureAt ? (
+          <>
+            {" "}
+            <RelativeTime value={health.lastFailureAt} />
+          </>
+        ) : null}
+        : the account that authorised it has revoked access, or the grant expired. Nothing
+        is delivered here until it is reconnected. Submissions are still stored, and each
+        one that missed it can be sent again from the log.
       </>
     );
   }

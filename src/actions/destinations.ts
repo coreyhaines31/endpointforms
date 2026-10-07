@@ -1,12 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import type { DestinationState } from "@/actions/destinations-state";
 import { formError, formSuccess } from "@/actions/form-state";
 import { requireMember } from "@/actions/guards";
+import { requireUser } from "@/lib/auth/session";
 import {
   buildConfig,
   createDestination,
@@ -19,6 +21,17 @@ import {
   updateDestination,
   type DestinationKind,
 } from "@/lib/destinations";
+import { parseSpreadsheetId } from "@/lib/destinations/config";
+import {
+  GOOGLE_CALLBACK_PATH,
+  googleAuthUrl,
+  googleClient,
+  googleRedirectUri,
+  newNonce,
+  PENDING_COOKIE,
+  PENDING_TTL_MS,
+  sealPendingConnection,
+} from "@/lib/destinations/google";
 import { getEndpointByPublicId } from "@/lib/workspaces/endpoints";
 
 /**
@@ -70,6 +83,7 @@ function configInput(formData: FormData) {
     webhookUrl: field(formData, "webhookUrl"),
     headers: field(formData, "headers"),
     rotateSecret: field(formData, "rotateSecret") === "true",
+    sheetName: field(formData, "sheetName"),
   };
 }
 
@@ -123,6 +137,133 @@ export async function createDestinationAction(
     ),
     ...(built.secret ? { secret: built.secret } : {}),
   };
+}
+
+/**
+ * Sends the person to Google to connect a spreadsheet — or, with a
+ * `destinationId`, to reconnect one whose grant was revoked (#67).
+ *
+ * Nothing is written here. What they asked for travels in a signed, httpOnly
+ * cookie scoped to the callback path, and the destination is created by the
+ * callback only after Google has said yes and the spreadsheet has been opened
+ * with the new token. See `completeGoogleConnection`.
+ *
+ * Every refusal is a sentence on this form rather than a trip to Google that
+ * was always going to fail: a deployment with no OAuth client, a link that is
+ * not a spreadsheet, an endpoint that has gone.
+ */
+export async function connectGoogleSheetsAction(
+  _prev: DestinationState,
+  formData: FormData,
+): Promise<DestinationState> {
+  const slug = field(formData, "slug");
+  const access = await requireMember(slug);
+  if ("error" in access) return access.error;
+
+  const client = googleClient();
+  if (!client) {
+    return formError(
+      "Google Sheets is not switched on for this deployment. (Self-hosting? Set GOOGLE_SHEETS_CLIENT_ID and GOOGLE_SHEETS_CLIENT_SECRET.)",
+    );
+  }
+
+  const endpointPublicId = field(formData, "endpointPublicId");
+  const destinationId = field(formData, "destinationId");
+  const sheetInput = field(formData, "spreadsheet");
+
+  let name: string;
+  let spreadsheetId: string | null;
+  let sheetName = field(formData, "sheetName").trim();
+  let loginHint: string | null = null;
+
+  if (destinationId !== "") {
+    const existing = await getDestination(access.workspace.id, endpointPublicId, destinationId);
+    if (!existing || existing.kind !== "google_sheets" || !existing.config.sheet) {
+      return formError(MESSAGES.gone);
+    }
+    name = existing.name;
+    // A reconnect keeps the spreadsheet and tab unless new ones are given, and
+    // suggests the account it was connected as — the common case is the same
+    // person re-authorising after a password change.
+    spreadsheetId =
+      sheetInput.trim() === "" ? existing.config.sheet.spreadsheetId : parseSpreadsheetId(sheetInput);
+    if (sheetName === "") sheetName = existing.config.sheet.sheetName;
+    loginHint = existing.config.sheet.account;
+  } else {
+    const parsedName = nameSchema.safeParse(field(formData, "name"));
+    if (!parsedName.success) {
+      return formError(
+        field(formData, "name").trim() === "" ? MESSAGES.nameEmpty : MESSAGES.nameTooLong,
+      );
+    }
+    name = parsedName.data;
+    spreadsheetId = parseSpreadsheetId(sheetInput);
+
+    const endpoint = await getEndpointByPublicId(access.workspace.id, endpointPublicId);
+    if (!endpoint) return formError(MESSAGES.endpointGone);
+  }
+
+  if (!spreadsheetId) {
+    return formError(
+      "That isn’t a Google Sheets link. Paste the address from your browser while the spreadsheet is open — it starts https://docs.google.com/spreadsheets/d/.",
+    );
+  }
+  if (sheetName.length > 100) return formError("That tab name is too long.");
+
+  const nonce = newNonce();
+  // `requireMember` above already required a session; this is the same cached
+  // read, for the id the callback will compare against (L2).
+  const user = await requireUser();
+  const sealed = sealPendingConnection({
+    userId: user.id,
+    slug: access.workspace.slug,
+    endpointPublicId,
+    destinationId: destinationId === "" ? null : destinationId,
+    name,
+    spreadsheetId,
+    sheetName,
+    nonce,
+    expiresAt: Date.now() + PENDING_TTL_MS,
+  });
+  if (!sealed) {
+    return formError(
+      "This deployment cannot sign the connection, so it was not started. (Self-hosting? Set AUTH_SECRET.)",
+    );
+  }
+
+  (await cookies()).set(PENDING_COOKIE, sealed, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    // `lax`, not `strict`: the callback is a top-level navigation arriving from
+    // accounts.google.com, and a strict cookie would not be sent with it.
+    sameSite: "lax",
+    path: GOOGLE_CALLBACK_PATH,
+    maxAge: Math.floor(PENDING_TTL_MS / 1000),
+  });
+
+  redirect(
+    googleAuthUrl({
+      client,
+      redirectUri: googleRedirectUri(await requestOrigin()),
+      state: nonce,
+      loginHint,
+    }),
+  );
+}
+
+/**
+ * The origin the person is on, for the redirect URI. The same derivation the
+ * callback makes from its own request, so the two always name the same URL —
+ * Google refuses an exchange whose redirect URI differs from the one the code
+ * was issued for.
+ */
+async function requestOrigin(): Promise<string> {
+  const incoming = await headers();
+  const host = incoming.get("x-forwarded-host") ?? incoming.get("host") ?? "localhost";
+  const proto =
+    incoming.get("x-forwarded-proto") ??
+    (host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https");
+  return `${proto}://${host}`;
 }
 
 export async function updateDestinationAction(

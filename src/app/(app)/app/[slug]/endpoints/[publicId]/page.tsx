@@ -13,6 +13,7 @@ import { YieldPanel } from "@/components/app/yield-panel";
 import { DeliveryAlert, HealthChip } from "@/components/app/destinations-health";
 import { NowhereChip, ReachAlert } from "@/components/app/reach-alert";
 import { ImportUrlPrompt } from "@/components/app/import-prompt";
+import { isGoogleSheetsConfigured } from "@/lib/destinations/google";
 import { isMailConfigured } from "@/lib/destinations/mail";
 import { DEFAULT_NOTIFICATION_BLURB } from "@/lib/destinations/notify";
 import { endpointReach } from "@/lib/destinations/reach";
@@ -54,7 +55,10 @@ export default async function EndpointDetailPage({
   // Is anybody being told? (#65) Read here rather than in the component: the
   // second half of the answer is a deployment fact — whether this build has a
   // mail transport at all — and `process.env` belongs on the server.
-  const reach = endpointReach(destinationRows, { mailConfigured: isMailConfigured() });
+  const reach = endpointReach(destinationRows, {
+    mailConfigured: isMailConfigured(),
+    sheetsConfigured: isGoogleSheetsConfigured(),
+  });
   const defaultNotification = destinationRows.find((row) => row.defaultNotification) ?? null;
 
   // Yield for this endpoint (#44). Read here rather than in the component:
@@ -263,7 +267,9 @@ export default async function EndpointDetailPage({
           problem to visit. */}
       <div className="mt-6 grid gap-6">
         <DeliveryAlert
-          failing={destinationRows.filter((row) => row.health.state === "failing")}
+          failing={destinationRows.filter(
+            (row) => row.health.state === "failing" || row.health.state === "disconnected",
+          )}
           degraded={destinationRows.filter((row) => row.health.state === "degraded")}
           href={`/app/${workspace.slug}/endpoints/${endpoint.publicId}/destinations`}
         />

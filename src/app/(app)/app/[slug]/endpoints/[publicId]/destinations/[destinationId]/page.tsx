@@ -7,10 +7,12 @@ import {
   DeleteDestinationForm,
   EditDestinationForm,
   PauseDestinationForm,
+  ReconnectGoogleSheetsForm,
   RedeliverForm,
   TestDeliveryForm,
 } from "@/components/app/destinations-forms";
 import { HealthChip, HealthLine } from "@/components/app/destinations-health";
+import { GoogleConnectNotice } from "@/components/app/google-connect-notice";
 import { Absent, DataTable, Fact, Td, Th } from "@/components/app/table";
 import { AbsoluteTime, RelativeTime } from "@/components/app/time";
 import { ADAPTER_OPTIONS } from "@/lib/destinations/adapters/index";
@@ -37,10 +39,13 @@ import { requireWorkspace } from "@/lib/workspaces/server";
  */
 export default async function DestinationDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string; publicId: string; destinationId: string }>;
+  searchParams: Promise<{ google?: string | string[] }>;
 }) {
   const { slug, publicId, destinationId } = await params;
+  const { google } = await searchParams;
   const { workspace } = await requireWorkspace(slug);
 
   const endpoint = await getEndpointByPublicId(workspace.id, publicId);
@@ -54,6 +59,7 @@ export default async function DestinationDetailPage({
   const kindLabel =
     ADAPTER_OPTIONS.find((option) => option.kind === destination.kind)?.label ??
     destination.kind;
+  const isSheets = destination.kind === "google_sheets";
 
   return (
     <Container className="max-w-[60rem] pt-10">
@@ -99,6 +105,27 @@ export default async function DestinationDetailPage({
         >
           {DEFAULT_NOTIFICATION_UNSENDABLE}
         </p>
+      ) : null}
+
+      <GoogleConnectNotice className="mt-4" result={google} />
+
+      {/* #67. The one fix for a revoked grant, put where the red chip is rather
+          than at the bottom of the page under "Edit". */}
+      {isSheets && destination.health.state === "disconnected" ? (
+        <Panel className="mt-8 border-destructive/40">
+          <PanelHeader
+            title="Reconnect to start delivering again"
+            description={`Google no longer accepts the connection${destination.config.sheet?.account ? ` made as ${destination.config.sheet.account}` : ""}. Nothing reaches the spreadsheet until it is reconnected; every submission is still stored, and the ones that missed it are in the log below.`}
+          />
+          <PanelBody>
+            <ReconnectGoogleSheetsForm
+              slug={workspace.slug}
+              endpointPublicId={endpoint.publicId}
+              destinationId={destination.id}
+              urgent
+            />
+          </PanelBody>
+        </Panel>
       ) : null}
 
       <Panel className="mt-8">
@@ -240,6 +267,23 @@ export default async function DestinationDetailPage({
         </PanelBody>
       </Panel>
 
+      {isSheets && destination.health.state !== "disconnected" ? (
+        <Panel className="mt-6">
+          <PanelHeader
+            title="Google connection"
+            description="Point it at another spreadsheet, or connect as a different Google account. The destination, its log and its history stay as they are."
+          />
+          <PanelBody>
+            <ReconnectGoogleSheetsForm
+              slug={workspace.slug}
+              endpointPublicId={endpoint.publicId}
+              destinationId={destination.id}
+              urgent={false}
+            />
+          </PanelBody>
+        </Panel>
+      ) : null}
+
       <Panel className="mt-6">
         <PanelHeader
           title={destination.enabled ? "Pause" : "Resume"}
@@ -335,7 +379,15 @@ function Exchange({
   destinationId: string;
 }) {
   const headers = (attempt.requestHeaders ?? {}) as Record<string, unknown>;
-  const interesting = [HEADER_SIGNATURE, HEADER_TIMESTAMP, "content-type", "to", "subject"]
+  const interesting = [
+    HEADER_SIGNATURE,
+    HEADER_TIMESTAMP,
+    "content-type",
+    "to",
+    "subject",
+    "spreadsheet",
+    "sheet",
+  ]
     .map((name) => [name, headers[name]] as const)
     .filter(([, value]) => typeof value === "string" && value !== "");
 
