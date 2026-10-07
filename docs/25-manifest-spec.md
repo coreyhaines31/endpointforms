@@ -473,6 +473,11 @@ HTTP `200`.
 matched an existing submission and was collapsed onto it (§8) — the id and timestamp returned
 are the *original* submission's.
 
+`origin` is the stamp read back from the stored row, not a constant, so a stamping regression
+shows up in the reply. It is absent when `duplicate` is `true`: the original may have arrived
+through the form, and the form surface does not report its stamp — telling a caller whether
+a forgery worked is a free tuning loop ([`docs/23-origin-findings.md`](./23-origin-findings.md)).
+
 ### 6.4 Rejection
 
 **A rejected tool call is still HTTP `200`, still a JSON-RPC `result`, and never a JSON-RPC
