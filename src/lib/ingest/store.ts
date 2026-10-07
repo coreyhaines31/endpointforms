@@ -52,6 +52,20 @@ export type ResolvedEndpoint = {
 };
 
 /**
+ * The refusal for an endpoint ID that resolves to nothing.
+ *
+ * Exported so the hosted form's submit and step routes can give a form on
+ * another workspace's subdomain this exact answer (#109) — any difference in
+ * status or wording would tell a caller the ID is real.
+ */
+export function endpointNotFound(): IngestError {
+  return new IngestError(
+    "endpoint_not_found",
+    "No endpoint with that ID. Check the URL in your form's action attribute.",
+  );
+}
+
+/**
  * One query, left-joined onto the active schema version.
  *
  * A second round-trip for the schema would be a second round-trip on the
@@ -75,12 +89,7 @@ export async function resolveEndpoint(publicId: string): Promise<ResolvedEndpoin
     .limit(1);
 
   const row = rows[0];
-  if (!row) {
-    throw new IngestError(
-      "endpoint_not_found",
-      "No endpoint with that ID. Check the URL in your form's action attribute.",
-    );
-  }
+  if (!row) throw endpointNotFound();
 
   if (row.deletedAt) {
     // 410 rather than 404. Public IDs are unguessable, so there is nothing to
