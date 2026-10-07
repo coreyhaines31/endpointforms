@@ -9,8 +9,10 @@ import { IngestError, isIngestError } from "@/lib/ingest/errors";
 import { handleSubmission } from "@/lib/ingest/handler";
 import { checkRateLimit, rateLimitError } from "@/lib/ingest/rate-limit";
 import { errorHtml, errorJson } from "@/lib/ingest/respond";
-import { resolveEndpoint } from "@/lib/ingest/store";
+import { endpointNotFound, resolveEndpoint } from "@/lib/ingest/store";
 import { decideOrigin } from "@/lib/origin/decide";
+import { workspaceSlugOf } from "@/lib/render/form";
+import { formAnswersOnHost } from "@/lib/render/host";
 import { ORIGIN_TOKEN_FIELD_KEYS, ORIGIN_TOKEN_HEADER } from "@/lib/origin/token";
 import type { FormSchemaDocument } from "@/lib/schema/format";
 import { validateSubmission } from "@/lib/schema/validate";
@@ -27,6 +29,7 @@ import {
   STEP_QUERY_PARAM,
 } from "@/lib/steps/serve";
 import { capturePartial, readPartial } from "@/lib/steps/store";
+import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 import { newPartialKey } from "@/db/ids";
 
 /**
@@ -108,6 +111,21 @@ export async function POST(
     endpoint = await resolveEndpoint(formId);
   } catch (error) {
     return refuse(request, error);
+  }
+
+  // Another workspace's subdomain (#109): the same answer as an ID that does
+  // not exist, before a partial is read, written or forwarded.
+  let workspaceSlug: string | null;
+  try {
+    workspaceSlug = await workspaceSlugOf(endpoint.workspaceId);
+  } catch (error) {
+    return refuse(request, error);
+  }
+  if (
+    workspaceSlug === null ||
+    !formAnswersOnHost(request.headers.get("host"), workspaceSlug, RENDER_DOMAIN)
+  ) {
+    return refuse(request, endpointNotFound());
   }
 
   // Hindsight (#45), re-derived from the visitor cookie exactly as

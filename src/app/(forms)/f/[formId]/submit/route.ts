@@ -8,7 +8,10 @@ import { handleSubmission } from "@/lib/ingest/handler";
 import { errorHtml, errorJson } from "@/lib/ingest/respond";
 import { responseMode } from "@/lib/ingest/client";
 import { encodeFlash, ERROR_FLAG, flashCookie } from "@/lib/render/flash";
+import { endpointNotFound } from "@/lib/ingest/store";
 import { loadForm } from "@/lib/render/form";
+import { formAnswersOnHost } from "@/lib/render/host";
+import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 import { validateSubmission } from "@/lib/schema/validate";
 
 /**
@@ -122,6 +125,16 @@ export async function POST(
     // the caller a better-informed refusal than we could.
     console.error(`[render] could not load form ${JSON.stringify(formId)}`, error);
     return forward();
+  }
+
+  // Another workspace's subdomain (#109). Refused with the ingest path's own
+  // unknown-endpoint answer, so this is indistinguishable from posting to an ID
+  // that does not exist — and nothing is forwarded, so nothing is stored.
+  if (
+    form.status !== "not_found" &&
+    !formAnswersOnHost(request.headers.get("host"), form.workspaceSlug, RENDER_DOMAIN)
+  ) {
+    return refuse(request, endpointNotFound());
   }
 
   if (form.status !== "ok") return forward();

@@ -16,7 +16,9 @@ import { recordExposure } from "@/lib/hindsight/store";
 import { VISITOR_COOKIE } from "@/lib/hindsight/visitor";
 import { cookieName, decodeFlash, ERROR_FLAG } from "@/lib/render/flash";
 import { loadForm } from "@/lib/render/form";
+import { formAnswersOnHost } from "@/lib/render/host";
 import { resolveStepContext } from "@/lib/steps/serve";
+import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 import { EmbedFrame } from "./embed-frame";
 
 /**
@@ -48,7 +50,7 @@ import { EmbedFrame } from "./embed-frame";
  *
  * ## Three ways this page is not a form
  *
- * Unknown or deleted → 404. A live endpoint with **no** schema → an explanation,
+ * Unknown, deleted, or requested on another workspace's subdomain → 404. A live endpoint with **no** schema → an explanation,
  * not an error: that is #50 working as designed. A schema row this build cannot
  * parse → our bug, said plainly, with the endpoint still named.
  */
@@ -115,7 +117,13 @@ export async function GET(
   const { formId } = await ctx.params;
   const form = await loadForm(formId);
 
-  if (form.status === "not_found") {
+  // Another workspace's subdomain gets the same 404 as no form at all (#109),
+  // and before the no-schema and unreadable pages, both of which name the
+  // endpoint.
+  if (
+    form.status === "not_found" ||
+    !formAnswersOnHost(request.headers.get("host"), form.workspaceSlug, RENDER_DOMAIN)
+  ) {
     return await html(
       <FormDocument title="Form not found">
         <NotFound />
