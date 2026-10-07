@@ -81,7 +81,14 @@ const MAX_CELL_CHARS = 50_000;
 export const SUBMITTED_AT = "Submitted at";
 export const ORIGIN = "Origin";
 export const SUBMISSION_ID = "Submission ID";
-const RESERVED = [SUBMITTED_AT, ORIGIN, SUBMISSION_ID];
+/** Where values go that may not have a column of their own. See `planRow`. */
+export const OTHER_FIELDS = "Other fields";
+const RESERVED = [SUBMITTED_AT, ORIGIN, SUBMISSION_ID, OTHER_FIELDS];
+
+/** The widest header a schema-less endpoint may grow a sheet to. */
+export const MAX_HEADER_COLUMNS = 100;
+/** A header cell longer than this is cut. */
+export const MAX_HEADER_NAME_CHARS = 100;
 
 const ORIGIN_LABEL = {
   human: "Human",
@@ -151,7 +158,10 @@ export async function deliverGoogleSheets(context: AdapterContext): Promise<Adap
   if (!headerRead.ok) return sheetsFailure(headerRead, context, config.sheetName, requestHeaders);
   const header = firstRow(headerRead.json);
 
-  const plan = planRow(header, sheetRow(context.payload));
+  const declaredFields = context.declaredFields ?? null;
+  const plan = planRow(header, sheetRow(context.payload, { declaredFields }), {
+    hasSchema: declaredFields !== null,
+  });
 
   // 2. Columns the header does not have yet, written to the right of it.
   if (plan.added.length > 0) {
@@ -210,33 +220,63 @@ export async function deliverGoogleSheets(context: AdapterContext): Promise<Adap
 // ---------------------------------------------------------------------------
 
 /**
- * A submission as `[column name, value]` pairs, ours first.
+ * One value bound for the sheet.
  *
- * Pairs rather than an object, so a field literally called `__proto__` is a
+ * `field` entries are the form's own values; everything else is ours. `key`
+ * is the field's key exactly as submitted, kept for the `Other fields` JSON
+ * when the value does not get a column of its own.
+ */
+export type RowEntry = {
+  name: string;
+  value: Cell;
+  source: "ours" | "field";
+  key: string;
+  /** True when the endpoint's active schema declares this key. */
+  declared: boolean;
+};
+
+export type RowOptions = {
+  /** The active schema's field keys, or null for an endpoint without one. */
+  declaredFields?: readonly string[] | null;
+};
+
+/**
+ * A submission as an ordered list of entries, ours first.
+ *
+ * A list rather than an object, so a field literally called `__proto__` is a
  * column name and not a prototype — the same trap `src/lib/ingest/body.ts`
  * guards against.
  */
-export function sheetRow(payload: SubmissionPayload): [string, Cell][] {
+export function sheetRow(payload: SubmissionPayload, options: RowOptions = {}): RowEntry[] {
   const { submission } = payload;
-  const pairs: [string, Cell][] = [
-    [SUBMITTED_AT, submission.submittedAt],
-    [ORIGIN, ORIGIN_LABEL[submission.origin]],
-    [SUBMISSION_ID, submission.id],
+  const declared = new Set(options.declaredFields ?? []);
+  const ours = (name: string, value: Cell): RowEntry => ({
+    name,
+    value,
+    source: "ours",
+    key: name,
+    declared: false,
+  });
+  const entries: RowEntry[] = [
+    ours(SUBMITTED_AT, submission.submittedAt),
+    ours(ORIGIN, ORIGIN_LABEL[submission.origin]),
+    ours(SUBMISSION_ID, submission.id),
   ];
   const taken = new Set(RESERVED.map(normalise));
 
-  const push = (name: string, value: Cell) => {
-    let column = name;
-    if (taken.has(normalise(column))) column = `${name} (field)`;
+  const push = (key: string, value: Cell, source: RowEntry["source"]) => {
+    const base = headerName(key);
+    let column = base;
+    if (taken.has(normalise(column))) column = `${base} (field)`;
     // Two fields that only differ by case are still two fields.
     let suffix = 2;
-    while (taken.has(normalise(column))) column = `${name} (field ${suffix++})`;
+    while (taken.has(normalise(column))) column = `${base} (field ${suffix++})`;
     taken.add(normalise(column));
-    pairs.push([column, value]);
+    entries.push({ name: column, value, source, key, declared: declared.has(key) });
   };
 
   for (const [key, value] of Object.entries(submission.values)) {
-    push(key, cellValue(value));
+    push(key, cellValue(value), "field");
   }
 
   // Attribution is a column only once there is something in it, so a form that
@@ -250,10 +290,10 @@ export function sheetRow(payload: SubmissionPayload): [string, Cell][] {
     ["utm_content", attribution.utmContent],
   ];
   for (const [name, value] of utm) {
-    if (value !== null && value !== "") push(name, value);
+    if (value !== null && value !== "") push(name, value, "ours");
   }
 
-  return pairs;
+  return entries;
 }
 
 export type RowPlan = {
@@ -271,8 +311,28 @@ export type RowPlan = {
  * The first header cell matching a name wins, so a sheet with a duplicated
  * column still gets each value once. A blank header cell is never matched — it
  * is somebody's gap, not a column of ours.
+ *
+ * ## Who may add a column (security review M3)
+ *
+ * On an open endpoint the submitter chooses the field names, so "a field with
+ * no column gets one" would let one POST with two thousand invented keys widen
+ * a customer's sheet by two thousand columns. So:
+ *
+ * - **With an active schema**, only declared fields get new columns. Anything
+ *   else goes into one `Other fields` column, as JSON.
+ * - **Without one**, the header is capped at `MAX_HEADER_COLUMNS` in total;
+ *   fields past the cap go into `Other fields` the same way. That column is
+ *   always allowed — it is the one place the overflow can go, and refusing it
+ *   would drop values from the sheet.
+ *
+ * Nothing is lost either way: the submission itself, with every field, is in
+ * Endpoint and in every other destination.
  */
-export function planRow(header: string[], pairs: [string, Cell][]): RowPlan {
+export function planRow(
+  header: string[],
+  entries: RowEntry[],
+  options: { hasSchema: boolean } = { hasSchema: false },
+): RowPlan {
   const index = new Map<string, number>();
   header.forEach((name, position) => {
     const key = normalise(name);
@@ -281,7 +341,9 @@ export function planRow(header: string[], pairs: [string, Cell][]): RowPlan {
 
   const added: string[] = [];
   const placed: [number, Cell][] = [];
-  for (const [name, value] of pairs) {
+  const overflow: [string, Cell][] = [];
+
+  const place = (name: string, value: Cell) => {
     const key = normalise(name);
     let position = index.get(key);
     if (position === undefined) {
@@ -290,6 +352,25 @@ export function planRow(header: string[], pairs: [string, Cell][]): RowPlan {
       added.push(name);
     }
     placed.push([position, value]);
+  };
+
+  for (const entry of entries) {
+    if (entry.source === "ours" || index.has(normalise(entry.name))) {
+      place(entry.name, entry.value);
+      continue;
+    }
+    const mayCreate = options.hasSchema
+      ? entry.declared
+      : // One slot is kept for `Other fields`, so the header stays at the cap.
+        header.length + added.length < MAX_HEADER_COLUMNS - 1;
+    if (mayCreate) place(entry.name, entry.value);
+    else overflow.push([entry.key, entry.value]);
+  }
+
+  if (overflow.length > 0) {
+    // `Object.fromEntries` defines own properties, so a key named `__proto__`
+    // is data here rather than a prototype.
+    place(OTHER_FIELDS, capCell(JSON.stringify(Object.fromEntries(overflow))));
   }
 
   const width = header.length + added.length;
@@ -297,6 +378,11 @@ export function planRow(header: string[], pairs: [string, Cell][]): RowPlan {
   for (const [position, value] of placed) row[position] = value;
 
   return { added, row, idColumn: index.get(normalise(SUBMISSION_ID)) ?? 0 };
+}
+
+/** A field key as a header cell: capped, so a 10 kB key is not a 10 kB header. */
+function headerName(key: string): string {
+  return key.length <= MAX_HEADER_NAME_CHARS ? key : key.slice(0, MAX_HEADER_NAME_CHARS);
 }
 
 /** A value as one cell. Strings stay strings; nothing is ever evaluated. */

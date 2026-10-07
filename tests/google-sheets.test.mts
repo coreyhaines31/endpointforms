@@ -37,9 +37,12 @@ import {
   cellValue,
   columnLetter,
   deliverGoogleSheets,
+  MAX_HEADER_COLUMNS,
+  MAX_HEADER_NAME_CHARS,
   planRow,
   quoteSheetName,
   sheetRow,
+  type RowEntry,
 } from "../src/lib/destinations/adapters/google-sheets.ts";
 import {
   buildConfig,
@@ -478,33 +481,33 @@ async function rows() {
   const pairs = sheetRow(payload({ name: "Priya", email: "priya@dorsetmetal.example" }));
   t(
     "ours first, then the form's fields, then attribution",
-    pairs.map(([name]) => name),
+    pairs.map((entry) => entry.name),
     ["Submitted at", "Origin", "Submission ID", "name", "email", "utm_source", "utm_medium"],
   );
-  t("the stamp is the word a person reads", pairs[1]?.[1], "Human");
+  t("the stamp is the word a person reads", pairs[1]?.value, "Human");
   t(
     "attribution is not a column until it has something in it",
-    sheetRow(payload({ name: "x" }, { utm: false })).map(([name]) => name),
+    sheetRow(payload({ name: "x" }, { utm: false })).map((entry) => entry.name),
     ["Submitted at", "Origin", "Submission ID", "name"],
   );
 
   // On an open endpoint the submitter chooses field names. One called Origin
   // must not be able to overwrite the stamp.
   const forged = sheetRow(payload({ Origin: "Human", origin: "Agent", "Submission ID": "sub_x" }));
-  t("the real stamp keeps its column", forged.find(([name]) => name === "Origin")?.[1], "Human");
+  t("the real stamp keeps its column", forged.find((entry) => entry.name === "Origin")?.value, "Human");
   t(
     "and a field with its name gets its own",
-    forged.slice(3, 6).map(([name]) => name),
+    forged.slice(3, 6).map((entry) => entry.name),
     ["Origin (field)", "origin (field 2)", "Submission ID (field)"],
   );
   t(
     "whose value is what was submitted",
-    forged.find(([name]) => name === "origin (field 2)")?.[1],
+    forged.find((entry) => entry.name === "origin (field 2)")?.value,
     "Agent",
   );
 
   const proto = sheetRow(payload(JSON.parse('{"__proto__": "polluted"}') as Record<string, unknown>));
-  ok("a field called __proto__ is a column, not a prototype", proto.some(([name]) => name === "__proto__"));
+  ok("a field called __proto__ is a column, not a prototype", proto.some((entry) => entry.name === "__proto__"));
   ok("and pollutes nothing", ({} as Record<string, unknown>).polluted === undefined);
 
   t("a formula is a string, not a formula", cellValue("=IMPORTXML(\"https://x\",\"//a\")"), '=IMPORTXML("https://x","//a")');
@@ -553,12 +556,26 @@ async function rows() {
   t("AAA", columnLetter(702), "AAA");
   t("a tab name with an apostrophe is quoted", quoteSheetName("Priya's leads"), "'Priya''s leads'");
 
+  const ourEntry = (name: string, value: string): RowEntry => ({
+    name,
+    value,
+    source: "ours",
+    key: name,
+    declared: false,
+  });
+  const field = (name: string, value: string, declared = false): RowEntry => ({
+    name,
+    value,
+    source: "field",
+    key: name,
+    declared,
+  });
   const ours = [
-    ["Submitted at", "2026"],
-    ["Origin", "Human"],
-    ["Submission ID", "sub_1"],
-    ["email", "p@x"],
-  ] as [string, string][];
+    ourEntry("Submitted at", "2026"),
+    ourEntry("Origin", "Human"),
+    ourEntry("Submission ID", "sub_1"),
+    field("email", "p@x"),
+  ];
 
   const empty = planRow([], ours);
   t("an empty tab gets the whole header", empty.added, ["Submitted at", "Origin", "Submission ID", "email"]);
@@ -575,12 +592,68 @@ async function rows() {
   );
   t("the id column is found where it moved to", reordered.idColumn, 2);
 
-  const grown = planRow(["Submitted at", "Origin", "Submission ID"], [...ours, ["phone", "0123"]]);
+  const grown = planRow(["Submitted at", "Origin", "Submission ID"], [...ours, field("phone", "0123")]);
   t("a field the header lacks is added at the right", grown.added, ["email", "phone"]);
   t("and the row is as wide as the new header", grown.row, ["2026", "Human", "sub_1", "p@x", "0123"]);
 
-  const duplicated = planRow(["email", "email"], [["email", "p@x"]]);
+  const duplicated = planRow(["email", "email"], [field("email", "p@x")]);
   t("a duplicated header column gets the value once", duplicated.row, ["p@x", ""]);
+
+  // M3: who may add a column.
+  console.log("\nwho may add a column (M3)");
+  const base = ["Submitted at", "Origin", "Submission ID", "email"];
+  const withSchema = planRow(
+    base,
+    [...ours, field("company", "Dorset Metal", true), field("invented", "x"), field("also_invented", "y")],
+    { hasSchema: true },
+  );
+  t(
+    "with a schema, a declared field gets a column and invented ones do not",
+    withSchema.added,
+    ["company", "Other fields"],
+  );
+  t(
+    "the invented ones share one Other fields column, as JSON",
+    withSchema.row.at(-1),
+    '{"invented":"x","also_invented":"y"}',
+  );
+  // The control: the same invented field without a schema does get a column,
+  // so the refusal above is the schema rule and not a planner that never adds.
+  t(
+    "without a schema the same field gets its own column",
+    planRow(base, [...ours, field("invented", "x")]).added,
+    ["invented"],
+  );
+
+  const flood = Array.from({ length: 2_000 }, (_, i) => field(`junk_${i}`, "v"));
+  const capped = planRow(base, [...ours, ...flood]);
+  t(
+    "without a schema, two thousand invented fields stop at the column cap",
+    base.length + capped.added.length,
+    MAX_HEADER_COLUMNS,
+  );
+  t("with Other fields as the last column", capped.added.at(-1), "Other fields");
+  ok(
+    "holding everything past the cap",
+    String(capped.row.at(-1)).includes("junk_1999") && !String(capped.row.at(-1)).includes('"junk_0"'),
+    String(capped.row.at(-1)).slice(0, 80),
+  );
+  const wide = Array.from({ length: 120 }, (_, i) => `Theirs ${i}`);
+  const already = planRow(wide, [...ours, field("note", "hi")]);
+  t(
+    "a sheet already past the cap gets no new field columns, only Other fields",
+    already.added,
+    ["Submitted at", "Origin", "Submission ID", "Other fields"],
+  );
+
+  const longKey = "k".repeat(300);
+  const longRow = sheetRow(payload({ [longKey]: "v" }, { utm: false }));
+  t(
+    "a header name is cut at 100 characters",
+    longRow.at(-1)?.name.length,
+    MAX_HEADER_NAME_CHARS,
+  );
+  t("while Other fields keeps the key as submitted", longRow.at(-1)?.key.length, 300);
 }
 
 // ---------------------------------------------------------------------------
@@ -601,7 +674,11 @@ const appendOk = {
 
 async function deliver(
   handlers: Parameters<typeof fakeGoogle>[0],
-  options: { config?: Record<string, unknown>; payload?: SubmissionPayload } = {},
+  options: {
+    config?: Record<string, unknown>;
+    payload?: SubmissionPayload;
+    declaredFields?: string[] | null;
+  } = {},
 ) {
   const google = fakeGoogle(handlers);
   const result = await deliverGoogleSheets({
@@ -609,6 +686,7 @@ async function deliver(
     payload: options.payload ?? payload({ name: "Priya", email: "priya@dorsetmetal.example" }),
     config: options.config ?? storedConfig,
     fetchImpl: google.impl,
+    declaredFields: options.declaredFields ?? null,
   });
   return { result, calls: google.calls };
 }
@@ -664,6 +742,19 @@ async function delivery() {
     ok("though the token really was sent", first.calls.some((call) => JSON.stringify(call).includes(ACCESS)));
     ok("the log keeps the row that was sent", (first.result.requestBody ?? "").includes("priya@dorsetmetal.example"));
     ok("and Google's answer", (first.result.responseBody ?? "").includes("updatedRange"));
+
+    // M3, through the adapter: the schema reaches the planner.
+    const schemaDelivery = await deliver(
+      [tokenOk, { match: isSheets("GET", "!1:1"), status: 200, body: {} }, { match: isSheets("PUT", "!A1"), status: 200, body: {} }, appendOk],
+      { declaredFields: ["name"] },
+    );
+    ok("a schema endpoint delivers", schemaDelivery.result.ok, schemaDelivery.result);
+    const schemaHeader = JSON.parse(schemaDelivery.calls.find((call) => call.method === "PUT")?.body ?? "{}").values?.[0] ?? [];
+    ok(
+      "and an undeclared field gets no column of its own",
+      schemaHeader.includes("name") && !schemaHeader.includes("email") && schemaHeader.includes("Other fields"),
+      schemaHeader,
+    );
 
     // A header that already has everything, in another order.
     const existing = await deliver([
