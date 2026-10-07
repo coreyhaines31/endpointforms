@@ -282,7 +282,7 @@ export function sheetRow(payload: SubmissionPayload, options: RowOptions = {}): 
   for (const [key, value] of Object.entries(submission.values)) {
     // Compared after `normalise`, so `Origin` followed by a zero-width space,
     // or written in fullwidth letters, is still a field called Origin.
-    const base = headerName(key);
+    const base = neutraliseFormula(headerName(key));
     let column = base;
     if (taken.has(normalise(column))) column = `${base} (field)`;
     // Two fields that only differ by case are still two fields.
@@ -358,7 +358,7 @@ export function planRow(
       index.set(key, position);
       added.push(name);
     }
-    placed.push([position, value]);
+    placed.push([position, typeof value === "string" ? neutraliseFormula(value) : value]);
   };
 
   for (const entry of entries) {
@@ -396,6 +396,27 @@ export function planRow(
   for (const [position, value] of placed) row[position] = value;
 
   return { added, row, idColumn: index.get(normalise(SUBMISSION_ID)) ?? 0 };
+}
+
+/**
+ * A string that would start a formula in a spreadsheet, made inert with a
+ * leading apostrophe (security review M5).
+ *
+ * `RAW` already stops Google Sheets evaluating it. This is for what happens
+ * **next**: someone downloads the sheet as CSV or `.xlsx` and opens it in Excel
+ * or LibreOffice, which do evaluate `=HYPERLINK(…)`, `+cmd|…`, `-1+1` and
+ * `@SUM(…)` — CSV injection. A leading tab or carriage return is treated the
+ * same way, because some importers strip it and leave the formula behind.
+ *
+ * **The trade-off is a visible quote.** With `RAW` input Google does not treat
+ * the apostrophe as its own hidden text prefix, so a submitted `-5` or `@acme`
+ * shows as `'-5` and `'@acme` in the sheet. That is the cost of a cell that is
+ * safe in every program it is later opened in, and it is documented in
+ * docs/28. Numbers typed as numbers are not strings and are left alone.
+ */
+export function neutraliseFormula(value: string): string {
+  if (/^[\t\r]/.test(value) || /^\s*[=+\-@]/.test(value)) return `'${value}`;
+  return value;
 }
 
 /** A field key as a header cell: capped, so a 10 kB key is not a 10 kB header. */

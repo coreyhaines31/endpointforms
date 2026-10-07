@@ -437,6 +437,13 @@ filename and its link; **the link expires** (see #66 above), the filename does n
 running with the sheet owner's access, which is a known way to exfiltrate a spreadsheet. The cost
 is that `Submitted at` arrives as ISO-8601 text — it sorts correctly and formats in one click.
 
+**A string that would start a formula gets a leading apostrophe** — any cell or header name whose
+first non-whitespace character is `=`, `+`, `-` or `@`, or that starts with a tab or carriage
+return. `RAW` already stops Google evaluating it; this is for the CSV or `.xlsx` someone downloads
+later and opens in Excel or LibreOffice, which do. **The trade-off is a visible quote**: with
+`RAW` input Google does not treat the apostrophe as its hidden text prefix, so a submitted `-5`
+or `@acme` shows as `'-5` and `'@acme`. Numbers sent as numbers are not touched.
+
 **Retries do not duplicate rows.** From attempt 2 on, the `Submission ID` column is read first and
 the row is not appended again if it is already there.
 
