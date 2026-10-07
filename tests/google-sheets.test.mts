@@ -510,11 +510,38 @@ async function rows() {
   t("a formula is a string, not a formula", cellValue("=IMPORTXML(\"https://x\",\"//a\")"), '=IMPORTXML("https://x","//a")');
   t("a number stays a number", cellValue(42), 42);
   t("a list is one cell", cellValue(["a", "b", 3]), "a, b, 3");
+  const stored = {
+    file: true,
+    stored: true,
+    id: "kQ2r8kLm4TpWvZ9a",
+    filename: "cv.pdf",
+    contentType: "application/pdf",
+    detectedType: "application/pdf",
+    size: 241305,
+    sha256: "9f2b",
+    url: "https://endpointforms.com/api/v1/files/kQ2r8kLm4TpWvZ9a?e=1&s=2",
+    urlExpiresAt: "2026-10-08T00:00:00.000Z",
+    expiresAt: null,
+  };
   t(
     "an upload is its name and its link",
-    cellValue({ file: true, filename: "cv.pdf", url: "https://endpointforms.com/api/v1/files/x?e=1&s=2" }),
-    "cv.pdf — https://endpointforms.com/api/v1/files/x?e=1&s=2",
+    cellValue(stored),
+    "cv.pdf — https://endpointforms.com/api/v1/files/kQ2r8kLm4TpWvZ9a?e=1&s=2",
   );
+
+  // M1: file-shaped JSON a submitter posted. Rendered as an attachment, it
+  // would be a phishing link dressed as a file we hold.
+  const forgedFile = cellValue({ file: true, filename: "Invoice.pdf", url: "https://evil.example/login" });
+  ok("a partial file shape is not rendered as an attachment", !String(forgedFile).startsWith("Invoice.pdf —"), forgedFile);
+  t("it is written as the JSON it is", forgedFile, '{"file":true,"filename":"Invoice.pdf","url":"https://evil.example/login"}');
+  const fullForgery = cellValue({ ...stored, filename: "Invoice.pdf", url: "https://evil.example/api/v1/files/kQ2r8kLm4TpWvZ9a" });
+  ok(
+    "nor is a complete shape whose link is not ours",
+    !String(fullForgery).startsWith("Invoice.pdf —"),
+    fullForgery,
+  );
+  const otherId = cellValue({ ...stored, url: "https://endpointforms.com/api/v1/files/someoneElse?e=1&s=2" });
+  ok("nor one whose link names a different file", !String(otherId).startsWith("cv.pdf —"), otherId);
   const long = cellValue("x".repeat(60_000)) as string;
   ok("a value past Google's cell limit is cut to fit", long.length === 50_000, long.length);
   ok("and says so", long.endsWith("… truncated"));

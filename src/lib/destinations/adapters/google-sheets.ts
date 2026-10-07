@@ -8,6 +8,8 @@ import type {
   FailureKind,
   SubmissionPayload,
 } from "../types.ts";
+import { SITE_URL } from "../../site.ts";
+import { isStoredFileRef } from "../../uploads/types.ts";
 import { readCapped } from "./webhook.ts";
 
 /**
@@ -307,15 +309,34 @@ export function cellValue(value: unknown): Cell {
     // An uploaded file (#66): its name, and the link while the link lasts. The
     // link expires — see `urlExpiresAt` in the webhook payload — which is why the
     // name comes first and is still useful after it does.
-    const record = value as Record<string, unknown>;
-    if (record.file === true && typeof record.filename === "string") {
-      return typeof record.url === "string"
-        ? `${record.filename} — ${record.url}`
-        : record.filename;
+    //
+    // Only for a value that is a whole stored reference **and** whose link is
+    // our own download route for that id. The "filename — link" form reads as
+    // a file we hold, and a submitter can post JSON in that shape naming any
+    // URL — `{file: true, filename: "Invoice.pdf", url: "https://evil…/login"}`
+    // would otherwise sit in the sheet looking like an attachment. The shape
+    // check alone is not enough (CLAUDE.md: a structural guard is not a trust
+    // boundary), so the link must also be one we would have minted. Anything
+    // else is written as the JSON it is.
+    if (isStoredFileRef(value) && isOurDownloadUrl(value.url, value.id)) {
+      return capCell(`${value.filename} — ${value.url}`);
     }
     return capCell(JSON.stringify(value));
   }
   return capCell(String(value));
+}
+
+/** `{SITE_URL}/api/v1/files/{id}?…` — the only link `signDownloadUrl` mints. */
+function isOurDownloadUrl(url: string, id: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.origin === new URL(SITE_URL).origin &&
+      parsed.pathname === `/api/v1/files/${encodeURIComponent(id)}`
+    );
+  } catch {
+    return false;
+  }
 }
 
 function capCell(value: string): string {
