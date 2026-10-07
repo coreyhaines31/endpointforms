@@ -262,9 +262,26 @@ export function sheetRow(payload: SubmissionPayload, options: RowOptions = {}): 
     ours(ORIGIN, ORIGIN_LABEL[submission.origin]),
     ours(SUBMISSION_ID, submission.id),
   ];
-  const taken = new Set(RESERVED.map(normalise));
+  // Attribution is a column only once there is something in it, so a form that
+  // never sees a UTM does not grow five empty columns. Its names are reserved
+  // before the form's fields are read, for the same reason ours are: a field
+  // called `utm_source` must not take the column the real attribution goes in.
+  const attribution = submission.attribution;
+  const utm = (
+    [
+      ["utm_source", attribution.utmSource],
+      ["utm_medium", attribution.utmMedium],
+      ["utm_campaign", attribution.utmCampaign],
+      ["utm_term", attribution.utmTerm],
+      ["utm_content", attribution.utmContent],
+    ] as [string, string | null][]
+  ).filter((pair): pair is [string, string] => pair[1] !== null && pair[1] !== "");
 
-  const push = (key: string, value: Cell, source: RowEntry["source"]) => {
+  const taken = new Set([...RESERVED, ...utm.map(([name]) => name)].map(normalise));
+
+  for (const [key, value] of Object.entries(submission.values)) {
+    // Compared after `normalise`, so `Origin` followed by a zero-width space,
+    // or written in fullwidth letters, is still a field called Origin.
     const base = headerName(key);
     let column = base;
     if (taken.has(normalise(column))) column = `${base} (field)`;
@@ -272,26 +289,16 @@ export function sheetRow(payload: SubmissionPayload, options: RowOptions = {}): 
     let suffix = 2;
     while (taken.has(normalise(column))) column = `${base} (field ${suffix++})`;
     taken.add(normalise(column));
-    entries.push({ name: column, value, source, key, declared: declared.has(key) });
-  };
-
-  for (const [key, value] of Object.entries(submission.values)) {
-    push(key, cellValue(value), "field");
+    entries.push({
+      name: column,
+      value: cellValue(value),
+      source: "field",
+      key,
+      declared: declared.has(key),
+    });
   }
 
-  // Attribution is a column only once there is something in it, so a form that
-  // never sees a UTM does not grow five empty columns.
-  const attribution = submission.attribution;
-  const utm: [string, string | null][] = [
-    ["utm_source", attribution.utmSource],
-    ["utm_medium", attribution.utmMedium],
-    ["utm_campaign", attribution.utmCampaign],
-    ["utm_term", attribution.utmTerm],
-    ["utm_content", attribution.utmContent],
-  ];
-  for (const [name, value] of utm) {
-    if (value !== null && value !== "") push(name, value, "ours");
-  }
+  for (const [name, value] of utm) entries.push(ours(name, value));
 
   return entries;
 }
@@ -355,7 +362,18 @@ export function planRow(
   };
 
   for (const entry of entries) {
-    if (entry.source === "ours" || index.has(normalise(entry.name))) {
+    if (entry.source === "ours") {
+      place(entry.name, entry.value);
+      continue;
+    }
+    // Security review M4: with a schema, only a declared field may write into
+    // a column that already exists. Otherwise a submitter who guesses the name
+    // of a colleague's "Approved" column can fill it on every row they send.
+    if (options.hasSchema && !entry.declared) {
+      overflow.push([entry.key, entry.value]);
+      continue;
+    }
+    if (index.has(normalise(entry.name))) {
       place(entry.name, entry.value);
       continue;
     }
@@ -431,8 +449,20 @@ function capCell(value: string): string {
   return `${value.slice(0, MAX_CELL_CHARS - note.length)}${note}`;
 }
 
-function normalise(name: string): string {
-  return name.trim().toLowerCase();
+/**
+ * A column name as it is compared — for matching a header, and for the
+ * reserved-name check (security review M4).
+ *
+ * NFKC folds compatibility forms (fullwidth `Ｏｒｉｇｉｎ`, ligatures) onto the
+ * letters they look like, and `\p{Cf}` removes format characters — a zero-width
+ * space or joiner after `Origin` renders identically in a sheet and would
+ * otherwise be a different name. What this does **not** fold is a cross-script
+ * homoglyph: a Cyrillic `О` in `Оrigin` is a different letter to Unicode, not a
+ * compatibility form of a Latin one, and no normalisation maps it. That field
+ * gets a column that looks like ours; it cannot write into ours.
+ */
+export function normalise(name: string): string {
+  return name.normalize("NFKC").replace(/\p{Cf}/gu, "").trim().toLowerCase();
 }
 
 /** `'Leads'`, with an apostrophe in the name doubled, as A1 notation requires. */

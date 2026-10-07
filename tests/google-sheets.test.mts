@@ -615,7 +615,8 @@ async function rows() {
   t(
     "the invented ones share one Other fields column, as JSON",
     withSchema.row.at(-1),
-    '{"invented":"x","also_invented":"y"}',
+    // `email` is in the header but undeclared, so it overflows too (M4).
+    '{"email":"p@x","invented":"x","also_invented":"y"}',
   );
   // The control: the same invented field without a schema does get a column,
   // so the refusal above is the schema rule and not a planner that never adds.
@@ -654,6 +655,52 @@ async function rows() {
     MAX_HEADER_NAME_CHARS,
   );
   t("while Other fields keeps the key as submitted", longRow.at(-1)?.key.length, 300);
+
+  // M4: lookalike stamps, and writing into somebody else's column.
+  console.log("\nlookalikes and customer columns (M4)");
+  const zeroWidth = sheetRow(payload({ "Origin​": "Human" }, { utm: false }));
+  t("Origin with a zero-width space is still renamed", zeroWidth[3]?.name, "Origin​ (field)");
+  t(
+    "and does not land in the real Origin column",
+    planRow(["Submitted at", "Origin", "Submission ID"], zeroWidth).row,
+    [zeroWidth[0]?.value, "Human", "sub_real_lead_01", "Human"],
+  );
+  const fullwidth = sheetRow(payload({ "Ｏｒｉｇｉｎ": "Human" }, { utm: false }));
+  t("fullwidth Origin folds under NFKC and is renamed", fullwidth[3]?.name, "Ｏｒｉｇｉｎ (field)");
+  const joiner = sheetRow(payload({ "Submission⁠ ID": "sub_forged" }, { utm: false }));
+  ok("a word joiner inside Submission ID is renamed", joiner[3]?.name.endsWith("(field)") ?? false, joiner[3]?.name);
+  // Not folded, and said so: a Cyrillic О is a different letter, not a
+  // compatibility form. It gets a column that looks like ours, never ours.
+  const cyrillic = sheetRow(payload({ "Оrigin": "Human" }, { utm: false }));
+  const cyrillicPlan = planRow(["Submitted at", "Origin", "Submission ID"], cyrillic);
+  t("a Cyrillic lookalike cannot write into the real Origin column", cyrillicPlan.row[1], "Human");
+  t("it gets a column of its own", cyrillicPlan.added, ["Оrigin"]);
+
+  const utmField = sheetRow(payload({ utm_source: "forged" }));
+  t(
+    "a field called utm_source does not take the attribution column",
+    utmField.find((entry) => entry.name === "utm_source")?.value,
+    "google",
+  );
+
+  const theirs = ["Submitted at", "Origin", "Submission ID", "email", "Approved"];
+  const sneaky = [...ours, field("Approved", "yes")];
+  // Without a schema every field name is the submitter's, and matching by
+  // name is the feature: a field called Approved fills a column called
+  // Approved. Documented in docs/28 as the schema-less trade-off.
+  t(
+    "without a schema, a field named after a customer column writes into it",
+    planRow(theirs, sneaky).row,
+    ["2026", "Human", "sub_1", "p@x", "yes"],
+  );
+  const guarded = planRow(theirs, sneaky, { hasSchema: true });
+  t("with a schema, an undeclared field cannot write into it", guarded.row[4], "");
+  t("it goes to Other fields instead", guarded.row.at(-1), '{"email":"p@x","Approved":"yes"}');
+  t(
+    "while a declared one still can",
+    planRow(theirs, [...ours.slice(0, 3), field("email", "p@x", true), field("Approved", "yes", true)], { hasSchema: true }).row,
+    ["2026", "Human", "sub_1", "p@x", "yes"],
+  );
 }
 
 // ---------------------------------------------------------------------------
