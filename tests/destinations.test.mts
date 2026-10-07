@@ -312,7 +312,7 @@ console.log("\nretries");
 {
   // Failures that will still be failures in an hour are not retried. Retrying a
   // 401 four times turns one alert into five and delays the one that matters.
-  for (const failure of ["auth", "rejected", "missing", "configuration"] as const) {
+  for (const failure of ["auth", "revoked", "rejected", "missing", "configuration"] as const) {
     const decision = decideRetry({ attempt: 1, failure, now: NOW });
     ok(`does not retry ${failure}`, !decision.willRetry && decision.nextRetryAt === null);
     ok(`says why it did not retry ${failure}`, decision.reason.trim().length > 10, decision.reason);
@@ -606,7 +606,7 @@ console.log("\nconfig and redaction");
 
 console.log("\nunavailable kinds");
 {
-  for (const kind of ["google_sheets", "hubspot", "salesforce"] as const) {
+  for (const kind of ["hubspot", "salesforce"] as const) {
     ok(`${kind} is not offered as a working option`, !isAvailableKind(kind));
     const option = ADAPTER_OPTIONS.find((entry) => entry.kind === kind);
     ok(`${kind} is still named, and says why not`, option !== undefined && option.available === false);
@@ -615,9 +615,19 @@ console.log("\nunavailable kinds");
       buildConfig(kind, { url: "https://example.com" }).ok === false,
     );
   }
-  for (const kind of ["webhook", "email", "slack"] as const) {
+  for (const kind of ["webhook", "email", "slack", "google_sheets"] as const) {
     ok(`${kind} is available`, isAvailableKind(kind));
   }
+
+  // Available, and still not creatable from a form: the credential comes from
+  // Google's consent screen, so a post that skipped it is refused (#67).
+  const fromForm = buildConfig("google_sheets", { sheetName: "Leads" });
+  ok("google_sheets cannot be built from a form alone", !fromForm.ok);
+  ok(
+    "and says to connect a Google account",
+    !fromForm.ok && /Connect a Google account/.test(fromForm.message),
+    fromForm,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -940,36 +950,36 @@ console.log("\nendpoint reach");
 
   t(
     "no destinations at all is deaf",
-    endpointReach([], { mailConfigured: true }).state,
+    endpointReach([], { mailConfigured: true, sheetsConfigured: true }).state,
     "deaf",
   );
   t(
     "and every destination paused is deaf too — pausing is how you get here",
-    endpointReach([{ kind: "webhook", enabled: false }], { mailConfigured: true }).state,
+    endpointReach([{ kind: "webhook", enabled: false }], { mailConfigured: true, sheetsConfigured: true }).state,
     "deaf",
   );
   ok(
     "the deaf sentence states the consequence before the fix",
-    /stored/.test(endpointReach([], { mailConfigured: true }).detail) &&
-      /nothing leaves|no one is notified/i.test(endpointReach([], { mailConfigured: true }).detail),
-    endpointReach([], { mailConfigured: true }).detail,
+    /stored/.test(endpointReach([], { mailConfigured: true, sheetsConfigured: true }).detail) &&
+      /nothing leaves|no one is notified/i.test(endpointReach([], { mailConfigured: true, sheetsConfigured: true }).detail),
+    endpointReach([], { mailConfigured: true, sheetsConfigured: true }).detail,
   );
 
   t(
     "an email destination on a deployment that cannot send mail is unsendable",
-    endpointReach([email], { mailConfigured: false }).state,
+    endpointReach([email], { mailConfigured: false, sheetsConfigured: true }).state,
     "unsendable",
   );
   ok(
     "and says why, and that nothing is lost",
     /not switched on for this deployment/.test(
-      endpointReach([email], { mailConfigured: false }).detail,
-    ) && /nothing is lost/.test(endpointReach([email], { mailConfigured: false }).detail),
-    endpointReach([email], { mailConfigured: false }).detail,
+      endpointReach([email], { mailConfigured: false, sheetsConfigured: true }).detail,
+    ) && /nothing is lost/.test(endpointReach([email], { mailConfigured: false, sheetsConfigured: true }).detail),
+    endpointReach([email], { mailConfigured: false, sheetsConfigured: true }).detail,
   );
   ok(
     "and still names the variable for a self-hoster",
-    /RESEND_API_KEY/.test(endpointReach([email], { mailConfigured: false }).detail),
+    /RESEND_API_KEY/.test(endpointReach([email], { mailConfigured: false, sheetsConfigured: true }).detail),
   );
 
   // The state exists to catch "every way out is email and email is off". One
@@ -977,25 +987,57 @@ console.log("\nendpoint reach");
   // health says the rest.
   t(
     "a webhook alongside it is not unsendable",
-    endpointReach([email, webhook], { mailConfigured: false }).state,
+    endpointReach([email, webhook], { mailConfigured: false, sheetsConfigured: true }).state,
     "reachable",
   );
   t(
     "the same email destination is reachable once mail is on",
-    endpointReach([email], { mailConfigured: true }).state,
+    endpointReach([email], { mailConfigured: true, sheetsConfigured: true }).state,
     "reachable",
   );
   t(
     "a paused email destination beside a live webhook still reaches",
-    endpointReach([{ kind: "email", enabled: false }, webhook], { mailConfigured: false }).state,
+    endpointReach([{ kind: "email", enabled: false }, webhook], { mailConfigured: false, sheetsConfigured: true }).state,
     "reachable",
   );
   t(
     "a reachable endpoint has nothing to say",
-    endpointReach([webhook], { mailConfigured: true }).title,
+    endpointReach([webhook], { mailConfigured: true, sheetsConfigured: true }).title,
     "",
   );
-  t("and counts what is switched on", endpointReach([webhook, email], { mailConfigured: true }).enabledCount, 2);
+  t("and counts what is switched on", endpointReach([webhook, email], { mailConfigured: true, sheetsConfigured: true }).enabledCount, 2);
+
+  // #67. A Sheets destination connected while the deployment had an OAuth
+  // client fails every delivery once the client is gone.
+  const sheets = { kind: "google_sheets" as const, enabled: true };
+  t(
+    "Google Sheets on a deployment with no Google client is unsendable",
+    endpointReach([sheets], { mailConfigured: true, sheetsConfigured: false }).state,
+    "unsendable",
+  );
+  ok(
+    "and names the variables to set",
+    /GOOGLE_SHEETS_CLIENT_ID/.test(endpointReach([sheets], { mailConfigured: true, sheetsConfigured: false }).detail),
+  );
+  // The control: the same destination with a client is fine, so the line
+  // above is about the client and not about Sheets.
+  t(
+    "and reachable with one",
+    endpointReach([sheets], { mailConfigured: true, sheetsConfigured: true }).state,
+    "reachable",
+  );
+  const both = endpointReach([sheets, email], { mailConfigured: false, sheetsConfigured: false });
+  t("email and Sheets with neither switched on is unsendable", both.state, "unsendable");
+  ok(
+    "and names both",
+    /email delivery and Google Sheets/.test(both.detail) && /RESEND_API_KEY/.test(both.detail),
+    both.detail,
+  );
+  t(
+    "Sheets that can send rescues email that cannot",
+    endpointReach([sheets, email], { mailConfigured: false, sheetsConfigured: true }).state,
+    "reachable",
+  );
 
   // The grace window in `submissions.ts`. Delivery runs in `after()` and writes
   // its attempt row within milliseconds; a value small enough to catch a row

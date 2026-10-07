@@ -196,6 +196,7 @@ async function attemptDelivery(
           responseStatus: null,
           responseBody: null,
           error: `${adapter.label} destinations are not available in this build, so nothing was delivered. The submission is still here.`,
+          failure: "configuration",
           completedAt: new Date(),
           nextRetryAt: null,
         }),
@@ -253,6 +254,7 @@ async function attemptDelivery(
       config: destination.config,
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
+      declaredFields: job.declaredFields,
     });
   } catch (error) {
     result = {
@@ -287,6 +289,7 @@ async function attemptDelivery(
         // what went wrong and what happens next. "Failed" without "retrying in
         // 30s" is the log line that generates the support ticket.
         error: result.ok ? null : `${result.error ?? "Delivery failed."} ${retry.reason}`.trim(),
+        failure: result.ok ? null : result.failure,
         completedAt: new Date(),
         nextRetryAt: retry.nextRetryAt,
       }),
@@ -343,6 +346,7 @@ export async function sweepDueRetries(
             responseBody: null,
             error:
               "This retry was picked up, but its destination was paused or removed before it could be sent. Nothing was delivered and nothing was lost — re-enable the destination and send it again from this log.",
+            failure: "configuration",
             completedAt: options.now ?? new Date(),
             nextRetryAt: null,
           }),

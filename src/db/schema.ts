@@ -914,6 +914,18 @@ export const deliveryAttempts = pgTable(
     responseBody: text("response_body"),
     /** Transport-level failure, where there is no response at all. */
     error: text("error"),
+    /**
+     * How a failed attempt was classified — a `FailureKind` from
+     * `src/lib/destinations/types.ts` — or null for one that succeeded, is
+     * still pending, or predates this column.
+     *
+     * Stored rather than re-derived from `error` because the sentence is for a
+     * person and the kind is for the health query. A revoked Google grant (#67)
+     * has to read as "reconnect" rather than as one more failure in a row, and
+     * matching on the wording of an error message is how that would silently
+     * stop working the day somebody improved the wording.
+     */
+    failure: text("failure"),
 
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),

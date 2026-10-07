@@ -14,7 +14,8 @@ export type { RedactedConfig };
  * `destinations.config` is jsonb, and some of what goes in it is a credential:
  * a webhook signing secret, a Slack incoming-webhook URL (which *is* the
  * credential — anyone holding it can post to that channel), an `Authorization`
- * header a customer pasted in. None of it may leave the server.
+ * header a customer pasted in, a Google refresh token that can edit every sheet
+ * its account can. None of it may leave the server.
  *
  * The rule enforced here is that **there is one read path for the UI and it
  * redacts** (`redactConfig`), and one read path for the delivery engine and it
@@ -88,14 +89,47 @@ export const slackConfigSchema = z.object({
   webhookUrl: z.string().min(1),
 });
 
+/**
+ * A spreadsheet id, as it appears in `docs.google.com/spreadsheets/d/{id}/`.
+ *
+ * Checked against an allow-list of characters rather than merely URL-encoded,
+ * because it is interpolated into the path of every request to the Sheets API
+ * and a `/` or `..` in it would be a request to an endpoint we never meant to
+ * call, with a customer's token on it.
+ */
+const SPREADSHEET_ID = /^[A-Za-z0-9_-]{10,200}$/;
+
+export const googleSheetsConfigSchema = z.object({
+  spreadsheetId: z.string().regex(SPREADSHEET_ID, { message: "That is not a spreadsheet id." }),
+  /** The tab. Rows are appended under its first row, which is the header. */
+  sheetName: z.string().trim().min(1).max(100),
+  /**
+   * The OAuth refresh token (#67). **The credential** — redacted on every read,
+   * never written into the delivery log, and replaced, not edited, by
+   * reconnecting. See `./google.ts`.
+   */
+  refreshToken: z.string().min(1),
+  /** The Google account that granted it, for the settings screen. Not a secret. */
+  account: z.string().nullable().optional(),
+  /** The spreadsheet's own title when it was connected. A label only. */
+  spreadsheetTitle: z.string().optional(),
+  /**
+   * When this grant was made, ISO 8601. A `revoked` failure older than this is
+   * about the grant it replaced — see `isDisconnected` in `./store.ts`.
+   */
+  connectedAt: z.string(),
+});
+
 export type WebhookConfig = z.infer<typeof webhookConfigSchema>;
 export type EmailConfig = z.infer<typeof emailConfigSchema>;
 export type SlackConfig = z.infer<typeof slackConfigSchema>;
+export type GoogleSheetsConfig = z.infer<typeof googleSheetsConfigSchema>;
 
 const SCHEMAS = {
   webhook: webhookConfigSchema,
   email: emailConfigSchema,
   slack: slackConfigSchema,
+  google_sheets: googleSheetsConfigSchema,
 } as const;
 
 export type ConfigFor<K extends DestinationKind> = K extends "webhook"
@@ -104,7 +138,28 @@ export type ConfigFor<K extends DestinationKind> = K extends "webhook"
     ? EmailConfig
     : K extends "slack"
       ? SlackConfig
-      : never;
+      : K extends "google_sheets"
+        ? GoogleSheetsConfig
+        : never;
+
+/**
+ * The spreadsheet id from whatever somebody pasted — the whole browser URL,
+ * which is what people actually have, or the bare id. Null when it is neither.
+ */
+export function parseSpreadsheetId(input: string): string | null {
+  const trimmed = input.trim();
+  if (SPREADSHEET_ID.test(trimmed)) return trimmed;
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.hostname !== "docs.google.com") return null;
+  const match = /^\/spreadsheets\/d\/([^/]+)/.exec(url.pathname);
+  return match && SPREADSHEET_ID.test(match[1]) ? match[1] : null;
+}
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -171,6 +226,7 @@ export function buildConfig(
     webhookUrl?: string;
     headers?: string;
     rotateSecret?: boolean;
+    sheetName?: string;
   },
   previous: Record<string, unknown> | null = null,
 ): BuildConfigResult {
@@ -236,6 +292,30 @@ export function buildConfig(
           };
         }
         return { ok: true, config: { webhookUrl: url.toString() }, secret: null };
+      }
+
+      case "google_sheets": {
+        // There is no form that creates one. The credential comes from Google's
+        // consent screen, so a new Sheets destination is only ever written by the
+        // OAuth callback — a post that arrives here without a previous config is
+        // one that skipped it.
+        const parsed = googleSheetsConfigSchema.safeParse(previous);
+        if (!parsed.success) {
+          return {
+            ok: false,
+            message: "Connect a Google account to add a Google Sheets destination.",
+          };
+        }
+        // An edit may rename the tab. Everything else — the token, the
+        // spreadsheet, the account — changes only by reconnecting, because only
+        // reconnecting can prove the new combination is writable.
+        const sheetName = (input.sheetName ?? "").trim();
+        if (sheetName.length > 100) return { ok: false, message: "That tab name is too long." };
+        return {
+          ok: true,
+          config: { ...parsed.data, sheetName: sheetName || parsed.data.sheetName },
+          secret: null,
+        };
       }
 
       default:
@@ -322,6 +402,7 @@ export function redactConfig(kind: DestinationKind, raw: unknown): RedactedConfi
     to: [],
     headerNames: [],
     hasSecret: false,
+    sheet: null,
   };
 
   switch (kind) {
@@ -344,6 +425,7 @@ export function redactConfig(kind: DestinationKind, raw: unknown): RedactedConfi
         to: [],
         headerNames,
         hasSecret: secret !== null,
+        sheet: null,
       };
     }
 
@@ -361,6 +443,7 @@ export function redactConfig(kind: DestinationKind, raw: unknown): RedactedConfi
         to,
         headerNames: [],
         hasSecret: false,
+        sheet: null,
       };
     }
 
@@ -377,6 +460,36 @@ export function redactConfig(kind: DestinationKind, raw: unknown): RedactedConfi
         to: [],
         headerNames: [],
         hasSecret: false,
+        sheet: null,
+      };
+    }
+
+    case "google_sheets": {
+      // The refresh token is the only secret, and it is the one field that is
+      // never read here. The spreadsheet id is not a credential — opening the
+      // link still needs a Google account with access — so it is shown.
+      const spreadsheetId =
+        typeof config.spreadsheetId === "string" ? config.spreadsheetId : null;
+      const sheetName = typeof config.sheetName === "string" ? config.sheetName : null;
+      const title =
+        typeof config.spreadsheetTitle === "string" && config.spreadsheetTitle !== ""
+          ? config.spreadsheetTitle
+          : null;
+      const account = typeof config.account === "string" ? config.account : null;
+
+      return {
+        summary: [
+          { label: "Spreadsheet", value: title ?? spreadsheetId ?? "not set" },
+          { label: "Tab", value: sheetName ?? "not set" },
+          { label: "Connected as", value: account ?? "not set" },
+        ],
+        url: null,
+        to: [],
+        headerNames: [],
+        hasSecret: false,
+        sheet: spreadsheetId
+          ? { spreadsheetId, sheetName: sheetName ?? "", account }
+          : null,
       };
     }
 

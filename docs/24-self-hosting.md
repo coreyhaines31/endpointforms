@@ -272,6 +272,17 @@ Email and password works with none of these set, and is the primary way in.
 
 There is no SMTP transport. §7.
 
+### 3.5a Google Sheets — optional
+
+| Variable | Notes |
+|---|---|
+| `GOOGLE_SHEETS_CLIENT_ID` / `GOOGLE_SHEETS_CLIENT_SECRET` | An OAuth *Web application* client, in a Cloud project with the Google Sheets API enabled. Without both, Google Sheets is listed as not switched on, and an existing Sheets destination fails with a `configuration` error |
+| `GOOGLE_SHEETS_REDIRECT_URI` | Optional. Defaults to `https://<request host>/api/v1/integrations/google-sheets/callback`, which must be registered on the client |
+
+Publish the consent screen to *In production*: in *Testing*, Google expires every refresh token
+after seven days and each Sheets destination goes `disconnected`. `docs/28-destinations.md` has
+the rest.
+
 ### 3.6 Submission handling
 
 | Variable | Default | Notes |

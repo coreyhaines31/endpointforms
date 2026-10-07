@@ -1,5 +1,6 @@
 import type { Adapter, AdapterOption, DestinationKind } from "../types.ts";
 import { emailAdapter } from "./email.ts";
+import { googleSheetsAdapter } from "./google-sheets.ts";
 import { slackAdapter } from "./slack.ts";
 import { webhookAdapter } from "./webhook.ts";
 
@@ -7,8 +8,8 @@ import { webhookAdapter } from "./webhook.ts";
  * Every kind of destination the enum knows about, and — honestly — which of
  * them actually work.
  *
- * `destination_kind` in the schema lists six. Three of them are built. The other
- * three appear here with `available: false` and a sentence saying so, and the
+ * `destination_kind` in the schema lists six. Four of them are built. The other
+ * two appear here with `available: false` and a sentence saying so, and the
  * "add a destination" screen renders them as unavailable rather than leaving
  * them out.
  *
@@ -26,14 +27,6 @@ import { webhookAdapter } from "./webhook.ts";
  * A kind with `available: false` has no `deliver`, so there is no code path in
  * which one silently accepts a submission.
  */
-
-const googleSheetsAdapter: Adapter = {
-  kind: "google_sheets",
-  available: false,
-  label: "Google Sheets",
-  blurb:
-    "Not yet available. It needs OAuth and token refresh, and a half-built one would drop rows silently.",
-};
 
 const hubspotAdapter: Adapter = {
   kind: "hubspot",
@@ -96,4 +89,4 @@ export const ADAPTER_OPTIONS: readonly AdapterOption[] = ADAPTER_ORDER.map((kind
   };
 });
 
-export { emailAdapter, slackAdapter, webhookAdapter };
+export { emailAdapter, googleSheetsAdapter, slackAdapter, webhookAdapter };
