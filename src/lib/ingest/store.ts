@@ -178,6 +178,12 @@ export type StoredSubmission = {
   submittedAt: Date;
   /** True when an identical key already had a row, and this one was collapsed onto it. */
   duplicate: boolean;
+  /**
+   * The stamp as the database holds it, read back rather than echoed from the
+   * record. On a duplicate it is the earlier row's, which may have come
+   * through a different surface.
+   */
+  origin: OriginState;
 };
 
 /**
@@ -251,6 +257,7 @@ export async function storeSubmission(
         id: submissions.id,
         publicId: submissions.publicId,
         submittedAt: submissions.submittedAt,
+        origin: submissions.origin,
       });
 
     const row = inserted[0];
@@ -275,6 +282,7 @@ export async function storeSubmission(
         id: row.id,
         publicId: row.publicId,
         submittedAt: row.submittedAt,
+        origin: row.origin,
         duplicate: false,
       };
     }
@@ -284,6 +292,7 @@ export async function storeSubmission(
         id: submissions.id,
         publicId: submissions.publicId,
         submittedAt: submissions.submittedAt,
+        origin: submissions.origin,
       })
       .from(submissions)
       .where(
@@ -301,6 +310,7 @@ export async function storeSubmission(
         id: prior.id,
         publicId: prior.publicId,
         submittedAt: prior.submittedAt,
+        origin: prior.origin,
         duplicate: true,
       };
     }
@@ -313,6 +323,7 @@ export async function storeSubmission(
         id: submissions.id,
         publicId: submissions.publicId,
         submittedAt: submissions.submittedAt,
+        origin: submissions.origin,
       })
       .from(submissions)
       .where(
@@ -330,6 +341,7 @@ export async function storeSubmission(
         id: priorDeleted.id,
         publicId: priorDeleted.publicId,
         submittedAt: priorDeleted.submittedAt,
+        origin: priorDeleted.origin,
         duplicate: true,
       };
     }
