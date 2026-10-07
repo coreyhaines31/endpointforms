@@ -3,6 +3,13 @@
 export const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL ?? "https://endpointforms.com";
 
+/**
+ * The signed-in app's own host (docs/05 §4.4). Separate from the site so the
+ * app never shares an origin with the marketing pages' third-party scripts.
+ */
+export const APP_URL =
+  process.env.NEXT_PUBLIC_APP_URL ?? "https://app.endpointforms.com";
+
 export const GITHUB_REPO = "coreyhaines31/endpointforms";
 export const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 export const GITHUB_ISSUES_URL = `${GITHUB_URL}/issues`;
