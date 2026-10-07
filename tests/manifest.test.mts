@@ -431,6 +431,15 @@ async function submitting(fx: Fixture) {
   const row = await rowById(String(structured.submission_id));
   ok("the row exists", row !== undefined, structured);
   t("stamped agent in the database, not merely in the reply", row?.origin, "agent");
+  // The reply is read off the row, not asserted by the route (#105). With a
+  // literal in the handler, a broken stamp still answered "agent".
+  ok("the row has a stamp to compare against", typeof row?.origin === "string", row?.origin);
+  t("the reported origin is the stored one", structured.origin, row?.origin);
+  ok(
+    "and so is the one in the text content",
+    (called.body.result?.content?.[0]?.text ?? "").includes(`stamped origin "${row?.origin}"`),
+    called.body.result?.content,
+  );
 
   const surface = reasonFor(row!, "surface");
   t("the reason names the surface", surface?.observed, "manifest");
@@ -507,6 +516,11 @@ async function submitting(fx: Fixture) {
     retried.body.result?.structuredContent?.submission_id,
     structured.submission_id,
   );
+  ok(
+    "a duplicate reports no origin, because the row it collapsed onto may not be this surface's",
+    !("origin" in (retried.body.result?.structuredContent ?? {})),
+    retried.body.result?.structuredContent,
+  );
 
   // An undeclared field is stored and reported, exactly as on the human page.
   const warned = await rpc(
@@ -556,6 +570,11 @@ async function theSurfaceCannotBeClaimed(fx: Fixture) {
 
   t("the same payload through the form endpoint is not agent", formRow?.origin, "human");
   t("and through the manifest endpoint it is", manifestRow?.origin, "agent");
+  t(
+    "the manifest reply reports the stored stamp",
+    throughManifest.body.result?.structuredContent?.origin,
+    manifestRow?.origin,
+  );
   t("the values stored are identical", canonical(manifestRow?.values), canonical(formRow?.values));
   ok(
     "so the only thing that separated them was the door",
@@ -595,6 +614,25 @@ async function theSurfaceCannotBeClaimed(fx: Fixture) {
     { origin: claimedRow?.origin, reasons: claimedRow?.originReasons },
   );
   t("its surface reason still says form", reasonFor(claimedRow!, "surface")?.observed, "form");
+
+  // A shared idempotency key collapses a manifest call onto a form row. If the
+  // reply then carried that row's stamp, the form surface's withholding would
+  // be one extra call away: forge on the form, read the verdict here.
+  const readBack = await rpc(
+    fx.schemaed,
+    "tools/call",
+    { name: "submit_demo_request", arguments: values },
+    { "idempotency-key": "two-doors-form" },
+  );
+  const readBackResult = readBack.body.result?.structuredContent ?? {};
+  t("a manifest call under a form row's key collapses onto it", readBackResult.duplicate, true);
+  t("the row it collapsed onto is the form's human one", formRow?.origin, "human");
+  ok(
+    "and the reply does not report that row's stamp",
+    !("origin" in readBackResult) &&
+      !(readBack.body.result?.content?.[0]?.text ?? "").includes("human"),
+    readBack.body.result,
+  );
 
   // And the reverse: a manifest caller cannot climb back out to human, however
   // browser-shaped it makes itself look. The Chrome header set above already

@@ -470,6 +470,7 @@ async function callTool(
       // this file. This single argument is the whole Origin mechanism.
       surface: "manifest",
       agentDeclaration: agentDeclaration(rpc, request.headers),
+      reportOrigin: true,
     },
   );
 
@@ -494,14 +495,18 @@ async function callTool(
     // Reported here and withheld on the form surface, deliberately. See the
     // note on `OUTPUT_SCHEMA` in `tool.ts`: there is no forgery to tune when
     // the caller chose the surface that decides the answer.
-    origin: "agent",
+    //
+    // The stamp the row holds, not the one this surface is meant to produce: a
+    // regression in stamping has to show up here rather than be papered over
+    // (#105). Absent on a duplicate, which may be a row the form wrote.
+    ...(ack.origin ? { origin: ack.origin } : {}),
     duplicate: ack.duplicate,
     ...(ack.warnings && ack.warnings.length > 0 ? { warnings: ack.warnings } : {}),
   };
 
   const summary = ack.duplicate
     ? `Already recorded. This call matched an existing submission (${ack.id}) and was collapsed onto it rather than creating a second lead.`
-    : `Submitted. Submission ${ack.id} was stored on endpoint ${ack.endpoint} and stamped origin "agent".`;
+    : `Submitted. Submission ${ack.id} was stored on endpoint ${ack.endpoint}${ack.origin ? ` and stamped origin "${ack.origin}"` : ""}.`;
 
   const warningLine =
     ack.warnings && ack.warnings.length > 0
@@ -521,6 +526,7 @@ type AckShape = {
   endpoint?: string;
   submittedAt?: string;
   duplicate?: boolean;
+  origin?: string;
   warnings?: { field: string | null; code: string; message: string }[];
   error?: { code?: string; message?: string };
 };
