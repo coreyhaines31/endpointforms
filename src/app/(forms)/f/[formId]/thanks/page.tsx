@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -8,7 +9,9 @@ import {
   readEmbedContext,
   withQuery,
 } from "@/lib/embed/params";
-import { loadForm } from "@/lib/render/form";
+import { loadForm, type FormLookup } from "@/lib/render/form";
+import { formAnswersOnHost } from "@/lib/render/host";
+import { RENDER_DOMAIN } from "@/lib/workspaces/slug";
 import { EmbedFrame } from "../embed-frame";
 
 /**
@@ -43,18 +46,33 @@ type PageProps = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
+/**
+ * The form, or `not_found` when this host may not serve it (#109).
+ *
+ * Shared by the metadata and the page so the title cannot name a form the
+ * body refuses to admit exists.
+ */
+async function loadFormForHost(formId: string): Promise<FormLookup> {
+  const form = await loadForm(formId);
+  if (form.status === "not_found") return form;
+  const host = (await headers()).get("host");
+  if (!formAnswersOnHost(host, form.workspaceSlug, RENDER_DOMAIN)) return { status: "not_found" };
+  return form;
+}
+
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { formId } = await params;
-  const form = await loadForm(formId);
+  const form = await loadFormForHost(formId);
   return { title: form.status === "ok" ? `${form.title} — sent` : "Sent" };
 }
 
 export default async function FormThanksPage({ params, searchParams }: PageProps) {
   const { formId } = await params;
-  const form = await loadForm(formId);
+  const form = await loadFormForHost(formId);
 
   // A thank-you page for a form that does not exist is a page that tells a
-  // stranger an endpoint ID is real. It is the same 404 the form itself gives.
+  // stranger an endpoint ID is real. It is the same 404 the form itself gives,
+  // including for a form on another workspace's subdomain.
   if (form.status === "not_found") notFound();
 
   const title = form.status === "ok" ? form.title : form.endpointName;

@@ -95,6 +95,15 @@ export type SubmissionOptions = {
   /** What a manifest caller said it was. Recorded, not trusted. */
   agentDeclaration?: string | null;
   /**
+   * Put the stored stamp on the acknowledgement. Only the manifest surface
+   * asks: the form surface withholds it so a forger gets no tuning loop
+   * (`docs/23-origin-findings.md`). Even then it is left off a collapsed
+   * duplicate, because that row may have arrived through the form, and
+   * reporting its stamp here would be the same loop with an idempotency key in
+   * the middle.
+   */
+  reportOrigin?: boolean;
+  /**
    * Which Hindsight arm served this form (#45), or null for a submission that
    * is not in a test — which is most of them.
    *
@@ -372,6 +381,7 @@ export async function handleSubmission(
       endpoint: endpoint.publicId,
       submittedAt: stored.submittedAt.toISOString(),
       duplicate: stored.duplicate,
+      ...(options.reportOrigin && !stored.duplicate ? { origin: stored.origin } : {}),
       // Only when there is something to say, so an endpoint with no schema
       // answers byte-for-byte as it did before #51.
       ...(validation.issues.length === 0
