@@ -250,6 +250,7 @@ before you start.
 | Variable | Default | Notes |
 |---|---|---|
 | `NEXT_PUBLIC_SITE_URL` | `https://endpointforms.com` | Canonical origin for absolute links, canonicals and the sitemap |
+| `NEXT_PUBLIC_APP_URL` | `https://app.endpointforms.com` | The signed-in app's host. With the site URL and render domain, it decides which surface answers on which host (`src/lib/hosts.ts`). A host matching none of the three serves everything |
 | `NEXT_PUBLIC_RENDER_DOMAIN` | `endpointforms.app` | The registrable domain customer forms are served from. Deliberately not a subdomain of the marketing site — `docs/05` §4.4 |
 
 ### 3.4 Sign-in providers — all optional
@@ -431,8 +432,11 @@ production self-host as part of this document.
 
 - Set all four secrets. In production the app refuses to fall back to the local development
   database if `DATABASE_URL` is unset, rather than papering over a misconfiguration.
-- Set `NEXT_PUBLIC_SITE_URL` and `NEXT_PUBLIC_RENDER_DOMAIN` before building — both are baked
-  into the client bundle at build time.
+- Set `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_APP_URL` and `NEXT_PUBLIC_RENDER_DOMAIN` before
+  building — all three are baked in at build time. Once a request arrives on one of those
+  hosts, it only answers with that host's surface: forms on the render domain, the app on the
+  app host, marketing on the site. Point all three at the deployment, or leave them unset to
+  serve everything on whatever host you use.
 - **Serve customer forms from a different registrable domain than the app.** Not a subdomain: a
   separate domain. The session cookie is host-only by design, and a marketing site carrying ad
   pixels must never share a cookie domain with customer form traffic. See `docs/05` §4.4.
