@@ -1008,7 +1008,11 @@ async function googleSheets(fixture: Fixture) {
   const previousEnv = {
     id: process.env.GOOGLE_SHEETS_CLIENT_ID,
     secret: process.env.GOOGLE_SHEETS_CLIENT_SECRET,
+    auth: process.env.AUTH_SECRET,
   };
+  // Plain `node` sets no NODE_ENV, so the built-in signing key does not apply
+  // (security review L4). A real one, as a deployment would have.
+  process.env.AUTH_SECRET = "destinations-db-test-auth-secret";
   process.env.GOOGLE_SHEETS_CLIENT_ID = "client-id.apps.googleusercontent.com";
   process.env.GOOGLE_SHEETS_CLIENT_SECRET = "client-secret";
   globalThis.fetch = google.impl;
@@ -1223,6 +1227,8 @@ async function googleSheets(fixture: Fixture) {
     else process.env.GOOGLE_SHEETS_CLIENT_ID = previousEnv.id;
     if (previousEnv.secret === undefined) delete process.env.GOOGLE_SHEETS_CLIENT_SECRET;
     else process.env.GOOGLE_SHEETS_CLIENT_SECRET = previousEnv.secret;
+    if (previousEnv.auth === undefined) delete process.env.AUTH_SECRET;
+    else process.env.AUTH_SECRET = previousEnv.auth;
     await unsafeDb.delete(memberships).where(eq(memberships.id, membershipId));
   }
 }

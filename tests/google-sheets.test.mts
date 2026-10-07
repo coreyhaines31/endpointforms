@@ -432,6 +432,29 @@ async function roundTrip() {
   await withEnv({ AUTH_SECRET: undefined, NODE_ENV: "production" }, () => {
     t("production with no AUTH_SECRET refuses to seal", sealPendingConnection(pending), null);
   });
+
+  // L4: the built-in key only for development and test, named explicitly.
+  let devSealed: string | null = null;
+  await withEnv({ AUTH_SECRET: undefined, NODE_ENV: "development" }, () => {
+    devSealed = sealPendingConnection(pending);
+  });
+  for (const env of [undefined, "staging", "preview", ""]) {
+    await withEnv({ AUTH_SECRET: undefined, NODE_ENV: env }, () => {
+      t(`NODE_ENV=${JSON.stringify(env)} with no AUTH_SECRET refuses to seal`, sealPendingConnection(pending), null);
+      t(
+        "and will not open a cookie signed with the built-in key",
+        openPendingConnection(devSealed, pending.nonce, now),
+        null,
+      );
+    });
+  }
+  // The control: the same call in development does seal, so the refusals
+  // above are the environment rule and not sealing being broken.
+  for (const env of ["development", "test"]) {
+    await withEnv({ AUTH_SECRET: undefined, NODE_ENV: env }, () => {
+      ok(`NODE_ENV=${env} uses the built-in key`, typeof sealPendingConnection(pending) === "string");
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -452,8 +452,22 @@ const DEV_STATE_SECRET = "endpointforms-google-sheets-dev";
 function stateSecret(): string | null {
   const configured = (process.env.AUTH_SECRET ?? "").trim();
   if (configured !== "") return configured;
-  return process.env.NODE_ENV === "production" ? null : DEV_STATE_SECRET;
+  // Security review L4: the built-in key is for a laptop and the test suite,
+  // named explicitly. It used to be "anything but production", which made a
+  // staging box or a runtime that never set NODE_ENV sign with a key that is
+  // in the public repository.
+  const env = process.env.NODE_ENV;
+  if (env === "development" || env === "test") return DEV_STATE_SECRET;
+  if (!warnedAboutStateSecret) {
+    warnedAboutStateSecret = true;
+    console.warn(
+      "[google-sheets] AUTH_SECRET is not set, so a Google connection cannot be signed and none can be started. Set AUTH_SECRET.",
+    );
+  }
+  return null;
 }
+
+let warnedAboutStateSecret = false;
 
 export function newNonce(): string {
   return randomBytes(18).toString("base64url");
