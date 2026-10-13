@@ -1,3 +1,4 @@
+import { encrypt } from "@/lib/crypto/encrypt";
 import { getWorkspaceAccess } from "../workspaces/queries.ts";
 import { inspectSpreadsheet } from "./adapters/google-sheets.ts";
 import { exchangeCode, openPendingConnection, type PendingConnection } from "./google.ts";
@@ -99,7 +100,7 @@ export async function completeGoogleConnection(input: {
   const config = {
     spreadsheetId: pending.spreadsheetId,
     sheetName: sheet.sheetName,
-    refreshToken: exchanged.refreshToken,
+    refreshToken: encrypt(exchanged.refreshToken),
     account: exchanged.email,
     spreadsheetTitle: sheet.title,
     connectedAt: now.toISOString(),

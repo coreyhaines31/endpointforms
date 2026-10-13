@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { decrypt, encrypt } from "@/lib/crypto/encrypt";
 import { newDestinationSecret } from "./signature.ts";
 import { assertDeliverableUrl, DestinationUrlError } from "./url-guard.ts";
 import type { DestinationKind, RedactedConfig } from "./types.ts";
@@ -175,6 +176,10 @@ export class DestinationConfigError extends Error {
 /**
  * The stored config for a kind, with secrets. **Server only, delivery only.**
  *
+ * Decrypts secrets that were encrypted at rest (#112). A value without the
+ * `enc:v1:` prefix is treated as plaintext, for backward compatibility with
+ * secrets written before encryption shipped.
+ *
  * Throws rather than returning null: a destination whose config this build
  * cannot read must fail its delivery loudly and land in the log as a
  * `configuration` failure, not quietly deliver a half-formed request.
@@ -189,13 +194,77 @@ export function parseConfig<K extends DestinationKind>(
       `${kind} destinations are not available yet, so there is nothing to deliver to.`,
     );
   }
-  const parsed = schema.safeParse(raw);
+
+  // Decrypt secrets before parsing. The config shape in the database has
+  // encrypted strings where secrets belong; this replaces them with plaintext
+  // so the adapter receives usable credentials.
+  const decrypted = decryptConfigSecrets(kind, raw);
+
+  const parsed = schema.safeParse(decrypted);
   if (!parsed.success) {
     throw new DestinationConfigError(
       `This destination's settings are incomplete: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`,
     );
   }
   return parsed.data as ConfigFor<K>;
+}
+
+/**
+ * Decrypts the secret fields in a destination config.
+ *
+ * Each kind knows which fields are secrets. A field that is not present or not
+ * a string is left alone (parsing will reject it downstream). A field that is
+ * a string is decrypted if it starts with `enc:v1:`, otherwise treated as
+ * plaintext.
+ */
+function decryptConfigSecrets(kind: DestinationKind, raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+
+  const config = raw as Record<string, unknown>;
+  const decrypted = { ...config };
+
+  try {
+    switch (kind) {
+      case "webhook":
+        if (typeof config.secret === "string") {
+          decrypted.secret = decrypt(config.secret);
+        }
+        // Custom headers may contain Authorization tokens
+        if (typeof config.headers === "object" && config.headers !== null) {
+          const headers = config.headers as Record<string, unknown>;
+          const decryptedHeaders: Record<string, unknown> = {};
+          for (const [key, value] of Object.entries(headers)) {
+            decryptedHeaders[key] = typeof value === "string" ? decrypt(value) : value;
+          }
+          decrypted.headers = decryptedHeaders;
+        }
+        break;
+
+      case "slack":
+        // The webhook URL is the credential
+        if (typeof config.webhookUrl === "string") {
+          decrypted.webhookUrl = decrypt(config.webhookUrl);
+        }
+        break;
+
+      case "google_sheets":
+        // The refresh token is the credential
+        if (typeof config.refreshToken === "string") {
+          decrypted.refreshToken = decrypt(config.refreshToken);
+        }
+        break;
+
+      case "email":
+        // Email destinations have no secrets to decrypt
+        break;
+    }
+  } catch (error) {
+    throw new DestinationConfigError(
+      `Cannot decrypt this destination's secrets: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  return decrypted;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +277,9 @@ export type BuildConfigResult =
 
 /**
  * Turns what someone typed into what gets stored.
+ *
+ * **Encrypts secrets before storing** (#112). The returned config has encrypted
+ * strings in place of plaintext credentials.
  *
  * `previous` is the existing config on an edit, so a field the form did not
  * re-send — a secret, which is never rendered back — is carried forward rather
@@ -245,8 +317,15 @@ export function buildConfig(
         const rotate = input.rotateSecret === true || existingSecret === null;
         const secret = rotate ? newDestinationSecret() : existingSecret;
 
-        const config: Record<string, unknown> = { url, secret };
-        if (Object.keys(headers.value).length > 0) config.headers = headers.value;
+        const config: Record<string, unknown> = { url, secret: encrypt(secret) };
+        if (Object.keys(headers.value).length > 0) {
+          // Encrypt header values (may contain Authorization tokens)
+          const encryptedHeaders: Record<string, string> = {};
+          for (const [key, value] of Object.entries(headers.value)) {
+            encryptedHeaders[key] = encrypt(value);
+          }
+          config.headers = encryptedHeaders;
+        }
 
         return { ok: true, config, secret: rotate ? secret : null };
       }
@@ -326,6 +405,10 @@ export function buildConfig(
     }
   } catch (error) {
     if (error instanceof DestinationUrlError) return { ok: false, message: error.message };
+    // Encryption errors
+    if (error instanceof Error && error.message.includes("Cannot encrypt")) {
+      return { ok: false, message: error.message };
+    }
     throw error;
   }
 }
