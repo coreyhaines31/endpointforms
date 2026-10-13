@@ -21,6 +21,9 @@ process.env.INGEST_RATE_LIMIT_IP_PER_MINUTE = "1000000";
 process.env.INGEST_RATE_LIMIT_ENDPOINT_IP_PER_MINUTE = "1000000";
 // The delivery guard blocks loopback, and the fixture below delivers to a
 // loopback server on purpose. Nothing outside the tests sets this.
+// Plain `node` is production to the encryption module (#112), which refuses
+// without a key — so the suite brings its own.
+process.env.DESTINATION_SECRETS_KEY ??= Buffer.alloc(32, 7).toString("base64");
 process.env.ALLOW_PRIVATE_DESTINATIONS = "1";
 process.env.ALLOW_INSECURE_DESTINATIONS = "1";
 
@@ -74,6 +77,7 @@ import { parseSchemaDocument } from "../src/lib/schema/format.ts";
 import { clearActiveSchema, publishSchemaVersion } from "../src/lib/schema/store.ts";
 // #67: the OAuth callback, called the way the route calls it, against a fake Google.
 import { completeGoogleConnection } from "../src/lib/destinations/connect.ts";
+import { decrypt, isEncrypted } from "../src/lib/crypto/encrypt.ts";
 import {
   GOOGLE_TOKEN_ENDPOINT,
   newNonce,
@@ -1134,6 +1138,16 @@ async function googleSheets(fixture: Fixture) {
     t("named for the spreadsheet's own title", row.config.summary[0]?.value, "Inbound leads");
     t("with the account it is connected as", row.config.sheet?.account, "ops@dorsetmetal.example");
     ok("and the screen's shape has no token", !JSON.stringify(row).includes("1//refresh"), row.config);
+
+    // #112: the column itself, read straight from Postgres the way a dump
+    // would see it. The control is that the stored value opens to the token,
+    // so "no plaintext" cannot pass by the token simply not being there.
+    const [stored] = await sqlClient<{ config: { refreshToken?: string } }[]>`
+      select config from destinations where id = ${row.id}`;
+    const storedToken = String(stored?.config.refreshToken ?? "");
+    ok("the stored row holds no plaintext token", !JSON.stringify(stored?.config).includes("1//refresh"));
+    ok("only ciphertext", isEncrypted(storedToken), storedToken.slice(0, 12));
+    ok("which opens to the token Google issued", decrypt(storedToken).startsWith("1//refresh"));
     t("untested until something is delivered", row.health.state, "untested");
 
     // Through the real ingest path.

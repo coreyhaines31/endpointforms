@@ -53,6 +53,11 @@ import {
 } from "../src/lib/destinations/config.ts";
 import { buildPayload, sampleSource } from "../src/lib/destinations/payload.ts";
 import { RETRYABLE_FAILURES, type SubmissionPayload } from "../src/lib/destinations/types.ts";
+import { decrypt, isEncrypted } from "../src/lib/crypto/encrypt.ts";
+
+// See tests/destinations.test.mts: plain `node` is production to the
+// encryption module, so the suite brings its own key.
+process.env.DESTINATION_SECRETS_KEY ??= Buffer.alloc(32, 7).toString("base64");
 
 let pass = 0;
 let fail = 0;
@@ -499,7 +504,18 @@ async function config() {
 
   const renamed = buildConfig("google_sheets", { sheetName: "Q4 leads" }, storedConfig);
   ok("an edit can change the tab", renamed.ok && renamed.config.sheetName === "Q4 leads", renamed);
-  ok("and keeps the token it was never shown", renamed.ok && renamed.config.refreshToken === REFRESH);
+  ok(
+    "and keeps the token it was never shown",
+    renamed.ok && decrypt(String(renamed.config.refreshToken)) === REFRESH,
+  );
+  // `storedConfig` holds the token in plaintext, as a row written before #112
+  // does. The edit seals it rather than carrying the plaintext forward.
+  ok(
+    "and seals a token written before encryption",
+    renamed.ok &&
+      isEncrypted(String(renamed.config.refreshToken)) &&
+      !JSON.stringify(renamed.config).includes(REFRESH),
+  );
   const blank = buildConfig("google_sheets", { sheetName: "  " }, storedConfig);
   ok("an empty tab field keeps the tab", blank.ok && blank.config.sheetName === "Leads", blank);
 

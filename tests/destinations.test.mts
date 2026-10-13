@@ -53,7 +53,13 @@ import { deliverWebhook } from "../src/lib/destinations/adapters/webhook.ts";
 import { deliverEmail } from "../src/lib/destinations/adapters/email.ts";
 import { deliverSlack, slackMessage } from "../src/lib/destinations/adapters/slack.ts";
 import { parseConfig } from "../src/lib/destinations/config.ts";
+import { decrypt, isEncrypted } from "../src/lib/crypto/encrypt.ts";
 import type { SubmissionPayload } from "../src/lib/destinations/types.ts";
+
+// Plain `node` leaves NODE_ENV unset, which the encryption module treats as
+// production and refuses without a key — deliberately, because the migration
+// script runs the same way. A fixed key, read lazily on first use.
+process.env.DESTINATION_SECRETS_KEY ??= Buffer.alloc(32, 7).toString("base64");
 
 let pass = 0;
 let fail = 0;
@@ -507,6 +513,16 @@ console.log("\nconfig and redaction");
     "stores the secret in the config",
     built.ok === true && typeof built.config.secret === "string",
   );
+  // #112: what goes into the jsonb column is ciphertext, and it opens to the
+  // value shown once to the customer.
+  ok(
+    "and stores it encrypted, never as the value shown",
+    built.ok === true &&
+      built.secret !== null &&
+      isEncrypted(String(built.config.secret)) &&
+      !String(built.config.secret).includes(built.secret) &&
+      decrypt(String(built.config.secret)) === built.secret,
+  );
 
   if (built.ok) {
     const redacted = redactConfig("webhook", built.config);
@@ -522,7 +538,24 @@ console.log("\nconfig and redaction");
     // An edit that does not retype the secret must not un-sign every future
     // delivery — that would be a silent downgrade nobody would notice.
     const edited = buildConfig("webhook", { url: "https://crm.example.com/v2" }, built.config);
-    ok("an edit carries the existing secret forward", edited.ok === true && edited.config.secret === built.config.secret);
+    // Compared opened, not as stored: every encryption takes a fresh IV, so the
+    // ciphertext differs even when the secret does not. And opened exactly
+    // once — an edit that re-encrypted the stored ciphertext would open to
+    // `enc:v1:…`, sign with that, and break every receiver's check (#112).
+    ok(
+      "an edit carries the existing secret forward",
+      edited.ok === true &&
+        decrypt(String(edited.config.secret)) === decrypt(String(built.config.secret)),
+    );
+    ok(
+      "and seals it exactly once",
+      edited.ok === true && !isEncrypted(decrypt(String(edited.config.secret))),
+    );
+    ok(
+      "and delivery reads the same secret after the edit",
+      edited.ok === true &&
+        parseConfig("webhook", edited.config).secret === decrypt(String(built.config.secret)),
+    );
     ok("and does not re-show it", edited.ok === true && edited.secret === null);
 
     const rotated = buildConfig(
@@ -530,7 +563,11 @@ console.log("\nconfig and redaction");
       { url: "https://crm.example.com/v2", rotateSecret: true },
       built.config,
     );
-    ok("rotating replaces the secret", rotated.ok === true && rotated.config.secret !== built.config.secret);
+    ok(
+      "rotating replaces the secret",
+      rotated.ok === true &&
+        decrypt(String(rotated.config.secret)) !== decrypt(String(built.config.secret)),
+    );
     ok("and shows the new one exactly once", rotated.ok === true && rotated.secret !== null);
   }
 
@@ -545,7 +582,16 @@ console.log("\nconfig and redaction");
     url: "https://crm.example.com/hook",
     headers: "Authorization: Bearer sk-live-12345\nX-Team: sales",
   });
-  ok("parses `Name: value` headers", headers.ok === true && (headers.config.headers as Record<string, string>)["X-Team"] === "sales");
+  ok(
+    "parses `Name: value` headers",
+    headers.ok === true && parseConfig("webhook", headers.config).headers?.["X-Team"] === "sales",
+  );
+  ok(
+    "and stores their values encrypted",
+    headers.ok === true &&
+      !JSON.stringify(headers.config).includes("sk-live-12345") &&
+      isEncrypted((headers.config.headers as Record<string, string>).Authorization),
+  );
   if (headers.ok) {
     const redacted = redactConfig("webhook", headers.config);
     ok(
@@ -564,6 +610,12 @@ console.log("\nconfig and redaction");
 
   const slack = buildConfig("slack", { webhookUrl: "https://hooks.slack.com/services/T0/B0/zzz" });
   ok("accepts a Slack incoming webhook", slack.ok === true);
+  ok(
+    "and stores the URL encrypted, because the URL is the credential",
+    slack.ok === true &&
+      !JSON.stringify(slack.config).includes("hooks.slack.com") &&
+      parseConfig("slack", slack.config).webhookUrl === "https://hooks.slack.com/services/T0/B0/zzz",
+  );
   if (slack.ok) {
     const redacted = redactConfig("slack", slack.config);
     ok(
@@ -580,7 +632,17 @@ console.log("\nconfig and redaction");
     "a Slack edit that leaves the field blank keeps the existing credential",
     (() => {
       const kept = buildConfig("slack", { webhookUrl: "" }, { webhookUrl: "https://hooks.slack.com/services/A/B/C" });
-      return kept.ok === true && kept.config.webhookUrl === "https://hooks.slack.com/services/A/B/C";
+      return (
+        kept.ok === true &&
+        parseConfig("slack", kept.config).webhookUrl === "https://hooks.slack.com/services/A/B/C"
+      );
+    })(),
+  );
+  ok(
+    "and seals a credential written before #112 as it carries it forward",
+    (() => {
+      const kept = buildConfig("slack", { webhookUrl: "" }, { webhookUrl: "https://hooks.slack.com/services/A/B/C" });
+      return kept.ok === true && isEncrypted(String(kept.config.webhookUrl));
     })(),
   );
 
