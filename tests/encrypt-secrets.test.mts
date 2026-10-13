@@ -7,7 +7,6 @@
  * Run directly: `node --experimental-strip-types tests/encrypt-secrets.test.mts`
  */
 
-import { strict as assert } from "node:assert";
 import {
   encrypt,
   decrypt,
