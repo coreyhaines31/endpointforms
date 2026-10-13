@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { decrypt, encrypt } from "@/lib/crypto/encrypt";
+import { decrypt, encrypt, isEncrypted } from "../crypto/encrypt.ts";
 import { newDestinationSecret } from "./signature.ts";
 import { assertDeliverableUrl, DestinationUrlError } from "./url-guard.ts";
 import type { DestinationKind, RedactedConfig } from "./types.ts";
@@ -310,10 +310,14 @@ export function buildConfig(
         const headers = parseHeaderLines(input.headers ?? "");
         if ("error" in headers) return { ok: false, message: headers.error };
 
+        // `previous` is the stored config, so its secret is ciphertext. Reusing
+        // it as-is would encrypt it a second time, and the adapter would then
+        // sign with the ciphertext — every receiver's signature check breaking
+        // on an edit that changed nothing about the secret.
+        const storedSecret =
+          typeof previous?.secret === "string" ? decrypt(previous.secret) : null;
         const existingSecret =
-          typeof previous?.secret === "string" && previous.secret.length >= 16
-            ? previous.secret
-            : null;
+          storedSecret !== null && storedSecret.length >= 16 ? storedSecret : null;
         const rotate = input.rotateSecret === true || existingSecret === null;
         const secret = rotate ? newDestinationSecret() : existingSecret;
 
@@ -359,7 +363,7 @@ export function buildConfig(
         // empty because the value is a secret, and an empty field must not mean
         // "delete the credential".
         if (raw === "" && typeof previous?.webhookUrl === "string") {
-          return { ok: true, config: { webhookUrl: previous.webhookUrl }, secret: null };
+          return { ok: true, config: { webhookUrl: seal(previous.webhookUrl) }, secret: null };
         }
 
         const url = assertDeliverableUrl(raw);
@@ -370,7 +374,8 @@ export function buildConfig(
               "That isn’t a Slack incoming webhook. It should start https://hooks.slack.com/services/ — create one under Incoming Webhooks in your Slack app.",
           };
         }
-        return { ok: true, config: { webhookUrl: url.toString() }, secret: null };
+        // The URL is the credential: anyone holding it can post into the channel.
+        return { ok: true, config: { webhookUrl: encrypt(url.toString()) }, secret: null };
       }
 
       case "google_sheets": {
@@ -392,7 +397,11 @@ export function buildConfig(
         if (sheetName.length > 100) return { ok: false, message: "That tab name is too long." };
         return {
           ok: true,
-          config: { ...parsed.data, sheetName: sheetName || parsed.data.sheetName },
+          config: {
+            ...parsed.data,
+            refreshToken: seal(parsed.data.refreshToken),
+            sheetName: sheetName || parsed.data.sheetName,
+          },
           secret: null,
         };
       }
@@ -406,11 +415,23 @@ export function buildConfig(
   } catch (error) {
     if (error instanceof DestinationUrlError) return { ok: false, message: error.message };
     // Encryption errors
-    if (error instanceof Error && error.message.includes("Cannot encrypt")) {
+    if (
+      error instanceof Error &&
+      (error.message.includes("Cannot encrypt") || error.message.includes("Cannot decrypt"))
+    ) {
       return { ok: false, message: error.message };
     }
     throw error;
   }
+}
+
+/**
+ * A stored secret carried forward unchanged, sealed if it is not already. A
+ * value written before #112 is plaintext; an edit is a chance to fix that, and
+ * re-encrypting an already-sealed value would double it.
+ */
+function seal(value: string): string {
+  return isEncrypted(value) ? value : encrypt(value);
 }
 
 /** `Name: value` per line. The format someone already has in their head. */

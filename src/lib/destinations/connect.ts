@@ -1,4 +1,4 @@
-import { encrypt } from "@/lib/crypto/encrypt";
+import { encrypt } from "../crypto/encrypt.ts";
 import { getWorkspaceAccess } from "../workspaces/queries.ts";
 import { inspectSpreadsheet } from "./adapters/google-sheets.ts";
 import { exchangeCode, openPendingConnection, type PendingConnection } from "./google.ts";
