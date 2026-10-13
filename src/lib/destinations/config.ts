@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { decrypt, encrypt, isEncrypted } from "../crypto/encrypt.ts";
+import { decrypt, encrypt, needsSealing } from "../crypto/encrypt.ts";
 import { newDestinationSecret } from "./signature.ts";
 import { assertDeliverableUrl, DestinationUrlError } from "./url-guard.ts";
 import type { DestinationKind, RedactedConfig } from "./types.ts";
@@ -176,15 +176,18 @@ export class DestinationConfigError extends Error {
 /**
  * The stored config for a kind, with secrets. **Server only, delivery only.**
  *
- * Decrypts secrets that were encrypted at rest (#112). A value without the
- * `enc:v1:` prefix is treated as plaintext, for backward compatibility with
- * secrets written before encryption shipped.
+ * Decrypts secrets that were encrypted at rest (#112) against the workspace
+ * that owns the row (#119), so a value moved from another workspace fails here
+ * instead of being used. A value without an `enc:` prefix is treated as
+ * plaintext, for backward compatibility with secrets written before
+ * encryption shipped.
  *
  * Throws rather than returning null: a destination whose config this build
  * cannot read must fail its delivery loudly and land in the log as a
  * `configuration` failure, not quietly deliver a half-formed request.
  */
 export function parseConfig<K extends DestinationKind>(
+  workspaceId: string,
   kind: K,
   raw: unknown,
 ): ConfigFor<K> {
@@ -198,7 +201,7 @@ export function parseConfig<K extends DestinationKind>(
   // Decrypt secrets before parsing. The config shape in the database has
   // encrypted strings where secrets belong; this replaces them with plaintext
   // so the adapter receives usable credentials.
-  const decrypted = decryptConfigSecrets(kind, raw);
+  const decrypted = decryptConfigSecrets(workspaceId, kind, raw);
 
   const parsed = schema.safeParse(decrypted);
   if (!parsed.success) {
@@ -214,10 +217,9 @@ export function parseConfig<K extends DestinationKind>(
  *
  * Each kind knows which fields are secrets. A field that is not present or not
  * a string is left alone (parsing will reject it downstream). A field that is
- * a string is decrypted if it starts with `enc:v1:`, otherwise treated as
- * plaintext.
+ * a string is decrypted if it is encrypted, otherwise treated as plaintext.
  */
-function decryptConfigSecrets(kind: DestinationKind, raw: unknown): unknown {
+function decryptConfigSecrets(workspaceId: string, kind: DestinationKind, raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
 
   const config = raw as Record<string, unknown>;
@@ -227,14 +229,14 @@ function decryptConfigSecrets(kind: DestinationKind, raw: unknown): unknown {
     switch (kind) {
       case "webhook":
         if (typeof config.secret === "string") {
-          decrypted.secret = decrypt(config.secret);
+          decrypted.secret = decrypt(config.secret, workspaceId);
         }
         // Custom headers may contain Authorization tokens
         if (typeof config.headers === "object" && config.headers !== null) {
           const headers = config.headers as Record<string, unknown>;
           const decryptedHeaders: Record<string, unknown> = {};
           for (const [key, value] of Object.entries(headers)) {
-            decryptedHeaders[key] = typeof value === "string" ? decrypt(value) : value;
+            decryptedHeaders[key] = typeof value === "string" ? decrypt(value, workspaceId) : value;
           }
           decrypted.headers = decryptedHeaders;
         }
@@ -243,14 +245,14 @@ function decryptConfigSecrets(kind: DestinationKind, raw: unknown): unknown {
       case "slack":
         // The webhook URL is the credential
         if (typeof config.webhookUrl === "string") {
-          decrypted.webhookUrl = decrypt(config.webhookUrl);
+          decrypted.webhookUrl = decrypt(config.webhookUrl, workspaceId);
         }
         break;
 
       case "google_sheets":
         // The refresh token is the credential
         if (typeof config.refreshToken === "string") {
-          decrypted.refreshToken = decrypt(config.refreshToken);
+          decrypted.refreshToken = decrypt(config.refreshToken, workspaceId);
         }
         break;
 
@@ -278,8 +280,8 @@ export type BuildConfigResult =
 /**
  * Turns what someone typed into what gets stored.
  *
- * **Encrypts secrets before storing** (#112). The returned config has encrypted
- * strings in place of plaintext credentials.
+ * **Encrypts secrets before storing** (#112), bound to `workspaceId` (#119).
+ * The returned config has encrypted strings in place of plaintext credentials.
  *
  * `previous` is the existing config on an edit, so a field the form did not
  * re-send — a secret, which is never rendered back — is carried forward rather
@@ -290,6 +292,7 @@ export type BuildConfigResult =
  * the only time it can be shown.
  */
 export function buildConfig(
+  workspaceId: string,
   kind: DestinationKind,
   input: {
     url?: string;
@@ -315,18 +318,18 @@ export function buildConfig(
         // sign with the ciphertext — every receiver's signature check breaking
         // on an edit that changed nothing about the secret.
         const storedSecret =
-          typeof previous?.secret === "string" ? decrypt(previous.secret) : null;
+          typeof previous?.secret === "string" ? decrypt(previous.secret, workspaceId) : null;
         const existingSecret =
           storedSecret !== null && storedSecret.length >= 16 ? storedSecret : null;
         const rotate = input.rotateSecret === true || existingSecret === null;
         const secret = rotate ? newDestinationSecret() : existingSecret;
 
-        const config: Record<string, unknown> = { url, secret: encrypt(secret) };
+        const config: Record<string, unknown> = { url, secret: encrypt(secret, workspaceId) };
         if (Object.keys(headers.value).length > 0) {
           // Encrypt header values (may contain Authorization tokens)
           const encryptedHeaders: Record<string, string> = {};
           for (const [key, value] of Object.entries(headers.value)) {
-            encryptedHeaders[key] = encrypt(value);
+            encryptedHeaders[key] = encrypt(value, workspaceId);
           }
           config.headers = encryptedHeaders;
         }
@@ -363,7 +366,11 @@ export function buildConfig(
         // empty because the value is a secret, and an empty field must not mean
         // "delete the credential".
         if (raw === "" && typeof previous?.webhookUrl === "string") {
-          return { ok: true, config: { webhookUrl: seal(previous.webhookUrl) }, secret: null };
+          return {
+            ok: true,
+            config: { webhookUrl: seal(previous.webhookUrl, workspaceId) },
+            secret: null,
+          };
         }
 
         const url = assertDeliverableUrl(raw);
@@ -375,7 +382,7 @@ export function buildConfig(
           };
         }
         // The URL is the credential: anyone holding it can post into the channel.
-        return { ok: true, config: { webhookUrl: encrypt(url.toString()) }, secret: null };
+        return { ok: true, config: { webhookUrl: encrypt(url.toString(), workspaceId) }, secret: null };
       }
 
       case "google_sheets": {
@@ -399,7 +406,7 @@ export function buildConfig(
           ok: true,
           config: {
             ...parsed.data,
-            refreshToken: seal(parsed.data.refreshToken),
+            refreshToken: seal(parsed.data.refreshToken, workspaceId),
             sheetName: sheetName || parsed.data.sheetName,
           },
           secret: null,
@@ -427,11 +434,12 @@ export function buildConfig(
 
 /**
  * A stored secret carried forward unchanged, sealed if it is not already. A
- * value written before #112 is plaintext; an edit is a chance to fix that, and
- * re-encrypting an already-sealed value would double it.
+ * value written before #112 is plaintext and one written by its first release
+ * is unbound `v1`; an edit is a chance to fix both. It is opened before it is
+ * sealed, because encrypting ciphertext would double it.
  */
-function seal(value: string): string {
-  return isEncrypted(value) ? value : encrypt(value);
+function seal(value: string, workspaceId: string): string {
+  return needsSealing(value) ? encrypt(decrypt(value, workspaceId), workspaceId) : value;
 }
 
 /** `Name: value` per line. The format someone already has in their head. */

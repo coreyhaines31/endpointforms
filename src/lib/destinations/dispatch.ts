@@ -249,6 +249,7 @@ async function attemptDelivery(
   let result: AdapterResult;
   try {
     result = await adapter.deliver({
+      workspaceId,
       destinationName: destination.name,
       payload,
       config: destination.config,
@@ -391,6 +392,7 @@ export type TestDeliveryResult = {
  * button, once, which is who it is for.
  */
 export async function sendTestDelivery(
+  workspaceId: string,
   endpoint: { publicId: string; name: string },
   destination: { id: string; kind: Deliverable["kind"]; name: string },
   config: Record<string, unknown>,
@@ -417,6 +419,7 @@ export async function sendTestDelivery(
 
   try {
     const result = await adapter.deliver({
+      workspaceId,
       destinationName: destination.name,
       payload,
       config,

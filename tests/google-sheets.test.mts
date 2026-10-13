@@ -58,6 +58,8 @@ import { decrypt, isEncrypted } from "../src/lib/crypto/encrypt.ts";
 // See tests/destinations.test.mts: plain `node` is production to the
 // encryption module, so the suite brings its own key.
 process.env.DESTINATION_SECRETS_KEY ??= Buffer.alloc(32, 7).toString("base64");
+// The workspace these credentials are sealed to (#119).
+const WS = "0190a1b2-0000-7000-8000-000000000001";
 
 let pass = 0;
 let fail = 0;
@@ -496,17 +498,17 @@ async function config() {
   // carries a slash must not reach `fetch` at all.
   let threw = false;
   try {
-    parseConfig("google_sheets", { ...storedConfig, spreadsheetId: "abc/../../drive/v3/files" });
+    parseConfig(WS, "google_sheets", { ...storedConfig, spreadsheetId: "abc/../../drive/v3/files" });
   } catch {
     threw = true;
   }
   ok("a stored id with a path in it does not parse", threw);
 
-  const renamed = buildConfig("google_sheets", { sheetName: "Q4 leads" }, storedConfig);
+  const renamed = buildConfig(WS, "google_sheets", { sheetName: "Q4 leads" }, storedConfig);
   ok("an edit can change the tab", renamed.ok && renamed.config.sheetName === "Q4 leads", renamed);
   ok(
     "and keeps the token it was never shown",
-    renamed.ok && decrypt(String(renamed.config.refreshToken)) === REFRESH,
+    renamed.ok && decrypt(String(renamed.config.refreshToken), WS) === REFRESH,
   );
   // `storedConfig` holds the token in plaintext, as a row written before #112
   // does. The edit seals it rather than carrying the plaintext forward.
@@ -516,7 +518,7 @@ async function config() {
       isEncrypted(String(renamed.config.refreshToken)) &&
       !JSON.stringify(renamed.config).includes(REFRESH),
   );
-  const blank = buildConfig("google_sheets", { sheetName: "  " }, storedConfig);
+  const blank = buildConfig(WS, "google_sheets", { sheetName: "  " }, storedConfig);
   ok("an empty tab field keeps the tab", blank.ok && blank.config.sheetName === "Leads", blank);
 
   const redacted = redactConfig("google_sheets", storedConfig);
@@ -833,6 +835,7 @@ async function deliver(
 ) {
   const google = fakeGoogle(handlers);
   const result = await deliverGoogleSheets({
+    workspaceId: WS,
     destinationName: "Leads sheet",
     payload: options.payload ?? payload({ name: "Priya", email: "priya@dorsetmetal.example" }),
     config: options.config ?? storedConfig,

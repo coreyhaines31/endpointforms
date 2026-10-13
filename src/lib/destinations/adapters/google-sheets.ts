@@ -116,7 +116,7 @@ export async function deliverGoogleSheets(context: AdapterContext): Promise<Adap
 
   let config;
   try {
-    config = parseConfig("google_sheets", context.config);
+    config = parseConfig(context.workspaceId, "google_sheets", context.config);
   } catch (error) {
     return failed({ failure: "configuration", error: messageOf(error) });
   }

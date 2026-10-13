@@ -43,20 +43,29 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
  *
  * ## Wire format
  *
- * Encrypted values are stored as `enc:v1:<base64>`, where the base64 portion
+ * Encrypted values are stored as `enc:v2:<base64>`, where the base64 portion
  * contains:
  * - 12-byte IV (initialization vector)
  * - ciphertext
  * - 16-byte authentication tag
  *
- * The `enc:v1:` prefix lets `decrypt()` distinguish an encrypted value from a
- * plaintext one, which is how backward compatibility works: during rollout,
- * secrets written before this module shipped are still plaintext, and those
- * written after are encrypted. Both can be read. A value without the prefix is
- * treated as plaintext and returned as-is.
+ * The prefix lets `decrypt()` distinguish an encrypted value from a plaintext
+ * one, which is how backward compatibility works: during rollout, secrets
+ * written before this module shipped are still plaintext, and those written
+ * after are encrypted. Both can be read. A value without a prefix is treated as
+ * plaintext and returned as-is.
  *
- * The version (`v1`) is for algorithm changes later. Rotating to AES-256-GCM
- * from something older would be `enc:v2:`, and the decryptor would handle both.
+ * ## Bound to a workspace (#119)
+ *
+ * `v2` authenticates the owning workspace's id as GCM additional data. The id
+ * is not stored in the value; the caller supplies it from the row it read. A
+ * value copied into another workspace's row — a bad restore, a bug in a copy
+ * path, someone with write access to the table — fails authentication there
+ * instead of being used as that workspace's credential.
+ *
+ * `v1` values (the first release, no binding) still decrypt, so nothing
+ * written by it is stranded. They carry no binding, so an edit and the
+ * migration script both rewrite them as `v2`; `needsSealing()` is the test.
  *
  * ## Rollout and migration
  *
@@ -91,7 +100,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
  * - Re-encrypt on read if the old key was used (lazy migration)
  * - After all secrets are re-encrypted, drop the old key
  *
- * The version prefix makes this possible: `enc:v1:` stays the algorithm, and
+ * The version prefix makes this possible: the prefix names the format, and
  * which key decrypted it is internal to the decryptor.
  */
 
@@ -100,7 +109,14 @@ const KEY_LENGTH = 32; // 256 bits
 const IV_LENGTH = 12; // 96 bits (recommended for GCM)
 const TAG_LENGTH = 16; // 128 bits
 
-const VERSION_PREFIX = "enc:v1:";
+const V1_PREFIX = "enc:v1:";
+const V2_PREFIX = "enc:v2:";
+
+/** The additional authenticated data for a workspace's credentials. */
+function bindingFor(workspaceId: string): Buffer {
+  if (workspaceId === "") throw new Error("Cannot bind a credential to an empty workspace id.");
+  return Buffer.from(`endpointforms:destination-credential:workspace:${workspaceId}`, "utf8");
+}
 
 /**
  * The built-in key for development and test environments.
@@ -171,15 +187,16 @@ function getEncryptionKey(): Buffer | null {
 }
 
 /**
- * Encrypts a plaintext secret and returns the wire format.
+ * Encrypts a plaintext secret for one workspace and returns the wire format.
  *
- * Returns `enc:v1:<base64(iv + ciphertext + tag)>`.
+ * Returns `enc:v2:<base64(iv + ciphertext + tag)>`, authenticated against
+ * `workspaceId`. Only `decrypt` with the same id opens it.
  *
  * Throws if the encryption key is not configured. This is deliberate: a
  * deployment without a key must fail loudly rather than silently storing
  * plaintext.
  */
-export function encrypt(plaintext: string): string {
+export function encrypt(plaintext: string, workspaceId: string): string {
   const key = getEncryptionKey();
   if (key === null) {
     throw new Error(
@@ -191,6 +208,7 @@ export function encrypt(plaintext: string): string {
 
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);
+  cipher.setAAD(bindingFor(workspaceId));
 
   let ciphertext = cipher.update(plaintext, "utf8");
   ciphertext = Buffer.concat([ciphertext, cipher.final()]);
@@ -199,14 +217,15 @@ export function encrypt(plaintext: string): string {
 
   // Wire format: IV + ciphertext + tag, then base64
   const combined = Buffer.concat([iv, ciphertext, tag]);
-  return `${VERSION_PREFIX}${combined.toString("base64")}`;
+  return `${V2_PREFIX}${combined.toString("base64")}`;
 }
 
 /**
  * Decrypts a value that may be encrypted or plaintext.
  *
- * - If the value starts with `enc:v1:`, it is treated as encrypted and decrypted.
- * - Otherwise, it is treated as plaintext and returned as-is.
+ * - `enc:v2:` is decrypted against `workspaceId`, and fails for any other id.
+ * - `enc:v1:` (unbound, from the first release) is decrypted without a binding.
+ * - Anything else is treated as plaintext and returned as-is.
  *
  * This backward compatibility is how the rollout works: secrets written before
  * this module existed are still plaintext, and those written after are
@@ -215,10 +234,12 @@ export function encrypt(plaintext: string): string {
  * Throws if:
  * - The value is encrypted and the key is not configured
  * - The value is encrypted and the ciphertext is malformed
- * - The value is encrypted and the authentication tag does not match (tampered data)
+ * - The value is encrypted and the authentication tag does not match (tampered
+ *   data, a different key, or a `v2` value from another workspace)
  */
-export function decrypt(value: string): string {
-  if (!value.startsWith(VERSION_PREFIX)) {
+export function decrypt(value: string, workspaceId: string): string {
+  const prefix = value.startsWith(V2_PREFIX) ? V2_PREFIX : value.startsWith(V1_PREFIX) ? V1_PREFIX : null;
+  if (prefix === null) {
     // Not encrypted — treat as plaintext
     return value;
   }
@@ -231,7 +252,7 @@ export function decrypt(value: string): string {
     );
   }
 
-  const base64Payload = value.slice(VERSION_PREFIX.length);
+  const base64Payload = value.slice(prefix.length);
   let combined: Buffer;
   try {
     combined = Buffer.from(base64Payload, "base64");
@@ -253,6 +274,7 @@ export function decrypt(value: string): string {
 
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(tag);
+  if (prefix === V2_PREFIX) decipher.setAAD(bindingFor(workspaceId));
 
   let plaintext: Buffer;
   try {
@@ -260,21 +282,24 @@ export function decrypt(value: string): string {
     plaintext = Buffer.concat([plaintext, decipher.final()]);
   } catch (error) {
     throw new Error(
-      `Cannot decrypt: authentication failed (wrong key or tampered data). ${error instanceof Error ? error.message : String(error)}`,
+      `Cannot decrypt: authentication failed (wrong key, wrong workspace, or tampered data). ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
   return plaintext.toString("utf8");
 }
 
-/**
- * Returns true if a value is encrypted (starts with the version prefix).
- *
- * This is used by the migration script to identify which secrets need
- * re-encryption.
- */
+/** Returns true if a value is encrypted, in either format. */
 export function isEncrypted(value: string): boolean {
-  return value.startsWith(VERSION_PREFIX);
+  return value.startsWith(V2_PREFIX) || value.startsWith(V1_PREFIX);
+}
+
+/**
+ * True for a stored value that should be rewritten: plaintext, or `v1`, which
+ * carries no workspace binding. Used by edits and the migration script.
+ */
+export function needsSealing(value: string): boolean {
+  return !value.startsWith(V2_PREFIX);
 }
 
 /**

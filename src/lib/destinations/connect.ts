@@ -100,7 +100,7 @@ export async function completeGoogleConnection(input: {
   const config = {
     spreadsheetId: pending.spreadsheetId,
     sheetName: sheet.sheetName,
-    refreshToken: encrypt(exchanged.refreshToken),
+    refreshToken: encrypt(exchanged.refreshToken, workspaceId),
     account: exchanged.email,
     spreadsheetTitle: sheet.title,
     connectedAt: now.toISOString(),

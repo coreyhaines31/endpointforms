@@ -2,7 +2,9 @@
 /**
  * Migrates existing plaintext destination secrets to encrypted format (#112).
  *
- * Reads all destinations, identifies plaintext secrets, encrypts them in place.
+ * Reads all destinations and seals every credential that is plaintext, or is
+ * `enc:v1:` from the first release and so carries no workspace binding (#119).
+ * Each is sealed to the workspace that owns its row.
  * Soft-deleted rows are included: their credentials sit in the same table and
  * in every dump of it. Safe to run multiple times — already-encrypted secrets
  * are skipped.
@@ -20,7 +22,7 @@
 import { eq } from "drizzle-orm";
 import { sqlClient, unsafeDb } from "../src/db/client.ts";
 import { destinations } from "../src/db/schema.ts";
-import { encrypt, isEncrypted, isEncryptionAvailable } from "../src/lib/crypto/encrypt.ts";
+import { decrypt, encrypt, isEncryptionAvailable, needsSealing } from "../src/lib/crypto/encrypt.ts";
 
 const DRY_RUN = !process.argv.includes("--apply");
 
@@ -59,6 +61,9 @@ async function main() {
 
   for (const row of rows) {
     const config = (row.config ?? {}) as Record<string, unknown>;
+    // Opened first: a v1 value is ciphertext, and encrypting it again would
+    // double it. Plaintext passes through `decrypt` unchanged.
+    const seal = (value: string) => encrypt(decrypt(value, row.workspaceId), row.workspaceId);
     let needsUpdate = false;
     const updates: Record<string, string> = {};
 
@@ -66,9 +71,9 @@ async function main() {
       switch (row.kind) {
         case "webhook": {
           // Check secret
-          if (typeof config.secret === "string" && !isEncrypted(config.secret)) {
-            console.log(`  ${row.name} (${row.kind}): encrypting webhook secret`);
-            updates.secret = encrypt(config.secret);
+          if (typeof config.secret === "string" && needsSealing(config.secret)) {
+            console.log(`  ${row.name} (${row.kind}): sealing webhook secret`);
+            updates.secret = seal(config.secret);
             needsUpdate = true;
           }
 
@@ -76,13 +81,13 @@ async function main() {
           if (typeof config.headers === "object" && config.headers !== null) {
             const headers = config.headers as Record<string, unknown>;
             for (const [key, value] of Object.entries(headers)) {
-              if (typeof value === "string" && !isEncrypted(value)) {
-                console.log(`  ${row.name} (${row.kind}): encrypting header ${key}`);
+              if (typeof value === "string" && needsSealing(value)) {
+                console.log(`  ${row.name} (${row.kind}): sealing header ${key}`);
                 if (!updates.headers) {
                   updates.headers = JSON.stringify({ ...headers });
                 }
                 const headersObj = JSON.parse(updates.headers) as Record<string, string>;
-                headersObj[key] = encrypt(value);
+                headersObj[key] = seal(value);
                 updates.headers = JSON.stringify(headersObj);
                 needsUpdate = true;
               }
@@ -93,9 +98,9 @@ async function main() {
 
         case "slack": {
           // Check webhook URL (the URL is the credential)
-          if (typeof config.webhookUrl === "string" && !isEncrypted(config.webhookUrl)) {
-            console.log(`  ${row.name} (${row.kind}): encrypting webhook URL`);
-            updates.webhookUrl = encrypt(config.webhookUrl);
+          if (typeof config.webhookUrl === "string" && needsSealing(config.webhookUrl)) {
+            console.log(`  ${row.name} (${row.kind}): sealing webhook URL`);
+            updates.webhookUrl = seal(config.webhookUrl);
             needsUpdate = true;
           }
           break;
@@ -103,9 +108,9 @@ async function main() {
 
         case "google_sheets": {
           // Check refresh token
-          if (typeof config.refreshToken === "string" && !isEncrypted(config.refreshToken)) {
-            console.log(`  ${row.name} (${row.kind}): encrypting refresh token`);
-            updates.refreshToken = encrypt(config.refreshToken);
+          if (typeof config.refreshToken === "string" && needsSealing(config.refreshToken)) {
+            console.log(`  ${row.name} (${row.kind}): sealing refresh token`);
+            updates.refreshToken = seal(config.refreshToken);
             needsUpdate = true;
           }
           break;
@@ -148,7 +153,7 @@ async function main() {
 
   console.log("\nSummary:");
   console.log(`  Total destinations: ${rows.length}`);
-  console.log(`  Plaintext secrets found: ${plaintextCount}`);
+  console.log(`  Unsealed secrets found (plaintext or v1): ${plaintextCount}`);
   if (DRY_RUN) {
     console.log(`  Would encrypt: ${plaintextCount}`);
     console.log("\nRun db:migrate-encrypt-secrets:apply to actually encrypt these secrets.");
