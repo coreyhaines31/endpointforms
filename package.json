@@ -12,6 +12,7 @@
     "db:migrate": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/db-migrate.mts",
     "db:migrate:neon": "DB_TARGET=neon npm run db:migrate",
     "db:migrate-encrypt-secrets": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/migrate-encrypt-secrets.mts",
+    "db:migrate-encrypt-secrets:apply": "npm run db:migrate-encrypt-secrets -- --apply",
     "db:create-app-role:neon": "DB_TARGET=neon node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/db-create-app-role.mts",
     "db:seed": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/db-seed.mts",
     "db:seed:neon": "DB_TARGET=neon npm run db:seed",
