@@ -24,14 +24,6 @@ import { encrypt, isEncrypted, isEncryptionAvailable } from "../src/lib/crypto/e
 
 const DRY_RUN = !process.argv.includes("--apply");
 
-type DestinationRow = {
-  id: string;
-  workspaceId: string;
-  kind: string;
-  name: string;
-  config: unknown;
-};
-
 async function main() {
   console.log("Destination secrets encryption migration\n");
 
