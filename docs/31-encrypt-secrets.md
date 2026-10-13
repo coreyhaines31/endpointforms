@@ -1,4 +1,4 @@
-# Encrypting Destination Secrets at Rest
+# 31 — Encrypting destination secrets at rest
 
 **Issue #112.** Google refresh tokens and webhook signing secrets were stored in plaintext in
 `destinations.config` jsonb. This document explains the encryption solution, how to configure it,
@@ -198,7 +198,7 @@ decrypted. The UI receives only the redacted shape.
 - `scripts/migrate-encrypt-secrets.mts` — migration script (new)
 - `tests/encrypt-secrets.test.mts` — comprehensive tests (new)
 - `package.json` — added `npm run db:migrate-encrypt-secrets` and `npm run test:encrypt`
-- `docs/112-encrypt-secrets.md` — this file
+- `docs/31-encrypt-secrets.md` — this file
 
 ## Related issues
 
