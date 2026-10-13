@@ -290,7 +290,7 @@ export function isEncryptionAvailable(): boolean {
  * For testing: clears the cached key so it can be reloaded with a different
  * environment variable value.
  *
- * **Not exported** — tests import it via the test-only entrypoint.
+ * Test-only. Nothing outside `tests/` should call it.
  */
 export function _resetKeyCache(): void {
   encryptionKey = null;
