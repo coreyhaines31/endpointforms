@@ -85,12 +85,16 @@ The migration script re-encrypts existing plaintext secrets in place:
 npm run db:migrate-encrypt-secrets
 
 # Apply (actually encrypts the secrets)
-npm run db:migrate-encrypt-secrets --apply
+npm run db:migrate-encrypt-secrets:apply
 ```
+
+Not `npm run db:migrate-encrypt-secrets --apply`: npm takes that flag for itself and the
+run stays dry.
 
 The script:
 
-- Reads all non-deleted destinations
+- Reads every destination, soft-deleted ones included (their credentials are in the same
+  table and in every dump of it)
 - Identifies plaintext secrets (those without `enc:v1:` prefix)
 - Encrypts them with the configured key
 - Updates the rows in place
@@ -99,7 +103,7 @@ The script:
 For a hosted database (e.g. Neon):
 
 ```bash
-DB_TARGET=neon npm run db:migrate-encrypt-secrets --apply
+DB_TARGET=neon npm run db:migrate-encrypt-secrets:apply
 ```
 
 #### 3. Verify
@@ -197,7 +201,7 @@ decrypted. The UI receives only the redacted shape.
 - `src/lib/destinations/connect.ts` — encrypt Google refresh tokens from OAuth callback
 - `scripts/migrate-encrypt-secrets.mts` — migration script (new)
 - `tests/encrypt-secrets.test.mts` — comprehensive tests (new)
-- `package.json` — added `npm run db:migrate-encrypt-secrets` and `npm run test:encrypt`
+- `package.json` — added `db:migrate-encrypt-secrets`, `db:migrate-encrypt-secrets:apply` and `test:encrypt`
 - `docs/31-encrypt-secrets.md` — this file
 
 ## Related issues
