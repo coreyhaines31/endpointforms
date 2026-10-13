@@ -3,17 +3,22 @@
  * Migrates existing plaintext destination secrets to encrypted format (#112).
  *
  * Reads all destinations, identifies plaintext secrets, encrypts them in place.
- * Safe to run multiple times — already-encrypted secrets are skipped.
+ * Soft-deleted rows are included: their credentials sit in the same table and
+ * in every dump of it. Safe to run multiple times — already-encrypted secrets
+ * are skipped.
  *
  * Usage:
- *   npm run db:migrate-encrypt-secrets          # Dry run (shows what would be encrypted)
- *   npm run db:migrate-encrypt-secrets --apply  # Actually encrypts the secrets
+ *   npm run db:migrate-encrypt-secrets         # Dry run (shows what would be encrypted)
+ *   npm run db:migrate-encrypt-secrets:apply   # Actually encrypts the secrets
+ *
+ * Not `npm run db:migrate-encrypt-secrets --apply`: npm takes that flag for
+ * itself and the run stays dry.
  *
  * Requires DESTINATION_SECRETS_KEY to be set.
  */
 
-import { eq, isNull, sql } from "drizzle-orm";
-import { unsafeDb } from "../src/db/client.ts";
+import { eq } from "drizzle-orm";
+import { sqlClient, unsafeDb } from "../src/db/client.ts";
 import { destinations } from "../src/db/schema.ts";
 import { encrypt, isEncrypted, isEncryptionAvailable } from "../src/lib/crypto/encrypt.ts";
 
@@ -39,7 +44,7 @@ async function main() {
 
   if (DRY_RUN) {
     console.log("DRY RUN mode. No changes will be made.");
-    console.log("Run with --apply to actually encrypt secrets.\n");
+    console.log("Run db:migrate-encrypt-secrets:apply to actually encrypt secrets.\n");
   } else {
     console.log("APPLY mode. Secrets will be encrypted.\n");
   }
@@ -52,8 +57,7 @@ async function main() {
       name: destinations.name,
       config: destinations.config,
     })
-    .from(destinations)
-    .where(isNull(destinations.deletedAt));
+    .from(destinations);
 
   console.log(`Found ${rows.length} destinations.\n`);
 
@@ -155,18 +159,20 @@ async function main() {
   console.log(`  Plaintext secrets found: ${plaintextCount}`);
   if (DRY_RUN) {
     console.log(`  Would encrypt: ${plaintextCount}`);
-    console.log("\nRun with --apply to actually encrypt these secrets.");
+    console.log("\nRun db:migrate-encrypt-secrets:apply to actually encrypt these secrets.");
   } else {
     console.log(`  Encrypted: ${encryptedCount}`);
     console.log(`  Errors: ${errorCount}`);
   }
 
   if (errorCount > 0) {
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
-main().catch((error) => {
-  console.error("Migration failed:", error);
-  process.exit(1);
-});
+main()
+  .catch((error) => {
+    console.error("Migration failed:", error);
+    process.exitCode = 1;
+  })
+  .finally(() => sqlClient.end());
