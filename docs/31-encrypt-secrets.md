@@ -63,8 +63,10 @@ the value; the code supplies it from the row it read. A value copied into anothe
 row (a bad restore, a bug in a copy path, someone with write access to the table) fails
 authentication there instead of being used as that workspace's credential.
 
-`enc:v1:` values, written by the first release, carry no binding. They still decrypt, and both
-an edit and the migration rewrite them as `v2`.
+`enc:v1:` values, written by the first release, carry no binding, which makes them exactly
+the values that could have been moved. The app refuses them (#122): a delivery fails as a
+configuration error and an edit fails, both naming the migration. The migration is the only
+code that opens `v1`, and it rewrites each value as `v2`.
 
 ## Rollout and migration
 
@@ -219,6 +221,7 @@ decrypted. The UI receives only the redacted shape.
 
 - **#112**: Encrypt destination secrets at rest (this issue)
 - **#119**: Bind each sealed value to its workspace
+- **#122**: Refuse unbound `v1` values outside the migration
 - **#67**: Google Sheets destination and refresh token handling
 - **#41**: Webhook signing secrets
 - **#42**: Delivery log contains request/response but never secrets

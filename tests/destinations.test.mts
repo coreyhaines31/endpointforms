@@ -54,7 +54,7 @@ import { deliverEmail } from "../src/lib/destinations/adapters/email.ts";
 import { deliverSlack, slackMessage } from "../src/lib/destinations/adapters/slack.ts";
 import { DestinationConfigError, parseConfig } from "../src/lib/destinations/config.ts";
 import { createCipheriv, randomBytes } from "node:crypto";
-import { decrypt, isEncrypted } from "../src/lib/crypto/encrypt.ts";
+import { decrypt, isEncrypted, openUnboundV1 } from "../src/lib/crypto/encrypt.ts";
 import type { SubmissionPayload } from "../src/lib/destinations/types.ts";
 
 // Plain `node` leaves NODE_ENV unset, which the encryption module treats as
@@ -682,9 +682,10 @@ console.log("\nconfig and redaction");
     })(),
   );
 
-  // A value from #112's first release is `enc:v1:`, unbound. It still opens,
-  // and an edit rewrites it bound. Built by hand from the wire format, because
-  // nothing in the app writes v1 any more.
+  // A value from #112's first release is `enc:v1:`, unbound — exactly the kind
+  // that could have been moved — so the app refuses it (#122) and says which
+  // migration rewrites it. Built by hand from the wire format, because nothing
+  // writes v1 any more.
   {
     const key = Buffer.from(String(process.env.DESTINATION_SECRETS_KEY), "base64");
     const iv = randomBytes(12);
@@ -692,28 +693,25 @@ console.log("\nconfig and redaction");
     const body = Buffer.concat([cipher.update("https://hooks.slack.com/services/V/1/X", "utf8"), cipher.final()]);
     const v1 = `enc:v1:${Buffer.concat([iv, body, cipher.getAuthTag()]).toString("base64")}`;
 
+    // The control: the fixture is a well-formed v1 value that opens through
+    // the migration's door, so the refusals below are the policy, not a
+    // value nobody could open.
+    t("the migration can open a v1 credential", openUnboundV1(v1), "https://hooks.slack.com/services/V/1/X");
     ok(
-      "a v1 credential still opens",
-      parseConfig(WS, "slack", { webhookUrl: v1 }).webhookUrl === "https://hooks.slack.com/services/V/1/X",
+      "a delivery refuses a v1 credential and names the migration",
+      (() => {
+        try {
+          parseConfig(WS, "slack", { webhookUrl: v1 });
+          return false;
+        } catch (error) {
+          return error instanceof DestinationConfigError && /db:migrate-encrypt-secrets:apply/.test(error.message);
+        }
+      })(),
     );
-    const resealed = buildConfig(WS, "slack", { webhookUrl: "" }, { webhookUrl: v1 });
+    const edited = buildConfig(WS, "slack", { webhookUrl: "" }, { webhookUrl: v1 });
     ok(
-      "an edit rewrites a v1 credential bound to the workspace",
-      resealed.ok === true &&
-        String(resealed.config.webhookUrl).startsWith("enc:v2:") &&
-        parseConfig(WS, "slack", resealed.config).webhookUrl === "https://hooks.slack.com/services/V/1/X",
-    );
-    ok(
-      "and once rewritten, another workspace cannot open it",
-      resealed.ok === true &&
-        (() => {
-          try {
-            parseConfig(OTHER_WS, "slack", resealed.config);
-            return false;
-          } catch {
-            return true;
-          }
-        })(),
+      "an edit carrying a v1 credential forward refuses, naming the migration",
+      edited.ok === false && /db:migrate-encrypt-secrets:apply/.test(edited.message),
     );
   }
 

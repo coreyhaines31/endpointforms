@@ -14,6 +14,7 @@ import {
   isEncrypted,
   isEncryptionAvailable,
   needsSealing,
+  openUnboundV1,
   _resetKeyCache,
 } from "../src/lib/crypto/encrypt.ts";
 
@@ -214,7 +215,7 @@ console.log("\n== Key handling ==");
   // Decrypting plaintext still works (backward compat)
   t("decrypt plaintext works without key", decrypt("plaintext", WS), "plaintext");
   // Decrypting encrypted value throws
-  const encrypted = "enc:v1:c29tZSBlbmNyeXB0ZWQgZGF0YQ=="; // fake encrypted
+  const encrypted = "enc:v2:c29tZSBlbmNyeXB0ZWQgZGF0YQ=="; // fake encrypted
   throws("decrypt encrypted throws without key", () => decrypt(encrypted, WS), "not configured");
   restoreEnv();
 }
@@ -329,7 +330,11 @@ setEnv(undefined, "test");
   const body = Buffer.concat([cipher.update("whsec_v1", "utf8"), cipher.final()]);
   const v1 = `enc:v1:${Buffer.concat([iv, body, cipher.getAuthTag()]).toString("base64")}`;
 
-  t("a v1 value still opens", decrypt(v1, WS), "whsec_v1");
+  // The control: the migration's door opens it, so the refusal below is the
+  // policy (#122) and not a value nobody could open.
+  t("the migration can open a v1 value", openUnboundV1(v1), "whsec_v1");
+  throws("the app refuses a v1 value, naming the migration", () => decrypt(v1, WS), "db:migrate-encrypt-secrets:apply");
+  throws("the migration's door opens nothing else", () => openUnboundV1(encrypt("whsec_v2", WS)), "Not an enc:v1:");
   ok("it is recognised as encrypted", isEncrypted(v1));
   ok("but marked for resealing, because it carries no binding", needsSealing(v1));
   ok("plaintext is marked for sealing", needsSealing("whsec_plain"));
