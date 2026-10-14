@@ -80,6 +80,7 @@ const PUBLIC_ADDRESS = "127.0.0.1";
 /** Stands in for 169.254.169.254. Nothing in this file talks to the real one. */
 const INTERNAL_ADDRESS = "::1";
 const CREDENTIALS = "INTERNAL-CREDENTIALS-abc123";
+const WS = "0190a1b2-0000-7000-8000-000000000001";
 
 let publicHits: string[] = [];
 let internalHits: string[] = [];
@@ -455,6 +456,7 @@ console.log("\nthe webhook adapter's default transport");
     process.env.ALLOW_INSECURE_DESTINATIONS = "1";
     try {
       const result = await deliverWebhook({
+        workspaceId: WS,
         destinationName: "CRM intake",
         payload: buildPayload(sampleSource({ publicId: "ep_abc123", name: "Contact form" }), {
           id: "dlv_fixed",

@@ -53,7 +53,7 @@ export async function deliverWebhook(context: AdapterContext): Promise<AdapterRe
 
   let config;
   try {
-    config = parseConfig("webhook", context.config);
+    config = parseConfig(context.workspaceId, "webhook", context.config);
   } catch (error) {
     return configurationFailure(context, error);
   }

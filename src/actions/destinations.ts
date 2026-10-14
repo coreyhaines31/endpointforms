@@ -116,7 +116,7 @@ export async function createDestinationAction(
     );
   }
 
-  const built = buildConfig(kind as DestinationKind, configInput(formData));
+  const built = buildConfig(access.workspace.id, kind as DestinationKind, configInput(formData));
   if (!built.ok) return formError(built.message);
 
   const created = await createDestination(access.workspace.id, endpointPublicId, {
@@ -290,7 +290,7 @@ export async function updateDestinationAction(
   // which is never rendered back into an input — is carried forward rather than
   // blanked. Saving a rename must not silently un-sign every future delivery.
   const previous = await rawConfig(access.workspace.id, destinationId);
-  const built = buildConfig(existing.kind, configInput(formData), previous);
+  const built = buildConfig(access.workspace.id, existing.kind, configInput(formData), previous);
   if (!built.ok) return formError(built.message);
 
   const updated = await updateDestination(access.workspace.id, destinationId, {
@@ -403,6 +403,7 @@ export async function testDestinationAction(
   if (!config) return formError(MESSAGES.gone);
 
   const result = await sendTestDelivery(
+    access.workspace.id,
     { publicId: endpoint.publicId, name: endpoint.name },
     { id: destination.id, kind: destination.kind, name: destination.name },
     config,

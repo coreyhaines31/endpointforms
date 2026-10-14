@@ -52,7 +52,8 @@ import {
 import { deliverWebhook } from "../src/lib/destinations/adapters/webhook.ts";
 import { deliverEmail } from "../src/lib/destinations/adapters/email.ts";
 import { deliverSlack, slackMessage } from "../src/lib/destinations/adapters/slack.ts";
-import { parseConfig } from "../src/lib/destinations/config.ts";
+import { DestinationConfigError, parseConfig } from "../src/lib/destinations/config.ts";
+import { createCipheriv, randomBytes } from "node:crypto";
 import { decrypt, isEncrypted } from "../src/lib/crypto/encrypt.ts";
 import type { SubmissionPayload } from "../src/lib/destinations/types.ts";
 
@@ -60,6 +61,9 @@ import type { SubmissionPayload } from "../src/lib/destinations/types.ts";
 // production and refuses without a key — deliberately, because the migration
 // script runs the same way. A fixed key, read lazily on first use.
 process.env.DESTINATION_SECRETS_KEY ??= Buffer.alloc(32, 7).toString("base64");
+// Credentials are sealed to the workspace that owns them (#119). Any id will do
+// for a unit test; what matters is that writing and reading agree.
+const WS = "0190a1b2-0000-7000-8000-000000000001";
 
 let pass = 0;
 let fail = 0;
@@ -507,7 +511,7 @@ console.log("\npayload");
 
 console.log("\nconfig and redaction");
 {
-  const built = buildConfig("webhook", { url: "https://crm.example.com/hooks/leads" });
+  const built = buildConfig(WS, "webhook", { url: "https://crm.example.com/hooks/leads" });
   ok("generates a secret on create", built.ok === true && built.secret !== null);
   ok(
     "stores the secret in the config",
@@ -521,7 +525,7 @@ console.log("\nconfig and redaction");
       built.secret !== null &&
       isEncrypted(String(built.config.secret)) &&
       !String(built.config.secret).includes(built.secret) &&
-      decrypt(String(built.config.secret)) === built.secret,
+      decrypt(String(built.config.secret), WS) === built.secret,
   );
 
   if (built.ok) {
@@ -537,7 +541,7 @@ console.log("\nconfig and redaction");
 
     // An edit that does not retype the secret must not un-sign every future
     // delivery — that would be a silent downgrade nobody would notice.
-    const edited = buildConfig("webhook", { url: "https://crm.example.com/v2" }, built.config);
+    const edited = buildConfig(WS, "webhook", { url: "https://crm.example.com/v2" }, built.config);
     // Compared opened, not as stored: every encryption takes a fresh IV, so the
     // ciphertext differs even when the secret does not. And opened exactly
     // once — an edit that re-encrypted the stored ciphertext would open to
@@ -545,20 +549,21 @@ console.log("\nconfig and redaction");
     ok(
       "an edit carries the existing secret forward",
       edited.ok === true &&
-        decrypt(String(edited.config.secret)) === decrypt(String(built.config.secret)),
+        decrypt(String(edited.config.secret), WS) === decrypt(String(built.config.secret), WS),
     );
     ok(
       "and seals it exactly once",
-      edited.ok === true && !isEncrypted(decrypt(String(edited.config.secret))),
+      edited.ok === true && !isEncrypted(decrypt(String(edited.config.secret), WS)),
     );
     ok(
       "and delivery reads the same secret after the edit",
       edited.ok === true &&
-        parseConfig("webhook", edited.config).secret === decrypt(String(built.config.secret)),
+        parseConfig(WS, "webhook", edited.config).secret === decrypt(String(built.config.secret), WS),
     );
     ok("and does not re-show it", edited.ok === true && edited.secret === null);
 
     const rotated = buildConfig(
+      WS,
       "webhook",
       { url: "https://crm.example.com/v2", rotateSecret: true },
       built.config,
@@ -566,7 +571,7 @@ console.log("\nconfig and redaction");
     ok(
       "rotating replaces the secret",
       rotated.ok === true &&
-        decrypt(String(rotated.config.secret)) !== decrypt(String(built.config.secret)),
+        decrypt(String(rotated.config.secret), WS) !== decrypt(String(built.config.secret), WS),
     );
     ok("and shows the new one exactly once", rotated.ok === true && rotated.secret !== null);
   }
@@ -575,16 +580,16 @@ console.log("\nconfig and redaction");
   ok("masking drops the middle", !maskSecret(SECRET).includes("secret_that_is"));
   t("masking a short value reveals nothing at all", maskSecret("abc"), "••••••••");
 
-  const blocked = buildConfig("webhook", { url: "https://169.254.169.254/latest/" });
+  const blocked = buildConfig(WS, "webhook", { url: "https://169.254.169.254/latest/" });
   ok("a webhook cannot be created against the metadata address", blocked.ok === false);
 
-  const headers = buildConfig("webhook", {
+  const headers = buildConfig(WS, "webhook", {
     url: "https://crm.example.com/hook",
     headers: "Authorization: Bearer sk-live-12345\nX-Team: sales",
   });
   ok(
     "parses `Name: value` headers",
-    headers.ok === true && parseConfig("webhook", headers.config).headers?.["X-Team"] === "sales",
+    headers.ok === true && parseConfig(WS, "webhook", headers.config).headers?.["X-Team"] === "sales",
   );
   ok(
     "and stores their values encrypted",
@@ -602,19 +607,19 @@ console.log("\nconfig and redaction");
     ok("only their names do", redacted.headerNames.includes("Authorization"));
   }
 
-  const reserved = buildConfig("webhook", {
+  const reserved = buildConfig(WS, "webhook", {
     url: "https://crm.example.com/hook",
     headers: "X-Endpoint-Signature: forged",
   });
   ok("refuses to let a customer override our signature header", reserved.ok === false);
 
-  const slack = buildConfig("slack", { webhookUrl: "https://hooks.slack.com/services/T0/B0/zzz" });
+  const slack = buildConfig(WS, "slack", { webhookUrl: "https://hooks.slack.com/services/T0/B0/zzz" });
   ok("accepts a Slack incoming webhook", slack.ok === true);
   ok(
     "and stores the URL encrypted, because the URL is the credential",
     slack.ok === true &&
       !JSON.stringify(slack.config).includes("hooks.slack.com") &&
-      parseConfig("slack", slack.config).webhookUrl === "https://hooks.slack.com/services/T0/B0/zzz",
+      parseConfig(WS, "slack", slack.config).webhookUrl === "https://hooks.slack.com/services/T0/B0/zzz",
   );
   if (slack.ok) {
     const redacted = redactConfig("slack", slack.config);
@@ -626,36 +631,102 @@ console.log("\nconfig and redaction");
   }
   ok(
     "refuses a Slack destination pointed somewhere that is not Slack",
-    buildConfig("slack", { webhookUrl: "https://evil.example/collect" }).ok === false,
+    buildConfig(WS, "slack", { webhookUrl: "https://evil.example/collect" }).ok === false,
   );
   ok(
     "a Slack edit that leaves the field blank keeps the existing credential",
     (() => {
-      const kept = buildConfig("slack", { webhookUrl: "" }, { webhookUrl: "https://hooks.slack.com/services/A/B/C" });
+      const kept = buildConfig(WS, "slack", { webhookUrl: "" }, { webhookUrl: "https://hooks.slack.com/services/A/B/C" });
       return (
         kept.ok === true &&
-        parseConfig("slack", kept.config).webhookUrl === "https://hooks.slack.com/services/A/B/C"
+        parseConfig(WS, "slack", kept.config).webhookUrl === "https://hooks.slack.com/services/A/B/C"
       );
     })(),
   );
   ok(
     "and seals a credential written before #112 as it carries it forward",
     (() => {
-      const kept = buildConfig("slack", { webhookUrl: "" }, { webhookUrl: "https://hooks.slack.com/services/A/B/C" });
+      const kept = buildConfig(WS, "slack", { webhookUrl: "" }, { webhookUrl: "https://hooks.slack.com/services/A/B/C" });
       return kept.ok === true && isEncrypted(String(kept.config.webhookUrl));
     })(),
   );
 
-  const email = buildConfig("email", { to: "a@example.com, b@example.com" });
+  // Bound to the workspace (#119): the same stored config, read as another
+  // workspace's, must refuse rather than hand over the credential. The first
+  // check is the control — the identical read with the right id succeeds — so a
+  // refusal below cannot be explained by the fixture being unreadable.
+  const OTHER_WS = "0190a1b2-0000-7000-8000-000000000002";
+  ok(
+    "a sealed Slack URL opens for its own workspace",
+    slack.ok === true && parseConfig(WS, "slack", slack.config).webhookUrl.startsWith("https://hooks.slack.com/"),
+  );
+  ok(
+    "and refuses to open for any other workspace",
+    (() => {
+      if (!slack.ok) return false;
+      try {
+        parseConfig(OTHER_WS, "slack", slack.config);
+        return false;
+      } catch (error) {
+        return error instanceof DestinationConfigError && /workspace/.test(error.message);
+      }
+    })(),
+  );
+  ok(
+    "an edit filed under another workspace cannot carry the secret across",
+    (() => {
+      const built = buildConfig(WS, "webhook", { url: "https://crm.example.com/hooks/leads" });
+      if (!built.ok) return false;
+      const moved = buildConfig(OTHER_WS, "webhook", { url: "https://crm.example.com/hooks/leads" }, built.config);
+      return moved.ok === false;
+    })(),
+  );
+
+  // A value from #112's first release is `enc:v1:`, unbound. It still opens,
+  // and an edit rewrites it bound. Built by hand from the wire format, because
+  // nothing in the app writes v1 any more.
+  {
+    const key = Buffer.from(String(process.env.DESTINATION_SECRETS_KEY), "base64");
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    const body = Buffer.concat([cipher.update("https://hooks.slack.com/services/V/1/X", "utf8"), cipher.final()]);
+    const v1 = `enc:v1:${Buffer.concat([iv, body, cipher.getAuthTag()]).toString("base64")}`;
+
+    ok(
+      "a v1 credential still opens",
+      parseConfig(WS, "slack", { webhookUrl: v1 }).webhookUrl === "https://hooks.slack.com/services/V/1/X",
+    );
+    const resealed = buildConfig(WS, "slack", { webhookUrl: "" }, { webhookUrl: v1 });
+    ok(
+      "an edit rewrites a v1 credential bound to the workspace",
+      resealed.ok === true &&
+        String(resealed.config.webhookUrl).startsWith("enc:v2:") &&
+        parseConfig(WS, "slack", resealed.config).webhookUrl === "https://hooks.slack.com/services/V/1/X",
+    );
+    ok(
+      "and once rewritten, another workspace cannot open it",
+      resealed.ok === true &&
+        (() => {
+          try {
+            parseConfig(OTHER_WS, "slack", resealed.config);
+            return false;
+          } catch {
+            return true;
+          }
+        })(),
+    );
+  }
+
+  const email = buildConfig(WS, "email", { to: "a@example.com, b@example.com" });
   ok("splits email recipients", email.ok === true && (email.config.to as string[]).length === 2);
-  ok("refuses a bad address", buildConfig("email", { to: "not-an-address" }).ok === false);
-  ok("refuses no address at all", buildConfig("email", { to: "  " }).ok === false);
+  ok("refuses a bad address", buildConfig(WS, "email", { to: "not-an-address" }).ok === false);
+  ok("refuses no address at all", buildConfig(WS, "email", { to: "  " }).ok === false);
 
   // A config this build cannot read must fail the delivery loudly rather than
   // half-form a request.
   let configError = false;
   try {
-    parseConfig("webhook", { url: "https://x.example" });
+    parseConfig(WS, "webhook", { url: "https://x.example" });
   } catch {
     configError = true;
   }
@@ -674,7 +745,7 @@ console.log("\nunavailable kinds");
     ok(`${kind} is still named, and says why not`, option !== undefined && option.available === false);
     ok(
       `${kind} cannot be built from a form`,
-      buildConfig(kind, { url: "https://example.com" }).ok === false,
+      buildConfig(WS, kind, { url: "https://example.com" }).ok === false,
     );
   }
   for (const kind of ["webhook", "email", "slack", "google_sheets"] as const) {
@@ -683,7 +754,7 @@ console.log("\nunavailable kinds");
 
   // Available, and still not creatable from a form: the credential comes from
   // Google's consent screen, so a post that skipped it is refused (#67).
-  const fromForm = buildConfig("google_sheets", { sheetName: "Leads" });
+  const fromForm = buildConfig(WS, "google_sheets", { sheetName: "Leads" });
   ok("google_sheets cannot be built from a form alone", !fromForm.ok);
   ok(
     "and says to connect a Google account",
@@ -703,6 +774,7 @@ console.log("\nwebhook adapter");
   {
     const { impl, calls } = fakeFetch({ status: 200, body: '{"ok":true}' });
     const result = await deliverWebhook({
+      workspaceId: WS,
       destinationName: "CRM intake",
       payload: payload(),
       config,
@@ -737,6 +809,7 @@ console.log("\nwebhook adapter");
   {
     const { impl } = fakeFetch({ status: 401, body: "expired token" });
     const result = await deliverWebhook({
+      workspaceId: WS,
       destinationName: "CRM intake",
       payload: payload(),
       config,
@@ -750,6 +823,7 @@ console.log("\nwebhook adapter");
   {
     const { impl } = fakeFetch({ status: 503 });
     const result = await deliverWebhook({
+      workspaceId: WS,
       destinationName: "CRM intake",
       payload: payload(),
       config,
@@ -761,6 +835,7 @@ console.log("\nwebhook adapter");
   {
     const { impl } = fakeFetch({ status: 302, headers: { location: "http://169.254.169.254/" } });
     const result = await deliverWebhook({
+      workspaceId: WS,
       destinationName: "CRM intake",
       payload: payload(),
       config,
@@ -774,6 +849,7 @@ console.log("\nwebhook adapter");
   {
     const { impl } = fakeFetch({ throws: new Error("connect ECONNREFUSED 93.184.216.34:443") });
     const result = await deliverWebhook({
+      workspaceId: WS,
       destinationName: "CRM intake",
       payload: payload(),
       config,
@@ -788,6 +864,7 @@ console.log("\nwebhook adapter");
     // A URL that was public when it was saved and resolves to loopback now.
     const { impl, calls } = fakeFetch({ status: 200 });
     const result = await deliverWebhook({
+      workspaceId: WS,
       destinationName: "CRM intake",
       payload: payload(),
       config: { url: "https://127.0.0.1/hook", secret: SECRET },
@@ -801,6 +878,7 @@ console.log("\nwebhook adapter");
   {
     const { impl } = fakeFetch({ status: 200 });
     const result = await deliverWebhook({
+      workspaceId: WS,
       destinationName: "CRM intake",
       payload: payload(),
       config: {
@@ -826,6 +904,7 @@ console.log("\nwebhook adapter");
     const long = "x".repeat(100_000);
     const { impl } = fakeFetch({ status: 500, body: long });
     const result = await deliverWebhook({
+      workspaceId: WS,
       destinationName: "CRM intake",
       payload: payload(),
       config,
@@ -846,6 +925,7 @@ console.log("\nslack adapter");
 
   const { impl, calls } = fakeFetch({ status: 200, body: "ok" });
   const result = await deliverSlack({
+    workspaceId: WS,
     destinationName: "#leads",
     payload: payload(),
     config,
@@ -876,6 +956,7 @@ console.log("\nslack adapter");
   );
 
   const failed = await deliverSlack({
+    workspaceId: WS,
     destinationName: "#leads",
     payload: payload(),
     config: { webhookUrl: "https://hooks.slack.com/services/T0/B0/gone" },
@@ -897,6 +978,7 @@ console.log("\nemail adapter");
 
   delete process.env.RESEND_API_KEY;
   const unconfigured = await deliverEmail({
+    workspaceId: WS,
     destinationName: "Sales inbox",
     payload: payload(),
     config,
@@ -931,6 +1013,7 @@ console.log("\nemail adapter");
   process.env.RESEND_API_KEY = "re_test_key";
   const { impl, calls } = fakeFetch({ status: 200, body: '{"id":"abc"}' });
   const sent = await deliverEmail({
+    workspaceId: WS,
     destinationName: "Sales inbox",
     payload: payload(),
     config: { to: ["sales@northwind.example"] },
@@ -946,6 +1029,7 @@ console.log("\nemail adapter");
   ok("escapes html so a lead cannot inject markup", !body.html.includes("<script>"));
   const { impl: testImpl, calls: testCalls } = fakeFetch({ status: 200 });
   await deliverEmail({
+    workspaceId: WS,
     destinationName: "Sales inbox",
     payload: payload({ test: true }),
     config,
@@ -955,6 +1039,7 @@ console.log("\nemail adapter");
   ok("marks a test delivery in the subject", /^\[Test\]/.test(testSubject), testSubject);
 
   const rejected = await deliverEmail({
+    workspaceId: WS,
     destinationName: "Sales inbox",
     payload: payload(),
     config,
@@ -984,7 +1069,7 @@ console.log("\ndefault notification");
   // customer never touched would be the one that fails as `configuration`.
   t(
     "so parseConfig accepts it unchanged",
-    parseConfig("email", built?.config),
+    parseConfig(WS, "email", built?.config),
     { to: ["avery@northwind.example"] },
   );
   t(

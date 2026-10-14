@@ -1147,7 +1147,16 @@ async function googleSheets(fixture: Fixture) {
     const storedToken = String(stored?.config.refreshToken ?? "");
     ok("the stored row holds no plaintext token", !JSON.stringify(stored?.config).includes("1//refresh"));
     ok("only ciphertext", isEncrypted(storedToken), storedToken.slice(0, 12));
-    ok("which opens to the token Google issued", decrypt(storedToken).startsWith("1//refresh"));
+    ok("which opens to the token Google issued", decrypt(storedToken, fixture.workspaceId).startsWith("1//refresh"));
+    // #119: the same stored value, opened as any other workspace, refuses. The
+    // line above is the control — it opens for the right one.
+    let movedOpens = true;
+    try {
+      decrypt(storedToken, newId());
+    } catch {
+      movedOpens = false;
+    }
+    ok("and which no other workspace can open", !movedOpens);
     t("untested until something is delivered", row.health.state, "untested");
 
     // Through the real ingest path.
@@ -1341,6 +1350,7 @@ async function testDelivery(fixture: Fixture, receiver: Receiver) {
   const testDestinationId = newId();
 
   const result = await sendTestDelivery(
+    fixture.workspaceId,
     { publicId: fixture.endpointPublicId, name: "Contact form" },
     { id: testDestinationId, kind: "webhook", name: "Test target" },
     { url: `${receiver.url}/test`, secret: SECRET },
@@ -1365,6 +1375,7 @@ async function testDelivery(fixture: Fixture, receiver: Receiver) {
   receiver.reply.status = 500;
   receiver.reply.body = "nope";
   const failed = await sendTestDelivery(
+    fixture.workspaceId,
     { publicId: fixture.endpointPublicId, name: "Contact form" },
     { id: newId(), kind: "webhook", name: "Test target" },
     { url: `${receiver.url}/test`, secret: SECRET },
@@ -1375,6 +1386,7 @@ async function testDelivery(fixture: Fixture, receiver: Receiver) {
   t("and the body, which is where the reason usually is", failed.responseBody, "nope");
 
   const unavailable = await sendTestDelivery(
+    fixture.workspaceId,
     { publicId: fixture.endpointPublicId, name: "Contact form" },
     { id: newId(), kind: "hubspot", name: "HubSpot" },
     {},
