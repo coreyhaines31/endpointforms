@@ -22,7 +22,7 @@
 import { eq } from "drizzle-orm";
 import { sqlClient, unsafeDb } from "../src/db/client.ts";
 import { destinations } from "../src/db/schema.ts";
-import { decrypt, encrypt, isEncryptionAvailable, needsSealing } from "../src/lib/crypto/encrypt.ts";
+import { decrypt, encrypt, isEncryptionAvailable, needsSealing, openUnboundV1 } from "../src/lib/crypto/encrypt.ts";
 
 const DRY_RUN = !process.argv.includes("--apply");
 
@@ -62,8 +62,13 @@ async function main() {
   for (const row of rows) {
     const config = (row.config ?? {}) as Record<string, unknown>;
     // Opened first: a v1 value is ciphertext, and encrypting it again would
-    // double it. Plaintext passes through `decrypt` unchanged.
-    const seal = (value: string) => encrypt(decrypt(value, row.workspaceId), row.workspaceId);
+    // double it. The app refuses v1 (#122), so it is opened through the one
+    // door kept for this script. Plaintext passes through `decrypt` unchanged.
+    const seal = (value: string) =>
+      encrypt(
+        value.startsWith("enc:v1:") ? openUnboundV1(value) : decrypt(value, row.workspaceId),
+        row.workspaceId,
+      );
     let needsUpdate = false;
     const updates: Record<string, string> = {};
 

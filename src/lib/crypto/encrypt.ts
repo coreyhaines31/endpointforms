@@ -63,9 +63,11 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
  * path, someone with write access to the table — fails authentication there
  * instead of being used as that workspace's credential.
  *
- * `v1` values (the first release, no binding) still decrypt, so nothing
- * written by it is stranded. They carry no binding, so an edit and the
- * migration script both rewrite them as `v2`; `needsSealing()` is the test.
+ * `v1` values (the first release, no binding) are refused by `decrypt` (#122):
+ * an unbound value is exactly the one that could have been moved, so opening
+ * it would leave the hole this format closes. Only the migration script opens
+ * them, through `openUnboundV1`, to rewrite them as `v2`; `needsSealing()` is
+ * the test for what it rewrites.
  *
  * ## Rollout and migration
  *
@@ -224,7 +226,8 @@ export function encrypt(plaintext: string, workspaceId: string): string {
  * Decrypts a value that may be encrypted or plaintext.
  *
  * - `enc:v2:` is decrypted against `workspaceId`, and fails for any other id.
- * - `enc:v1:` (unbound, from the first release) is decrypted without a binding.
+ * - `enc:v1:` (unbound, from the first release) is refused, naming the
+ *   migration that rewrites it.
  * - Anything else is treated as plaintext and returned as-is.
  *
  * This backward compatibility is how the rollout works: secrets written before
@@ -238,11 +241,30 @@ export function encrypt(plaintext: string, workspaceId: string): string {
  *   data, a different key, or a `v2` value from another workspace)
  */
 export function decrypt(value: string, workspaceId: string): string {
-  const prefix = value.startsWith(V2_PREFIX) ? V2_PREFIX : value.startsWith(V1_PREFIX) ? V1_PREFIX : null;
-  if (prefix === null) {
+  if (value.startsWith(V1_PREFIX)) {
+    throw new Error(
+      "Cannot decrypt: this credential is in the unbound v1 format, which is no longer accepted. " +
+        "Run `npm run db:migrate-encrypt-secrets:apply` to reseal it to its workspace.",
+    );
+  }
+  if (!value.startsWith(V2_PREFIX)) {
     // Not encrypted — treat as plaintext
     return value;
   }
+  return open(value, V2_PREFIX, bindingFor(workspaceId));
+}
+
+/**
+ * Opens an `enc:v1:` value, which has no binding. **For the migration script
+ * only** — it exists so those values can be rewritten as `v2`, and the app
+ * must never read a credential through it.
+ */
+export function openUnboundV1(value: string): string {
+  if (!value.startsWith(V1_PREFIX)) throw new Error("Not an enc:v1: value.");
+  return open(value, V1_PREFIX, null);
+}
+
+function open(value: string, prefix: string, binding: Buffer | null): string {
 
   const key = getEncryptionKey();
   if (key === null) {
@@ -274,7 +296,7 @@ export function decrypt(value: string, workspaceId: string): string {
 
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(tag);
-  if (prefix === V2_PREFIX) decipher.setAAD(bindingFor(workspaceId));
+  if (binding !== null) decipher.setAAD(binding);
 
   let plaintext: Buffer;
   try {
