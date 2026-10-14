@@ -434,9 +434,9 @@ export function buildConfig(
 
 /**
  * A stored secret carried forward unchanged, sealed if it is not already. A
- * value written before #112 is plaintext and one written by its first release
- * is unbound `v1`; an edit is a chance to fix both. It is opened before it is
- * sealed, because encrypting ciphertext would double it.
+ * value written before #112 is plaintext, and an edit is a chance to seal it.
+ * An unbound `v1` value makes `decrypt` throw (#122), which fails the edit
+ * with a message naming the migration rather than carrying it forward.
  */
 function seal(value: string, workspaceId: string): string {
   return needsSealing(value) ? encrypt(decrypt(value, workspaceId), workspaceId) : value;
