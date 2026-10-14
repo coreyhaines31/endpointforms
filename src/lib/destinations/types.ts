@@ -171,9 +171,11 @@ export type AdapterResult = {
 };
 
 export type AdapterContext = {
+  /** The workspace that owns the destination. Encrypted credentials open only against it. */
+  workspaceId: string;
   destinationName: string;
   payload: SubmissionPayload;
-  /** The parsed, validated config for this kind — secrets still present. */
+  /** The stored config for this kind, secrets still sealed until the adapter parses it. */
   config: unknown;
   /** Injected by the tests. Defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;

@@ -47,14 +47,24 @@ storage, and falling back would defeat the feature.
 
 ## Wire format
 
-Encrypted values are stored as `enc:v1:<base64>`, where the base64 portion contains:
+Encrypted values are stored as `enc:v2:<base64>`, where the base64 portion contains:
 
 - 12-byte IV (initialization vector, randomized per encryption)
 - Ciphertext (the encrypted secret)
 - 16-byte authentication tag (GCM proves the data has not been tampered with)
 
-The `enc:v1:` prefix identifies encrypted values. Values without this prefix are treated as
-plaintext, which is how backward compatibility works during rollout.
+The `enc:` prefix identifies encrypted values. Values without it are treated as plaintext,
+which is how backward compatibility works during rollout.
+
+### Bound to the workspace (#119)
+
+`v2` authenticates the owning workspace's id as GCM additional data. The id is not stored in
+the value; the code supplies it from the row it read. A value copied into another workspace's
+row (a bad restore, a bug in a copy path, someone with write access to the table) fails
+authentication there instead of being used as that workspace's credential.
+
+`enc:v1:` values, written by the first release, carry no binding. They still decrypt, and both
+an edit and the migration rewrite them as `v2`.
 
 ## Rollout and migration
 
@@ -95,8 +105,8 @@ The script:
 
 - Reads every destination, soft-deleted ones included (their credentials are in the same
   table and in every dump of it)
-- Identifies plaintext secrets (those without `enc:v1:` prefix)
-- Encrypts them with the configured key
+- Identifies secrets that are plaintext, or `enc:v1:` and so unbound
+- Seals each to the workspace that owns its row, with the configured key
 - Updates the rows in place
 - Safe to run multiple times (already-encrypted secrets are skipped)
 
@@ -121,7 +131,7 @@ Not implemented yet. When it is needed:
 3. Re-encrypt on read if the old key was used (lazy migration)
 4. After all secrets are re-encrypted, drop the old key
 
-The `enc:v1:` version prefix makes this possible without a schema change.
+The version prefix makes this possible without a schema change.
 
 ## Security properties
 
@@ -133,6 +143,7 @@ The `enc:v1:` version prefix makes this possible without a schema change.
   secrets.
 - **Tamper detection.** AES-256-GCM proves the ciphertext has not been modified. A flipped bit or
   forged message is detected rather than decrypted into garbage.
+- **No cross-workspace reuse.** A sealed value opens only for the workspace that owns it.
 - **No secret reuse.** Each encryption uses a fresh random IV, so the same plaintext produces
   different ciphertexts each time.
 
@@ -207,6 +218,7 @@ decrypted. The UI receives only the redacted shape.
 ## Related issues
 
 - **#112**: Encrypt destination secrets at rest (this issue)
+- **#119**: Bind each sealed value to its workspace
 - **#67**: Google Sheets destination and refresh token handling
 - **#41**: Webhook signing secrets
 - **#42**: Delivery log contains request/response but never secrets

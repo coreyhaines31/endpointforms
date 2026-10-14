@@ -42,7 +42,7 @@ export async function deliverSlack(context: AdapterContext): Promise<AdapterResu
 
   let config;
   try {
-    config = parseConfig("slack", context.config);
+    config = parseConfig(context.workspaceId, "slack", context.config);
   } catch (error) {
     return failure(error, "configuration");
   }

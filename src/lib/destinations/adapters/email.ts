@@ -32,7 +32,7 @@ export const emailAdapter: Adapter = {
 export async function deliverEmail(context: AdapterContext): Promise<AdapterResult> {
   let config;
   try {
-    config = parseConfig("email", context.config);
+    config = parseConfig(context.workspaceId, "email", context.config);
   } catch (error) {
     return {
       ok: false,
