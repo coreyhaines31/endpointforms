@@ -32,6 +32,11 @@ export type VerdictKeyState = FormState & { apiKey?: string };
 
 export const idleVerdictKeyState: VerdictKeyState = { status: "idle", message: "" };
 
+/** A code sign-in carries the address forward, so step two knows where the code went. */
+export type EmailCodeState = FormState & { email?: string };
+
+export const idleEmailCodeState: EmailCodeState = { status: "idle", message: "" };
+
 export function formError(message: string): FormState {
   return { status: "error", message };
 }

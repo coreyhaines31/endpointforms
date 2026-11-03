@@ -95,7 +95,7 @@ export default async function DestinationDetailPage({
       ) : null}
 
       {/* Said before the first failure rather than after it. An unset
-          RESEND_API_KEY is a deployment fact — the hosted product supplies
+          POSTSHIBA_API_KEY is a deployment fact — the hosted product supplies
           sending, a self-hoster brings their own key — and finding that out
           from a delivery log is finding it out too late. */}
       {destination.kind === "email" && !isMailConfigured() ? (

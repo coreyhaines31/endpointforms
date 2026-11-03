@@ -95,4 +95,4 @@ export const DEFAULT_NOTIFICATION_BLURB =
 
 /** Said wherever a default notification is offered but the deployment cannot send mail. */
 export const DEFAULT_NOTIFICATION_UNSENDABLE =
-  "Email delivery is not switched on for this deployment, so this notification cannot send. Submissions are still stored and nothing is lost — add a destination that can deliver, or redeliver from the log once mail is on. (Self-hosting? Set RESEND_API_KEY, and MAIL_FROM for the sender address.)";
+  "Email delivery is not switched on for this deployment, so this notification cannot send. Submissions are still stored and nothing is lost — add a destination that can deliver, or redeliver from the log once mail is on. (Self-hosting? Set POSTSHIBA_API_KEY, and MAIL_FROM for the sender address.)";

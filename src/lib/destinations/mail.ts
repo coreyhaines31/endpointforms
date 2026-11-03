@@ -13,9 +13,16 @@
  * environment can actually exercise against a real server. An unverified mail
  * client is worse than no mail client: it fails in production, quietly, on the
  * exact feature whose entire pitch is that it fails loudly. So this is `fetch`
- * against Resend's HTTP API, which is a request/response we can reason about.
+ * against PostShiba's HTTP API, which is a request/response we can reason about.
+ * It was Resend until #129; the key was never set in production, so nothing
+ * was lost in the switch. Use a **Send only** PostShiba key here — it can call
+ * the send endpoint and nothing else.
  *
- * **When it is not configured it says so.** No `RESEND_API_KEY` means the email
+ * **The From must be on a verified sending domain.** For the hosted product
+ * that is `mail.endpointforms.com`, not the apex: PostShiba signs with DKIM for
+ * the domain it verified, and a From it cannot sign for is refused.
+ *
+ * **When it is not configured it says so.** No `POSTSHIBA_API_KEY` means the email
  * destination fails with a `configuration` error naming the variable. It does
  * not queue, it does not pretend, and it does not report success. A self-hoster
  * who wants SMTP has a real gap here, and it is written down in the report
@@ -42,23 +49,41 @@ export type MailResult = {
   configuration: boolean;
 };
 
-const RESEND_ENDPOINT = "https://api.resend.com/emails";
+const POSTSHIBA_ENDPOINT = "https://app.postshiba.com/api/v1/emails";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Who the notification appears to be from. Overridable for a self-host. */
 export function mailFrom(): string {
-  return process.env.MAIL_FROM ?? "Endpoint Forms <notifications@endpointforms.com>";
+  return process.env.MAIL_FROM ?? "Endpoint Forms <notifications@mail.endpointforms.com>";
+}
+
+/**
+ * PostShiba's own word for a failure, from `{error, field}`, so the delivery
+ * log says `suppressed` or `domain_unverified` rather than a bare status code.
+ */
+function providerErrorCode(body: string | null): string | null {
+  if (!body) return null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const code = (parsed as { error: unknown }).error;
+      return typeof code === "string" && code !== "" ? code : null;
+    }
+  } catch {
+    // Not JSON — the status code alone will have to do.
+  }
+  return null;
 }
 
 export function isMailConfigured(): boolean {
-  return (process.env.RESEND_API_KEY ?? "").trim() !== "";
+  return (process.env.POSTSHIBA_API_KEY ?? "").trim() !== "";
 }
 
 /**
  * What to tell someone whose email destination cannot send.
  *
  * **Written for two readers, and it used to be written for only one.** The
- * first draft said "Set RESEND_API_KEY (and MAIL_FROM…)", which is exactly
+ * first draft said "Set POSTSHIBA_API_KEY (and MAIL_FROM…)", which is exactly
  * right for a self-hoster and useless-to-alarming for a customer of the hosted
  * product: they cannot set an environment variable on our deployment, and being
  * told to reads as our internals leaking through a support surface.
@@ -69,13 +94,13 @@ export function isMailConfigured(): boolean {
  * most to both is the same one: **the submission is still here.**
  */
 export const MAIL_NOT_CONFIGURED =
-  "Email delivery is not switched on for this deployment, so nothing was sent. The submission is still here — turn it on and redeliver from the log and nothing is lost. (Self-hosting? Set RESEND_API_KEY, and MAIL_FROM for the sender address.)";
+  "Email delivery is not switched on for this deployment, so nothing was sent. The submission is still here — turn it on and redeliver from the log and nothing is lost. (Self-hosting? Set POSTSHIBA_API_KEY, and MAIL_FROM for the sender address.)";
 
 export async function sendMail(
   message: MailMessage,
   options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<MailResult> {
-  const apiKey = (process.env.RESEND_API_KEY ?? "").trim();
+  const apiKey = (process.env.POSTSHIBA_API_KEY ?? "").trim();
   if (apiKey === "") {
     return {
       ok: false,
@@ -91,7 +116,7 @@ export async function sendMail(
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
   try {
-    const response = await doFetch(RESEND_ENDPOINT, {
+    const response = await doFetch(POSTSHIBA_ENDPOINT, {
       method: "POST",
       headers: {
         authorization: `Bearer ${apiKey}`,
@@ -109,12 +134,15 @@ export async function sendMail(
     });
 
     const body = (await response.text().catch(() => "")).slice(0, 4_000) || null;
+    const code = response.ok ? null : providerErrorCode(body);
 
     return {
       ok: response.ok,
       status: response.status,
       body,
-      error: response.ok ? null : `The mail provider answered ${response.status}.`,
+      error: response.ok
+        ? null
+        : `The mail provider answered ${response.status}${code ? ` (${code})` : ""}.`,
       configuration: response.status === 401 || response.status === 403,
     };
   } catch (error) {

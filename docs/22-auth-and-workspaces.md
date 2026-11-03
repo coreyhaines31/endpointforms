@@ -158,6 +158,28 @@ against. `/login/check-email` says where the link actually is when
 The same reasoning governs invitations: nothing is emailed, so the members page
 hands the inviter the link to pass on, shown once, with a sentence saying so.
 
+### Sign-in codes (#128)
+
+**Added 2026-11-02.** Mail now exists (PostShiba, #129), so `/login` offers a
+second way in: an emailed six-digit code. It is a Credentials provider
+(`email-code` in `src/auth.ts`), so it goes through the same `jwt.encode` path
+as the password provider. The logic lives in `src/lib/auth/email-code.ts`.
+
+- **A correct code creates the account if there is none.** That keeps the "is
+  this address a user?" question unanswerable: a request always gets the same
+  reply, and a code is always sent.
+- **Codes are stored as an HMAC keyed on `AUTH_SECRET`**, not a hash. Six digits
+  are a million guesses, so a SHA-256 of one would fall to a dictionary.
+- **Five wrong guesses burn a code. Three codes an hour per address.** The
+  attempt count is in the database, so it holds across server instances.
+  Requesting a new code retires the old one.
+- **Development prints the code to the console** when no mail transport is
+  configured, the same rule as magic links below. Production refuses.
+
+This is also the answer to a forgotten password until a reset flow exists, and it
+is how an account created from an AI chat (which has no password) gets into the
+web app. The magic link is still development-only.
+
 ### Slugs are DNS labels, and reserved words are permanent
 
 A slug becomes `{slug}.endpointforms.app`. It is public, it ends up inside

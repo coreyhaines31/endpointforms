@@ -143,6 +143,7 @@ function VerdictKeyRow({
 }) {
   const [state, action] = useActionState(revokeVerdictKeyAction, idleVerdictKeyState);
   const revoked = entry.revokedAt !== null;
+  const outcomeOnly = entry.scopes.length === 1 && entry.scopes[0] === "outcomes:write";
 
   return (
     <li className="px-5 py-4">
@@ -150,6 +151,14 @@ function VerdictKeyRow({
         <div className="min-w-0">
           <p className="flex flex-wrap items-center gap-2 text-base text-foreground">
             <span className="truncate">{entry.label}</span>
+            {entry.createdVia === "mcp" ? (
+              <span
+                className="rounded-sm border border-agent-edge bg-agent-surface px-1.5 py-0.5 font-mono text-label uppercase text-agent"
+                title={entry.clientName ? `Created from an AI chat by ${entry.clientName}` : "Created from an AI chat"}
+              >
+                Agent
+              </span>
+            ) : null}
             {revoked ? (
               <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-label uppercase text-muted-foreground">
                 Revoked
@@ -178,6 +187,12 @@ function VerdictKeyRow({
             ) : null}
           </p>
 
+          {outcomeOnly ? null : (
+            <p className="mt-1 font-mono text-label text-muted-foreground">
+              Can: {entry.scopes.join(", ")}
+            </p>
+          )}
+
           <p className="mt-1 text-sm text-muted-foreground">
             {entry.lastUsedAt ? (
               <>
@@ -189,7 +204,7 @@ function VerdictKeyRow({
                 {". Recorded to the nearest five minutes."}
               </>
             ) : (
-              "Never used. Nothing has posted an outcome with this key."
+              outcomeOnly ? "Never used. Nothing has posted an outcome with this key." : "Never used."
             )}
           </p>
 

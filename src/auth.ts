@@ -11,6 +11,7 @@ import Google from "next-auth/providers/google";
 import { unsafeDb } from "@/db/client";
 import { authAccounts, authSessions, authVerificationTokens, users } from "@/db/schema";
 import { verifyCredentials } from "@/lib/auth/account";
+import { signInWithEmailCode } from "@/lib/auth/email-code";
 import { clientIpFromHeaders, hashIpForAuth } from "@/lib/auth/rate-limit";
 
 /**
@@ -78,6 +79,9 @@ const EMAIL_FROM = process.env.AUTH_EMAIL_FROM ?? "Endpoint Forms <login@endpoin
 
 /** The provider id the sign-in form posts to, and the marker the encoder checks for. */
 export const PASSWORD_PROVIDER_ID = "password";
+
+/** Six-digit codes by email (#128) — `src/lib/auth/email-code.ts`. */
+export const EMAIL_CODE_PROVIDER_ID = "email-code";
 
 // ---------------------------------------------------------------------------
 // Password
@@ -198,10 +202,40 @@ const magicLink: EmailConfig = {
  * password form only, rather than a button that fails after a redirect — a dead
  * end is a worse first run than a missing option.
  */
+/**
+ * Signing in with a code from an email (#128).
+ *
+ * A Credentials provider, not an Auth.js email provider, because the code is
+ * typed in rather than clicked: the same code an agent asks for in a chat. It
+ * goes through the same `jwt.encode` path as the password provider — see the
+ * note there — and creates the account if there is none, since a correct code
+ * is proof of the inbox.
+ */
+const emailCode = Credentials({
+  id: EMAIL_CODE_PROVIDER_ID,
+  name: "Email code",
+  credentials: {
+    email: { label: "Email", type: "email" },
+    code: { label: "Code", type: "text" },
+  },
+  async authorize(credentials) {
+    const email = typeof credentials?.email === "string" ? credentials.email : "";
+    const code = typeof credentials?.code === "string" ? credentials.code : "";
+    if (!email.includes("@") || code.length === 0) return null;
+
+    const result = await signInWithEmailCode({ email, code });
+    if (!result.ok) return null;
+
+    const { id, email: address, name, image } = result.user;
+    return { id, email: address, name, image };
+  },
+});
+
 const googleConfigured = Boolean(process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET);
 
 const providers: Provider[] = [
   password,
+  emailCode,
   magicLink,
   ...(googleConfigured
     ? [
@@ -288,7 +322,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async encode({ token }) {
       if (!token || token[FROM_CREDENTIALS] !== true) {
         throw new Error(
-          "jwt.encode was reached from something other than the password provider. " +
+          "jwt.encode was reached from something other than a credentials provider (password or email code). " +
             "Sessions are database rows here (session.strategy is 'database'), so a JWT " +
             "in the session cookie would be rejected on the next request. See src/auth.ts.",
         );
@@ -356,7 +390,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     jwt({ token, account }) {
       // Reached only on the credentials path under `strategy: "database"`. The
       // stamp is what `jwt.encode` above requires; see the long note there.
-      if (account?.provider === PASSWORD_PROVIDER_ID) {
+      if (account?.provider === PASSWORD_PROVIDER_ID || account?.provider === EMAIL_CODE_PROVIDER_ID) {
         return { ...token, [FROM_CREDENTIALS]: true };
       }
       return token;

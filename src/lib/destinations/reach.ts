@@ -27,7 +27,7 @@ import type { DestinationKind } from "./types.ts";
  *   `deaf` and the fix is completely different, so flattening the two into one
  *   sentence would send somebody to add a destination they already have.
  *
- * `unsendable` is not a bug and must not read as one. `RESEND_API_KEY` unset is
+ * `unsendable` is not a bug and must not read as one. `POSTSHIBA_API_KEY` unset is
  * a deployment fact — the hosted product supplies sending, a self-hoster brings
  * their own key — and the honest moment to say so is before the first
  * submission, not in a delivery log afterwards.
@@ -96,7 +96,7 @@ export function endpointReach(
         enabledCount: enabled.length,
         title: "Nobody will be told about a submission here",
         detail:
-          "Every destination switched on here sends email, and email delivery is not switched on for this deployment. Submissions still arrive and are still stored — nothing is lost, and anything that arrives can be sent again from the delivery log once mail is on. (Self-hosting? Set RESEND_API_KEY, and MAIL_FROM for the sender address.)",
+          "Every destination switched on here sends email, and email delivery is not switched on for this deployment. Submissions still arrive and are still stored — nothing is lost, and anything that arrives can be sent again from the delivery log once mail is on. (Self-hosting? Set POSTSHIBA_API_KEY, and MAIL_FROM for the sender address.)",
       };
     }
 
@@ -105,7 +105,7 @@ export function endpointReach(
       ...(kinds.has("google_sheets") ? ["Google Sheets"] : []),
     ].join(" and ");
     const variables = [
-      ...(kinds.has("email") ? ["RESEND_API_KEY"] : []),
+      ...(kinds.has("email") ? ["POSTSHIBA_API_KEY"] : []),
       ...(kinds.has("google_sheets")
         ? ["GOOGLE_SHEETS_CLIENT_ID and GOOGLE_SHEETS_CLIENT_SECRET"]
         : []),
