@@ -110,22 +110,37 @@ workspace for an account that owns none, so there was nothing for a cap to limit
 
 | | |
 |---|---|
-| Codes | HMAC-stored, 10-minute expiry, single use, 5 wrong tries burns the code, a newer code retires the older |
-| `start_signup` | 3 per address per hour, 20 per IP per hour |
+| Codes | HMAC-stored, 10-minute expiry, single use, a newer code retires the older |
+| Guesses | 5 per code. The attempt is reserved with an atomic `UPDATE … WHERE attempts < 5` *before* the code is compared, so a burst of simultaneous guesses still gets five |
+| `start_signup` | 3 per address per hour, counted in the database; 20 per IP per hour, in memory |
 | Whole server | 60 requests per IP per minute |
 | Enumeration | Same reply for new and existing addresses, and both are sent a code |
 
-The rate limits are in memory per server instance, like the ingest and password limits. The
-attempt cap is in the database.
+The per-address limit and the attempt cap are in the database, so they hold across instances and
+restarts. The per-IP limits are in memory per instance, like the ingest and password limits, and
+are skipped when the deployment cannot see a trustworthy client IP (a self-host without
+`TRUST_PROXY_HEADERS`).
+
+**Squatted addresses.** Password sign-up does not verify the address. When a code proves an
+address for the first time, any password already on that account is removed and its sessions are
+signed out, so whoever registered it first keeps nothing.
+
+**Keys follow ownership.** An agent key manages the workspace only while the person who created
+it is still an owner, and this is checked on every call. Removing or demoting an owner disables
+their keys on the account server without anyone having to remember to revoke them.
 
 ## Verification
 
 `tests/account-mcp.test.mts` (`npm run test:account:db`, part of `test:db`) drives the server
-with JSON-RPC and no browser, reading codes from a mail sink: 62 assertions covering the whole
-flow, scopes, tenant isolation, returning accounts, members, enumeration, guessing, rate limits and
-mail failure. Every "must not work" assertion has a positive control beside it. Three guards were
-removed one at a time (the outcome scope check, the attempt cap, the `endpoints:write` check), and
-each made exactly its own test fail.
+with JSON-RPC and no browser, reading codes from a mail sink: 74 assertions covering the whole
+flow, scopes, tenant isolation, returning accounts, members, enumeration, guessing (including a
+burst of 20 simultaneous guesses), rate limits, mail failure, squatted addresses and key
+ownership. Every "must not work" assertion has a positive control beside it. Each guard was
+removed and shown to fail its own test: the outcome scope check, the attempt cap, the
+`endpoints:write` check, the squatter eviction, the attempt reservation, the database rate limit
+and the ownership check.
+
+An independent security review of the branch found the last three. It found nothing critical.
 
 The flow was also run against a dev server over HTTP: sign up, verify, create an endpoint, POST a
 submission, then sign in to `/login` in a browser with a code as the account the agent created.
