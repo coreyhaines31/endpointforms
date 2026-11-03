@@ -320,8 +320,8 @@ async function notifiedByDefault(fixture: Fixture) {
   // — and proves the notification is wired to the *real* ingest path rather
   // than merely existing as a row. The refusal is the point: an unset key must
   // produce a written-down configuration failure, never a silent success.
-  const previousKey = process.env.RESEND_API_KEY;
-  delete process.env.RESEND_API_KEY;
+  const previousKey = process.env.POSTSHIBA_API_KEY;
+  delete process.env.POSTSHIBA_API_KEY;
   await updateDestination(fixture.workspaceId, rows[0]!.id, { enabled: true });
   await submit(created.publicId, { email: "first@dorsetmetal.example" });
   await drainDispatch();
@@ -334,8 +334,8 @@ async function notifiedByDefault(fixture: Fixture) {
     /not switched on for this deployment/.test(attempts[0]?.error ?? ""),
     attempts[0]?.error,
   );
-  if (previousKey === undefined) delete process.env.RESEND_API_KEY;
-  else process.env.RESEND_API_KEY = previousKey;
+  if (previousKey === undefined) delete process.env.POSTSHIBA_API_KEY;
+  else process.env.POSTSHIBA_API_KEY = previousKey;
 
   // The falsifying case: without an address there is no row, which is what makes
   // the assertion above mean "created because we asked for it" rather than

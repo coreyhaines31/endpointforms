@@ -971,10 +971,10 @@ console.log("\nslack adapter");
 
 console.log("\nemail adapter");
 {
-  const previousKey = process.env.RESEND_API_KEY;
+  const previousKey = process.env.POSTSHIBA_API_KEY;
   const config = { to: ["sales@northwind.example"] };
 
-  delete process.env.RESEND_API_KEY;
+  delete process.env.POSTSHIBA_API_KEY;
   const unconfigured = await deliverEmail({
     workspaceId: WS,
     destinationName: "Sales inbox",
@@ -994,12 +994,12 @@ console.log("\nemail adapter");
   );
   ok(
     "and still names the variable, for whoever can set it",
-    /RESEND_API_KEY/.test(unconfigured.error ?? ""),
+    /POSTSHIBA_API_KEY/.test(unconfigured.error ?? ""),
     unconfigured.error,
   );
   ok(
     "but does not open by telling a customer to set it",
-    !/^Set RESEND_API_KEY/.test(unconfigured.error ?? ""),
+    !/^Set POSTSHIBA_API_KEY/.test(unconfigured.error ?? ""),
     unconfigured.error,
   );
   ok(
@@ -1008,8 +1008,10 @@ console.log("\nemail adapter");
     unconfigured.error,
   );
 
-  process.env.RESEND_API_KEY = "re_test_key";
-  const { impl, calls } = fakeFetch({ status: 200, body: '{"id":"abc"}' });
+  process.env.POSTSHIBA_API_KEY = "ps_test_key";
+  const previousFrom = process.env.MAIL_FROM;
+  delete process.env.MAIL_FROM;
+  const { impl, calls } = fakeFetch({ status: 200, body: '{"queued":true,"message_id":"abc"}' });
   const sent = await deliverEmail({
     workspaceId: WS,
     destinationName: "Sales inbox",
@@ -1018,8 +1020,22 @@ console.log("\nemail adapter");
     fetchImpl: impl,
   });
   ok("sends when configured", sent.ok);
+  t("sends through PostShiba", calls[0].url, "https://app.postshiba.com/api/v1/emails");
+  t(
+    "authenticates with the key as a bearer token",
+    new Headers(calls[0].init.headers).get("authorization"),
+    "Bearer ps_test_key",
+  );
 
   const body = JSON.parse(String(calls[0].init.body));
+  // PostShiba signs only for the domain it verified, which is the mail.
+  // subdomain — an apex From would be refused in production.
+  t(
+    "sends from the verified mail subdomain by default",
+    body.from,
+    "Endpoint Forms <notifications@mail.endpointforms.com>",
+  );
+  if (previousFrom !== undefined) process.env.MAIL_FROM = previousFrom;
   ok("puts the origin stamp in the subject", /Unverified/.test(body.subject), body.subject);
   ok("names the endpoint in the subject", /Contact form/.test(body.subject), body.subject);
   ok("sends both text and html", typeof body.text === "string" && typeof body.html === "string");
@@ -1046,8 +1062,30 @@ console.log("\nemail adapter");
   ok("a rejected API key fails", !rejected.ok);
   t("and is a configuration failure, not something to retry forever", rejected.failure, "configuration");
 
-  if (previousKey === undefined) delete process.env.RESEND_API_KEY;
-  else process.env.RESEND_API_KEY = previousKey;
+  const suppressed = await deliverEmail({
+    workspaceId: WS,
+    destinationName: "Sales inbox",
+    payload: payload(),
+    config,
+    fetchImpl: fakeFetch({ status: 403, body: '{"error":"suppressed","field":"to"}' }).impl,
+  });
+  ok("a refusal fails", !suppressed.ok);
+  ok(
+    "and the log names PostShiba's reason, not just the status",
+    /403 \(suppressed\)/.test(suppressed.error ?? ""),
+    suppressed.error,
+  );
+  const opaque = await deliverEmail({
+    workspaceId: WS,
+    destinationName: "Sales inbox",
+    payload: payload(),
+    config,
+    fetchImpl: fakeFetch({ status: 502, body: "<html>bad gateway</html>" }).impl,
+  });
+  t("a body that is not JSON still reports the status", opaque.error, "The mail provider answered 502.");
+
+  if (previousKey === undefined) delete process.env.POSTSHIBA_API_KEY;
+  else process.env.POSTSHIBA_API_KEY = previousKey;
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,7 +1162,7 @@ console.log("\nendpoint reach");
   );
   ok(
     "and still names the variable for a self-hoster",
-    /RESEND_API_KEY/.test(endpointReach([email], { mailConfigured: false, sheetsConfigured: true }).detail),
+    /POSTSHIBA_API_KEY/.test(endpointReach([email], { mailConfigured: false, sheetsConfigured: true }).detail),
   );
 
   // The state exists to catch "every way out is email and email is off". One
@@ -1175,7 +1213,7 @@ console.log("\nendpoint reach");
   t("email and Sheets with neither switched on is unsendable", both.state, "unsendable");
   ok(
     "and names both",
-    /email delivery and Google Sheets/.test(both.detail) && /RESEND_API_KEY/.test(both.detail),
+    /email delivery and Google Sheets/.test(both.detail) && /POSTSHIBA_API_KEY/.test(both.detail),
     both.detail,
   );
   t(

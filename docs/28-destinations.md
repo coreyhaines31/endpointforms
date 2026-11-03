@@ -317,7 +317,7 @@ reported as a lead that gave up — the same misreport in a smaller window.
 
 ## Email
 
-The email destination sends over an HTTP mail API rather than SMTP: `RESEND_API_KEY` (and
+The email destination sends over PostShiba's HTTP API rather than SMTP: `POSTSHIBA_API_KEY`, a Send only key (and
 `MAIL_FROM` for the sender address). Without it the destination **fails with a configuration
 error** — it does not queue, does not pretend, and does not report success.
 
@@ -348,7 +348,7 @@ It is switchable off — pause it or delete it like any other destination — an
 is a deliberate act. Doing so is what #65 exists to notice.
 
 **Sending is a deployment fact.** The hosted product supplies the transport. A self-hoster
-brings their own `RESEND_API_KEY`, and where there is none the endpoint screen says so *before*
+brings their own `POSTSHIBA_API_KEY`, and where there is none the endpoint screen says so *before*
 the first submission rather than leaving it to be discovered in a delivery log.
 
 ## Nobody is being told (#65)
@@ -507,8 +507,8 @@ destination fails as `configuration` and makes its endpoint `unsendable`.
 | Variable | What it does |
 |---|---|
 | `CRON_SECRET` | Bearer token for the sweep endpoint — and for the file retention sweep at `/api/v1/files/sweep` (#66), which reuses this check rather than inventing a second one. **Unset means both sweeps refuse everything.** Vercel Cron sets and sends this automatically. |
-| `RESEND_API_KEY` | Mail transport for the email destination. Unset means an email destination fails with a `configuration` error naming this variable — it does not queue and does not report success — and an endpoint whose only destinations are email is reported `unsendable` before anything is submitted. |
-| `MAIL_FROM` | Sender address for notifications. Defaults to `Endpoint Forms <notifications@endpointforms.com>`. |
+| `POSTSHIBA_API_KEY` | Mail transport for the email destination. Unset means an email destination fails with a `configuration` error naming this variable — it does not queue and does not report success — and an endpoint whose only destinations are email is reported `unsendable` before anything is submitted. |
+| `MAIL_FROM` | Sender address for notifications. Defaults to `Endpoint Forms <notifications@mail.endpointforms.com>`, which must be on a domain verified in PostShiba. |
 | `GOOGLE_SHEETS_CLIENT_ID` / `GOOGLE_SHEETS_CLIENT_SECRET` | The OAuth client for the Google Sheets destination (#67). Deliberately not `AUTH_GOOGLE_ID`: adding the sensitive Sheets scope to the sign-in client would put Google sign-in behind the same verification review. Unset means Sheets is listed as not switched on, and an existing Sheets destination fails as `configuration`. |
 | `GOOGLE_SHEETS_REDIRECT_URI` | Optional. Overrides the callback URL, which is otherwise derived from the request's host — for a deployment behind a proxy that rewrites it. |
 | `ALLOW_INSECURE_DESTINATIONS=1` | Permits `http://` destinations. For a self-hoster delivering inside their own network. Off everywhere else. |
