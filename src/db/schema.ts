@@ -328,6 +328,33 @@ export const authVerificationTokens = pgTable(
 );
 
 /**
+ * Six-digit sign-in codes (#128) — how someone proves they own an inbox
+ * without leaving an AI chat, and how anyone signs in without a password.
+ *
+ * Not workspace-scoped: a code is asked for before any workspace is known, by
+ * someone who may not have an account yet. It holds an address and an HMAC,
+ * never the code — six digits are a million guesses, so a plain hash of one
+ * would fall to a dictionary in milliseconds; the HMAC key lives in the
+ * environment, not the database. See `src/lib/auth/email-code.ts`.
+ */
+export const emailCodes = pgTable(
+  "email_codes",
+  {
+    id: uuid("id").primaryKey().$defaultFn(newId),
+    /** Lowercased and trimmed, the same normalisation `users.email` gets. */
+    email: text("email").notNull(),
+    codeHash: text("code_hash").notNull(),
+    /** Wrong guesses so far. The code is burned at `MAX_ATTEMPTS`. */
+    attempts: integer("attempts").notNull().default(0),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /** Set when used, or when a newer code for the same address replaced it. */
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("email_codes_email_created_idx").on(t.email, t.createdAt.desc())],
+);
+
+/**
  * An invitation to join a workspace.
  *
  * Workspace-scoped, so it is covered by row-level security like everything else
@@ -1136,8 +1163,26 @@ export const verdictApiKeys = pgTable(
     revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    /**
+     * What this key may do (#128). Every key minted before scopes existed was
+     * an outcome key, so the default is exactly that and nothing in the wild
+     * changes behaviour. See `src/lib/account/scopes.ts` for the list.
+     */
+    scopes: text("scopes")
+      .array()
+      .notNull()
+      .default(sql`'{outcomes:write}'::text[]`),
+    /**
+     * Which surface minted it: `settings` (a person in the web app) or `mcp`
+     * (an agent, through the account MCP server). Shown in settings so a key
+     * that came from a chat transcript is recognisable at a glance.
+     */
+    createdVia: text("created_via").notNull().default("settings"),
+    /** The agent's self-reported client, when `createdVia` is `mcp`. Unverified. */
+    clientName: text("client_name"),
   },
   (t) => [
+    check("verdict_api_keys_created_via", sql`${t.createdVia} in ('settings', 'mcp')`),
     uniqueIndex("verdict_api_keys_public_id_key").on(t.publicId),
     unique("verdict_api_keys_workspace_id_id_key").on(t.workspaceId, t.id),
     index("verdict_api_keys_workspace_idx").on(t.workspaceId, t.createdAt.desc()),

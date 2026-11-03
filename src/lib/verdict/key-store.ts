@@ -101,6 +101,12 @@ export type VerdictKeySummary = {
   lastUsedAt: Date | null;
   lastUsedIp: string | null;
   revokedAt: Date | null;
+  /** What it may do. The legacy derived key is an outcome key and nothing else. */
+  scopes: string[];
+  /** `settings` or `mcp` — see `verdict_api_keys.created_via`. */
+  createdVia: "settings" | "mcp";
+  /** The agent's self-reported client, for keys an agent minted. */
+  clientName: string | null;
 };
 
 export class VerdictKeyError extends Error {
@@ -136,6 +142,9 @@ export async function listVerdictApiKeys(workspaceId: string): Promise<VerdictKe
       lastUsedAt: row.lastUsedAt,
       lastUsedIp: row.lastUsedIp,
       revokedAt: row.revokedAt,
+      scopes: row.scopes,
+      createdVia: row.createdVia === "mcp" ? "mcp" : "settings",
+      clientName: row.clientName,
     }));
 
     const derived = await readDerivedKey(workspaceId);
@@ -186,6 +195,9 @@ export async function readDerivedKey(workspaceId: string): Promise<VerdictKeySum
     lastUsedAt: workspace.lastUsedAt,
     lastUsedIp: null,
     revokedAt: workspace.revokedAt,
+    scopes: ["outcomes:write"],
+    createdVia: "settings",
+    clientName: null,
   };
 }
 
@@ -207,6 +219,8 @@ export async function findVerdictApiKeyByPublicId(publicId: string): Promise<{
   workspaceSlug: string;
   secretHash: string;
   revokedAt: Date | null;
+  scopes: string[];
+  createdByUserId: string | null;
 } | null> {
   const [row] = await unsafeDb
     .select({
@@ -215,6 +229,8 @@ export async function findVerdictApiKeyByPublicId(publicId: string): Promise<{
       workspaceSlug: workspaces.slug,
       secretHash: verdictApiKeys.secretHash,
       revokedAt: verdictApiKeys.revokedAt,
+      scopes: verdictApiKeys.scopes,
+      createdByUserId: verdictApiKeys.createdByUserId,
     })
     .from(verdictApiKeys)
     .innerJoin(workspaces, eq(workspaces.id, verdictApiKeys.workspaceId))
@@ -245,7 +261,14 @@ export async function createVerdictApiKey(input: {
   label: string;
   createdByUserId?: string | null;
   now?: Date;
+  /** Defaults to an outcome key, which is what every settings-page key is. */
+  scopes?: readonly string[];
+  createdVia?: "settings" | "mcp";
+  clientName?: string | null;
 }): Promise<CreatedVerdictApiKey> {
+  const scopes = [...(input.scopes ?? ["outcomes:write"])];
+  const createdVia = input.createdVia ?? "settings";
+  const clientName = input.clientName?.trim().slice(0, 200) || null;
   const label = input.label.trim() || "Outcome key";
   const now = input.now ?? new Date();
 
@@ -273,6 +296,9 @@ export async function createVerdictApiKey(input: {
       label,
       createdAt: now,
       createdByUserId: input.createdByUserId ?? null,
+      scopes,
+      createdVia,
+      clientName,
     });
 
     return {
@@ -287,6 +313,9 @@ export async function createVerdictApiKey(input: {
         lastUsedAt: null,
         lastUsedIp: null,
         revokedAt: null,
+        scopes,
+        createdVia,
+        clientName,
       },
     };
   });

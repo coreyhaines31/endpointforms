@@ -6,12 +6,15 @@ import { useActionState, useId, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
+  idleEmailCodeState,
   idleFormState,
   idleInviteState,
   type FormState,
 } from "@/actions/form-state";
 import {
+  requestLoginCode,
   requestMagicLink,
+  signInWithEmailCodeAction,
   signInWithGoogle,
   signInWithPassword,
   signUpWithPassword,
@@ -298,6 +301,79 @@ export function MagicLinkForm({ next }: { next: string }) {
       </div>
       <FormMessage state={state} />
     </form>
+  );
+}
+
+/**
+ * Signing in with a code from an email (#128) — two steps on one form.
+ *
+ * Works for an account with no password (one made from an AI chat), and is the
+ * answer to a forgotten password until a reset flow exists. The code field
+ * uses `autocomplete="one-time-code"` so phones offer the code from the mail.
+ */
+export function EmailCodeSignInForm({ next }: { next: string }) {
+  const [sent, request] = useActionState(requestLoginCode, idleEmailCodeState);
+  const [verified, verify] = useActionState(signInWithEmailCodeAction, idleEmailCodeState);
+  const [email, setEmail] = useState("");
+  const sentTo = sent.status === "success" ? sent.email : undefined;
+
+  if (!sentTo) {
+    return (
+      <form action={request} noValidate>
+        <Field
+          label="Work email"
+          name="email"
+          type="email"
+          autoComplete="email"
+          placeholder="you@company.com"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          required
+          invalid={sent.status === "error"}
+        />
+        <div className="mt-4">
+          <SubmitButton pendingLabel="Sending…" variant="quiet" className="w-full">
+            Email me a code
+          </SubmitButton>
+        </div>
+        <FormMessage state={sent} />
+      </form>
+    );
+  }
+
+  return (
+    <div>
+      <form action={verify} noValidate>
+        <input type="hidden" name="next" value={next} />
+        <input type="hidden" name="email" value={sentTo} />
+        <p className="mb-4 text-sm text-muted-foreground">{sent.message}</p>
+        <Field
+          label="6-digit code"
+          name="code"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          placeholder="123456"
+          maxLength={7}
+          required
+          invalid={verified.status === "error"}
+        />
+        <div className="mt-4">
+          <SubmitButton pendingLabel="Signing in…" className="w-full">
+            Sign in
+          </SubmitButton>
+        </div>
+        <FormMessage state={verified} />
+      </form>
+      <form action={request}>
+        <input type="hidden" name="email" value={sentTo} />
+        <button
+          type="submit"
+          className="rounded-sm text-sm text-muted-foreground underline underline-offset-4 decoration-border-control hover:text-foreground hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
+          Send a new code
+        </button>
+      </form>
+    </div>
   );
 }
 

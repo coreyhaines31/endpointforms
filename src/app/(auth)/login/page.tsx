@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { GoogleSignInForm, MagicLinkForm, PasswordSignInForm } from "@/components/app/forms";
+import {
+  EmailCodeSignInForm,
+  GoogleSignInForm,
+  MagicLinkForm,
+  PasswordSignInForm,
+} from "@/components/app/forms";
 import { googleSignInAvailable, magicLinkAvailable } from "@/auth";
 import { currentUser } from "@/lib/auth/session";
 import { safeNextPath } from "@/actions/form-state";
@@ -83,6 +88,13 @@ export default async function LoginPage({
         <PasswordSignInForm next={next} />
       </div>
 
+      <div className="my-7 flex items-center gap-4">
+        <span className="h-px flex-1 bg-border" />
+        <span className="font-mono text-label uppercase text-subtle-foreground">or</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+      <EmailCodeSignInForm next={next} />
+
       {googleSignInAvailable ? (
         <>
           <div className="my-7 flex items-center gap-4">
@@ -106,7 +118,7 @@ export default async function LoginPage({
       ) : null}
 
       <p className="mt-8 text-sm text-muted-foreground">
-        There’s no password reset yet. It needs email, and email isn’t set up.
+        Forgot your password, or never set one? Sign in with a code instead.
       </p>
     </>
   );
