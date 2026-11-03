@@ -267,8 +267,8 @@ Email and password works with none of these set, and is the primary way in.
 
 | Variable | Notes |
 |---|---|
-| `RESEND_API_KEY` | Without it the email destination fails with a `configuration` error naming the variable. It does not queue, it does not pretend, and it does not report success |
-| `MAIL_FROM` | Sender on submission notifications. Default `Endpoint Forms <notifications@endpointforms.com>` |
+| `POSTSHIBA_API_KEY` | Without it the email destination fails with a `configuration` error naming the variable. It does not queue, it does not pretend, and it does not report success |
+| `MAIL_FROM` | Sender on submission notifications. Default `Endpoint Forms <notifications@mail.endpointforms.com>`. Must be on a domain verified in PostShiba |
 
 There is no SMTP transport. §7.
 
@@ -470,7 +470,7 @@ An honest limits section is worth more than an omission.
 | The outcome API | ✅ | ✅ |
 | Multi-workspace tenancy with RLS isolation | ✅ | ✅ |
 | **TLS fingerprinting for the form-surface origin signal** | **possible — see below** | ❌ not available |
-| Email delivery | needs a Resend API key | included |
+| Email delivery | needs a PostShiba API key (Send only) | included |
 | **File uploads** | ✅ no configuration | ✅ |
 | Backups, upgrades, uptime | yours | ours |
 | Support | GitHub issues | included |
@@ -485,8 +485,8 @@ you control, it becomes possible. It is not implemented yet in either case — i
 as the honest upgrade path, not as a feature. See
 [`docs/27-provenance.md`](./27-provenance.md).
 
-**There is no SMTP transport.** Outbound email goes through Resend's HTTP API. Without
-`RESEND_API_KEY` the email destination fails with a `configuration` error naming the variable —
+**There is no SMTP transport.** Outbound email goes through PostShiba's HTTP API. Without
+`POSTSHIBA_API_KEY` the email destination fails with a `configuration` error naming the variable —
 it does not queue, it does not pretend, and it does not report success. A self-hoster who needs
 SMTP has a real gap, and it is written down rather than papered over.
 

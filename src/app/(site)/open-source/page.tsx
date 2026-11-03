@@ -166,7 +166,7 @@ export default function OpenSourcePage() {
           </p>
           <p>
             What it does not do is written down rather than glossed: email destinations go
-            through Resend’s HTTP API, so a host with only SMTP has a real gap today.
+            through PostShiba’s HTTP API, so a host with only SMTP has a real gap today.
           </p>
           <p>
             And the part most open-source companies leave out: most people should use the

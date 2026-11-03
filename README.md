@@ -39,8 +39,8 @@ Plenty of good marketers already pipe outcomes back to their ad platform. That l
 The submission endpoint, the agent-callable surface, the form builder, conditional logic,
 outcome tracking, Yield, split tests scored on outcomes, spam defenses, destinations with
 signed delivery and retries, and one-command self-host are all shipped and tested. What is
-not done is the commercial side: there is no billing, and email delivery needs a Resend key
-that is deliberately unset, so an email destination says so rather than failing quietly.
+not done is the commercial side: there is no billing. Email delivery needs a PostShiba key;
+without one, an email destination says so rather than failing quietly.
 
 Positioning and brand are settled and live in [`docs/`](docs/), along with the decisions
 behind each feature and — deliberately — what each one still cannot do.
@@ -98,7 +98,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 | `NEXT_PUBLIC_APP_URL` | `https://app.endpointforms.com` — the signed-in app's own host |
 | `NEXT_PUBLIC_RENDER_DOMAIN` | `endpointforms.app` — the separate registrable domain customer forms are served from |
 
-**Optional** — `VERDICT_API_KEY_SECRET_PREVIOUS` (still accepted on verify, so a rotation does not break live integrations), `VERDICT_DEFAULT_CURRENCY`, `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`, `AUTH_EMAIL_FROM`, `RESEND_API_KEY` / `MAIL_FROM`, `GOOGLE_SHEETS_CLIENT_ID` / `GOOGLE_SHEETS_CLIENT_SECRET` / `GOOGLE_SHEETS_REDIRECT_URI` (`docs/28`), `ENDPOINT_DEFAULT_THANKS_URL`, `ALLOW_INSECURE_DESTINATIONS`, `ALLOW_PRIVATE_DESTINATIONS`, `DATABASE_POOL_MAX`, `DB_TARGET` / `NEON_DEV_DATABASE_URL`, the `UPLOAD_*` caps and retention (`docs/24` §3.6a), the `INGEST_RATE_LIMIT_*` / `VERDICT_RATE_LIMIT_*` / `AUTH_RATE_LIMIT_*` limits, and `NEXT_PUBLIC_WAITLIST_ENDPOINT_URL` / `WAITLIST_ENDPOINT_URL`.
+**Optional** — `VERDICT_API_KEY_SECRET_PREVIOUS` (still accepted on verify, so a rotation does not break live integrations), `VERDICT_DEFAULT_CURRENCY`, `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`, `AUTH_EMAIL_FROM`, `POSTSHIBA_API_KEY` / `MAIL_FROM`, `GOOGLE_SHEETS_CLIENT_ID` / `GOOGLE_SHEETS_CLIENT_SECRET` / `GOOGLE_SHEETS_REDIRECT_URI` (`docs/28`), `ENDPOINT_DEFAULT_THANKS_URL`, `ALLOW_INSECURE_DESTINATIONS`, `ALLOW_PRIVATE_DESTINATIONS`, `DATABASE_POOL_MAX`, `DB_TARGET` / `NEON_DEV_DATABASE_URL`, the `UPLOAD_*` caps and retention (`docs/24` §3.6a), the `INGEST_RATE_LIMIT_*` / `VERDICT_RATE_LIMIT_*` / `AUTH_RATE_LIMIT_*` limits, and `NEXT_PUBLIC_WAITLIST_ENDPOINT_URL` / `WAITLIST_ENDPOINT_URL`.
 
 Every one of them, with defaults and what happens when you leave it out: [`docs/24-self-hosting.md`](docs/24-self-hosting.md) §3.
 
