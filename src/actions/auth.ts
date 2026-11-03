@@ -5,9 +5,10 @@ import { redirect } from "next/navigation";
 import { CredentialsSignin } from "next-auth";
 import { z } from "zod";
 
-import { PASSWORD_PROVIDER_ID, signIn, signOut } from "@/auth";
-import { formError, safeNextPath, type FormState } from "@/actions/form-state";
+import { EMAIL_CODE_PROVIDER_ID, PASSWORD_PROVIDER_ID, signIn, signOut } from "@/auth";
+import { formError, safeNextPath, type EmailCodeState, type FormState } from "@/actions/form-state";
 import { createUserWithPassword } from "@/lib/auth/account";
+import { requestEmailCode } from "@/lib/auth/email-code";
 import { clientIpFromHeaders, hashIpForAuth } from "@/lib/auth/rate-limit";
 import { MAX_PASSWORD_LENGTH } from "@/lib/auth/password-policy";
 
@@ -218,6 +219,69 @@ export async function signOutAction(): Promise<void> {
  * extra `console.error(error)` on a path whose *inputs* are a live password is
  * how one ends up in a log aggregator by accident.
  */
+/**
+ * Step one of signing in with a code (#128): email one.
+ *
+ * Same answer whether or not the address has an account — a correct code
+ * creates one — so the form cannot be used to test which addresses are users.
+ */
+export async function requestLoginCode(
+  _prev: EmailCodeState,
+  formData: FormData,
+): Promise<EmailCodeState> {
+  const raw = String(formData.get("email") ?? "");
+  const parsed = emailSchema.safeParse(raw);
+  if (!parsed.success) {
+    return formError(raw.trim().length === 0 ? MESSAGES.emailEmpty : MESSAGES.emailInvalid);
+  }
+
+  const result = await requestEmailCode({
+    email: parsed.data,
+    ipHash: hashIpForAuth(clientIpFromHeaders(await headers())),
+  });
+
+  if (result.ok) {
+    return {
+      status: "success",
+      message: `We sent a 6-digit code to ${parsed.data}. It expires in 10 minutes.`,
+      email: parsed.data,
+    };
+  }
+  if (result.reason === "rate-limited") {
+    return formError("Too many codes have been sent to that address. Use the newest one, or wait an hour.");
+  }
+  if (result.reason === "invalid-email") return formError(MESSAGES.emailInvalid);
+  return formError("We couldn’t send the email just now. Try again in a minute, or sign in with your password.");
+}
+
+/** Step two: trade the code for a session. */
+export async function signInWithEmailCodeAction(
+  _prev: EmailCodeState,
+  formData: FormData,
+): Promise<EmailCodeState> {
+  const email = String(formData.get("email") ?? "").trim();
+  const code = String(formData.get("code") ?? "").trim();
+  const next = safeNextPath(formData.get("next"));
+
+  if (code.length === 0) return { status: "error", message: "Enter the 6-digit code from the email.", email };
+
+  try {
+    await signIn(EMAIL_CODE_PROVIDER_ID, { email, code, redirectTo: next, redirect: false });
+  } catch (error) {
+    if (isRedirect(error)) throw error;
+    return {
+      status: "error",
+      message:
+        error instanceof CredentialsSignin
+          ? "That code isn’t valid. It may have expired or been replaced by a newer one — check the latest email, or send a new code."
+          : MESSAGES.failed,
+      email,
+    };
+  }
+
+  redirect(next);
+}
+
 function signInFailureMessage(error: unknown): string {
   if (error instanceof CredentialsSignin) {
     return error.code === "rate-limited" ? MESSAGES.rateLimited : MESSAGES.invalidCredentials;
