@@ -45,6 +45,7 @@ const ok = (name: string, cond: boolean, detail?: unknown) => {
 };
 
 const DOMAIN = "onboarding.test";
+let otherKeyForOwnership = "";
 const sent: MailMessage[] = [];
 let mailWorks = true;
 
@@ -239,6 +240,7 @@ async function main() {
     const other = `other@${DOMAIN}`;
     await call("start_signup", { email: other });
     const otherKey = (await call("verify_signup", { email: other, code: lastCodeFor(other), company_name: "Other Onboarding" })).structuredContent.api_key;
+    otherKeyForOwnership = otherKey;
     ok("a second company signs up", typeof otherKey === "string");
 
     t("their key cannot see the first company's endpoint", (await call("get_install_snippet", { endpoint_id: endpointId }, otherKey)).structuredContent.code, "not_found");
@@ -313,6 +315,19 @@ async function main() {
       t("asking again retires the older code", (await call("verify_signup", { email: twice, code: first })).structuredContent.code, "invalid_code");
     }
     t("the newest one works", (await call("verify_signup", { email: twice, code: second })).isError, false);
+
+    // A burst of simultaneous guesses must not get more than MAX_ATTEMPTS looks
+    // at the code. Counting after comparing let every request in a burst read
+    // the row before any of them burned it.
+    resetRateLimits();
+    const burst = `burst@${DOMAIN}`;
+    await call("start_signup", { email: burst });
+    const burstCode = lastCodeFor(burst);
+    await Promise.all(Array.from({ length: 20 }, () => call("verify_signup", { email: burst, code: otherCode(burstCode) })));
+    const [burned] = await unsafeDb.select().from(emailCodes).where(eq(emailCodes.email, burst));
+    t(`20 simultaneous guesses are counted as ${MAX_ATTEMPTS}, not 20`, burned.attempts, MAX_ATTEMPTS);
+    ok("and the code is burned", burned.consumedAt instanceof Date);
+    t("so the right code no longer works", (await call("verify_signup", { email: burst, code: burstCode })).structuredContent.code, "invalid_code");
   }
 
   console.log("\nan address someone else registered first");
@@ -351,7 +366,13 @@ async function main() {
     resetRateLimits();
     const spammed = `spammed@${DOMAIN}`;
     const answers = [];
-    for (let i = 0; i < 4; i++) answers.push((await call("start_signup", { email: spammed })).structuredContent.code ?? "sent");
+    for (let i = 0; i < 4; i++) {
+      // Clearing the in-memory limiter before every request proves the
+      // per-address limit is the database's, which survives restarts, other
+      // instances, and the in-memory map clearing itself when full.
+      resetRateLimits();
+      answers.push((await call("start_signup", { email: spammed })).structuredContent.code ?? "sent");
+    }
     t("three codes an hour per address, then a refusal", answers, ["sent", "sent", "sent", "rate_limited"]);
 
     resetRateLimits();
@@ -364,6 +385,19 @@ async function main() {
     t("and the code that never arrived does not work", (await call("verify_signup", { email: unlucky, code: leftover })).structuredContent.code, "invalid_code");
     const created = await unsafeDb.select().from(users).where(eq(users.email, unlucky));
     t("and nothing was created", created.length, 0);
+  }
+
+  console.log("\nkeys follow ownership");
+  {
+    const [otherUser] = await unsafeDb.select({ id: users.id }).from(users).where(eq(users.email, `other@${DOMAIN}`));
+    const otherKey = otherKeyForOwnership;
+    t("positive control: an owner's key works", (await call("whoami", {}, otherKey)).isError, false);
+    await unsafeDb.update(memberships).set({ role: "member" }).where(eq(memberships.userId, otherUser.id));
+    const demoted = await call("whoami", {}, otherKey);
+    t("once its creator is no longer an owner, the key stops managing the workspace", demoted.structuredContent.code, "unauthorized");
+    ok("and says why", /not an owner of it any more/.test(demoted.content[0].text), demoted.content[0].text);
+    await unsafeDb.update(memberships).set({ role: "owner" }).where(eq(memberships.userId, otherUser.id));
+    t("and works again if they are made owner again", (await call("whoami", {}, otherKey)).isError, false);
   }
 
   console.log("\nprotocol");

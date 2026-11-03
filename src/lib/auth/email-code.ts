@@ -111,12 +111,28 @@ export async function requestEmailCode(input: {
   const email = normaliseEmail(parsed.data);
   const now = input.now ?? new Date();
 
-  // A keyspace of its own, so asking for codes never spends anyone's ingest or
-  // password sign-in budget, and the reverse.
+  // Per address, counted in the database: it is the limit that stops this being
+  // used to fill a stranger's inbox, so it must hold across server instances and
+  // survive the in-memory limiter clearing itself when it fills up.
+  const config = emailCodeRateLimitConfig();
+  const since = new Date(now.getTime() - config.windowMs);
+  const [recent] = await unsafeDb
+    .select({ count: sql<number>`count(*)::int`, oldest: sql<string | null>`min(${emailCodes.createdAt})` })
+    .from(emailCodes)
+    .where(and(eq(emailCodes.email, email), gt(emailCodes.createdAt, since)));
+  if ((recent?.count ?? 0) >= config.endpoint) {
+    const oldest = recent?.oldest ? new Date(recent.oldest).getTime() : now.getTime();
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldest + config.windowMs - now.getTime()) / 1000));
+    return { ok: false, reason: "rate-limited", retryAfterSeconds };
+  }
+
+  // Per IP, in memory, in a keyspace of its own so asking for codes never spends
+  // anyone's ingest or password sign-in budget. Best effort: per instance, and
+  // skipped when the deployment cannot see a trustworthy client IP.
   const throttle = checkRateLimit(
     `email-code:${email}`,
     input.ipHash ? `email-code:${input.ipHash}` : null,
-    emailCodeRateLimitConfig(),
+    config,
     now.getTime(),
   );
   if (!throttle.allowed) {
@@ -181,8 +197,8 @@ export async function verifyEmailCode(input: {
   const email = normaliseEmail(parsed.data);
   const now = input.now ?? new Date();
 
-  const [row] = await unsafeDb
-    .select({ id: emailCodes.id, codeHash: emailCodes.codeHash, attempts: emailCodes.attempts })
+  const [live] = await unsafeDb
+    .select({ id: emailCodes.id })
     .from(emailCodes)
     .where(
       and(
@@ -194,6 +210,26 @@ export async function verifyEmailCode(input: {
     .orderBy(desc(emailCodes.createdAt))
     .limit(1);
 
+  // **Spend the attempt before looking at the guess.** Comparing first and
+  // counting afterwards lets a burst of simultaneous guesses all read the row
+  // before any of them burns it, which turns five guesses into as many as fit
+  // in one round trip. This UPDATE is the only way to get the hash, and
+  // Postgres hands out at most `MAX_ATTEMPTS` of them per code no matter how
+  // many requests arrive at once.
+  const [row] = live
+    ? await unsafeDb
+        .update(emailCodes)
+        .set({ attempts: sql`${emailCodes.attempts} + 1` })
+        .where(
+          and(
+            eq(emailCodes.id, live.id),
+            isNull(emailCodes.consumedAt),
+            sql`${emailCodes.attempts} < ${MAX_ATTEMPTS}`,
+          ),
+        )
+        .returning({ id: emailCodes.id, codeHash: emailCodes.codeHash, attempts: emailCodes.attempts })
+    : [];
+
   const expected = Buffer.from(row?.codeHash ?? hashCode(email, "no-code"), "hex");
   const actual = Buffer.from(hashCode(email, code), "hex");
   const matches = Boolean(row) && timingSafeEqual(expected, actual);
@@ -201,15 +237,12 @@ export async function verifyEmailCode(input: {
   if (!row) return { ok: false };
 
   if (!matches) {
-    // Counted in the database, not in memory, so the cap holds across every
-    // server instance. The row is burned on the attempt that reaches the cap.
-    await unsafeDb
-      .update(emailCodes)
-      .set({
-        attempts: sql`${emailCodes.attempts} + 1`,
-        consumedAt: sql`case when ${emailCodes.attempts} + 1 >= ${MAX_ATTEMPTS} then ${now.toISOString()}::timestamptz else ${emailCodes.consumedAt} end`,
-      })
-      .where(eq(emailCodes.id, row.id));
+    if (row.attempts >= MAX_ATTEMPTS) {
+      await unsafeDb
+        .update(emailCodes)
+        .set({ consumedAt: now })
+        .where(and(eq(emailCodes.id, row.id), isNull(emailCodes.consumedAt)));
+    }
     return { ok: false };
   }
 
