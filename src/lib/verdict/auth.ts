@@ -115,6 +115,11 @@ async function authenticateStored(
   // 64-symbol alphabet, and would learn a fact worth nothing.
   if (row.revokedAt) throw revoked(REVOKED_STORED);
 
+  // After the secret check, so the scope list of a key is only ever described
+  // to whoever holds it. 401 rather than 403 because this surface has none —
+  // see docs/26 §2.2.
+  if (!row.scopes.includes("outcomes:write")) throw unauthorized(MISSING_SCOPE);
+
   await touch(touchVerdictApiKey(row.id, options.ip ?? null, options.now));
 
   return { workspaceId: row.workspaceId, slug: row.workspaceSlug };
@@ -176,6 +181,9 @@ async function authenticateDerived(
 async function touch(work: Promise<unknown>): Promise<void> {
   await work.catch(() => {});
 }
+
+const MISSING_SCOPE =
+  "That API key is valid but cannot record outcomes: it was created without the outcomes:write scope. Create a key that has it, in workspace settings or with the create_api_key tool.";
 
 const BAD_KEY =
   "That API key is not valid for this deployment. Keys are per workspace; check you are sending the key for the workspace whose submissions you are grading.";
