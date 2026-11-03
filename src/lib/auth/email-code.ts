@@ -144,6 +144,16 @@ export async function requestEmailCode(input: {
   });
 
   const mail = await (input.send ?? sendMail)(codeEmail(email, code));
+
+  // Same rule as magic links (docs/22): with no mail transport, development
+  // prints the code to the server console so the flow can be exercised, and
+  // production refuses. Printing a sign-in code to production logs would let
+  // anyone who can read the logs sign in as anyone.
+  if (!mail.ok && mail.configuration && !input.send && process.env.NODE_ENV !== "production") {
+    console.log(`\n  ┌─ sign-in code ─ ${email} ─ ${code} ─ expires in ${CODE_TTL_MS / 60_000} min\n`);
+    return { ok: true, expiresInSeconds: Math.round(CODE_TTL_MS / 1000) };
+  }
+
   if (!mail.ok) {
     // Never leave a live code behind that nobody received.
     await unsafeDb.update(emailCodes).set({ consumedAt: now }).where(eq(emailCodes.id, id));
