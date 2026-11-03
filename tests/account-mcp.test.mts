@@ -18,7 +18,7 @@ import { eq, inArray, like } from "drizzle-orm";
 
 import { sqlClient, unsafeDb } from "../src/db/client.ts";
 import { newId } from "../src/db/ids.ts";
-import { destinations, emailCodes, endpoints, memberships, users, workspaces } from "../src/db/schema.ts";
+import { authSessions, destinations, emailCodes, endpoints, memberships, users, workspaces } from "../src/db/schema.ts";
 import { handleAccountMcpRequest } from "../src/lib/account/mcp.ts";
 import { MAX_ATTEMPTS } from "../src/lib/auth/email-code.ts";
 import type { MailMessage, MailResult } from "../src/lib/destinations/mail.ts";
@@ -313,6 +313,37 @@ async function main() {
       t("asking again retires the older code", (await call("verify_signup", { email: twice, code: first })).structuredContent.code, "invalid_code");
     }
     t("the newest one works", (await call("verify_signup", { email: twice, code: second })).isError, false);
+  }
+
+  console.log("\nan address someone else registered first");
+  {
+    resetRateLimits();
+    // A squatter signs up with a password on an address they do not own —
+    // password sign-up checks nothing — and keeps a session open.
+    const victim = `victim@${DOMAIN}`;
+    const squatterId = newId();
+    await unsafeDb.insert(users).values({ id: squatterId, email: victim, passwordHash: "squatter-password-hash" });
+    await unsafeDb.insert(authSessions).values({ sessionToken: `squat-${squatterId}`, userId: squatterId, expires: new Date(Date.now() + 86_400_000) });
+
+    await call("start_signup", { email: victim });
+    const claimed = await call("verify_signup", { email: victim, code: lastCodeFor(victim), company_name: "Victim Onboarding" });
+    t("the real owner can still sign up", claimed.isError, false);
+    const [row] = await unsafeDb.select().from(users).where(eq(users.id, squatterId));
+    t("the squatter's password is gone", row.passwordHash, null);
+    t("and so is their session", (await unsafeDb.select().from(authSessions).where(eq(authSessions.userId, squatterId))).length, 0);
+
+    // Positive control: an address that was already verified keeps its password
+    // and sessions. Without this, both lines above pass just as well if every
+    // code sign-in wiped every password.
+    const owner = `owner@${DOMAIN}`;
+    const ownerId = newId();
+    await unsafeDb.insert(users).values({ id: ownerId, email: owner, passwordHash: "owner-password-hash", emailVerified: new Date() });
+    await unsafeDb.insert(authSessions).values({ sessionToken: `own-${ownerId}`, userId: ownerId, expires: new Date(Date.now() + 86_400_000) });
+    await call("start_signup", { email: owner });
+    await call("verify_signup", { email: owner, code: lastCodeFor(owner), company_name: "Owner Onboarding" });
+    const [kept] = await unsafeDb.select().from(users).where(eq(users.id, ownerId));
+    t("a verified account keeps its password", kept.passwordHash, "owner-password-hash");
+    t("and its sessions", (await unsafeDb.select().from(authSessions).where(eq(authSessions.userId, ownerId))).length, 1);
   }
 
   console.log("\nlimits and failures");

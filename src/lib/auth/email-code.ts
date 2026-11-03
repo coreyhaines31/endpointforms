@@ -4,7 +4,7 @@ import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { unsafeDb } from "../../db/client.ts";
-import { emailCodes, newId, users } from "../../db/index.ts";
+import { authSessions, emailCodes, newId, users } from "../../db/index.ts";
 import { sendMail, type MailMessage, type MailResult } from "../destinations/mail.ts";
 import { checkRateLimit } from "../ingest/rate-limit.ts";
 import type { RateLimitConfig } from "../ingest/limits.ts";
@@ -239,16 +239,32 @@ export type CodeUser = {
  * password sign-up deliberately never does. The insert races a concurrent
  * sign-up for the same address on the case-insensitive unique index; the loser
  * reads the winner's row.
+ *
+ * **The first proof of the inbox evicts whatever came before it.** Password
+ * sign-up does not check the address, so anyone can register `dana@acme.com`
+ * with a password of their choosing and wait. Without this, Dana's first code
+ * would sign her into that account — and every workspace, lead and key she then
+ * created would live in an account the squatter can still open. So when a code
+ * verifies an address for the first time, the unverified password and every
+ * existing session go. Dana can set a password of her own; the squatter keeps
+ * nothing. An address that was already verified is left alone: its password was
+ * set by someone who had proved the inbox too.
  */
 export async function findOrCreateVerifiedUser(email: string, now: Date = new Date()): Promise<CodeUser> {
   const normalised = normaliseEmail(email);
 
   const existing = await selectUser(normalised);
   if (existing) {
-    await unsafeDb
-      .update(users)
-      .set({ emailVerified: now, updatedAt: now })
-      .where(and(eq(users.id, existing.id), isNull(users.emailVerified)));
+    await unsafeDb.transaction(async (tx) => {
+      const claimed = await tx
+        .update(users)
+        .set({ emailVerified: now, passwordHash: null, updatedAt: now })
+        .where(and(eq(users.id, existing.id), isNull(users.emailVerified)))
+        .returning({ id: users.id });
+      if (claimed.length === 1) {
+        await tx.delete(authSessions).where(eq(authSessions.userId, existing.id));
+      }
+    });
     return { ...existing, created: false };
   }
 
