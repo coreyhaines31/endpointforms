@@ -10,6 +10,9 @@
 The agent-facing surface, `POST /e/{endpointId}/mcp`, has its own specification:
 [`docs/25-manifest-spec.md`](./25-manifest-spec.md).
 
+The account MCP server, `POST /api/mcp` — signing up, creating endpoints and minting keys from
+an AI chat — is described in [`docs/32-agent-onboarding.md`](./32-agent-onboarding.md).
+
 Everything below is read out of the implementation and pinned by assertions in
 `tests/ingest.test.mts`, `tests/schema-ingest.test.mts` and `tests/verdict.test.mts`. Anything
 not stated here is not promised.
@@ -351,12 +354,18 @@ Authorization: Bearer efv2.{key-id}.{secret}
 `X-Api-Key: efv2.…` also works. `Authorization` wins when both are sent. A bare key with no
 `Bearer` scheme is accepted deliberately, because some CRM webhook builders cannot send one.
 
-Keys are created in **workspace settings**. A workspace may hold several at once, which is how
+Keys are created in **workspace settings**, or by an agent through the account MCP server
+(`docs/32`). A workspace may hold several at once, which is how
 one is rotated without an outage: create the new key, move the integration across, then revoke
 the old one, with both live in between.
 
 **A key is shown once.** Only a SHA-256 of its secret half is stored, so nothing — including
 us — can display it again. If you lose one, revoke it and create another.
+
+**Keys have scopes.** Recording outcomes needs `outcomes:write`. Every key created in settings
+has exactly that scope, and so does every key that existed before scopes did. A key an agent
+created without it gets a `401 unauthorized` here that says which scope is missing. The other
+scopes (`endpoints:read`, `endpoints:write`, `keys:write`) only matter on the account MCP server.
 
 **Revocation is per key.** Revoking one key does not affect any other key, any other workspace,
 or any other deployment. The row is kept rather than deleted, so `created_at`, `last_used_at`
