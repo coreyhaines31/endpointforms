@@ -1,4 +1,5 @@
 import { CopyBlock } from "@/components/app/copy";
+import { endpointUrl } from "@/lib/workspaces/endpoint-url";
 
 /**
  * The snippet.
@@ -14,9 +15,7 @@ import { CopyBlock } from "@/components/app/copy";
  * the more careful half.
  */
 
-export function endpointUrl(slug: string, renderDomain: string, publicId: string): string {
-  return `https://${slug}.${renderDomain}/e/${publicId}`;
-}
+export { endpointUrl };
 
 export function EndpointSnippet({
   slug,
