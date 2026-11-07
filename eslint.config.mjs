@@ -66,6 +66,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Agent worktrees are whole checkouts, build output included.
     ".claude/**",
+    // The CLI's compiled output (#133); its TypeScript source is linted.
+    "packages/*/dist/**",
   ]),
 
   {
