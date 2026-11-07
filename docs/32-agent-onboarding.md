@@ -53,7 +53,9 @@ stateless JSON-RPC over HTTP, the same transport as the per-endpoint Manifest se
 
 Since #133 the server also manages what the endpoints receive: `get_endpoint`, `update_endpoint`,
 `delete_endpoint`, `get_form_schema`, `update_form_schema`, `list_submissions`, `get_submission` and
-`export_submissions`. Every tool here, old and new, now calls the shared core in `src/lib/api/`.
+`export_submissions`. Every tool that reads or changes endpoints, forms or submissions, old and
+new, now calls the shared core in `src/lib/api/`. Sign-up and key minting stay here, in
+`src/lib/account/`.
 Keys from `verify_signup` also carry `submissions:read` and `submissions:write`. See
 [`docs/33-agent-api.md`](./33-agent-api.md).
 
