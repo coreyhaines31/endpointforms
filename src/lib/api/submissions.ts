@@ -206,10 +206,23 @@ function toApiDetail(row: SubmissionDetail, now: Date): ApiSubmissionDetail {
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
+/** A real calendar day: `2026-02-30` parses in some engines and must not here. */
+function isCalendarDay(value: string): boolean {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+function isInstant(value: string): boolean {
+  if (DAY.test(value)) return isCalendarDay(value);
+  return TIMESTAMP.test(value) && isCalendarDay(value.slice(0, 10)) && !Number.isNaN(Date.parse(value));
+}
+
 const instant = z
   .string()
   .trim()
-  .refine((value) => DAY.test(value) || !Number.isNaN(Date.parse(value)), "must be a date (YYYY-MM-DD) or an ISO 8601 timestamp");
+  .refine(isInstant, "must be a date (YYYY-MM-DD) or an ISO 8601 timestamp, e.g. 2026-03-01T09:00:00Z");
 
 const list = <T extends string>(values: readonly [T, ...T[]]) =>
   z
@@ -304,6 +317,15 @@ export function encodeCursor(cursor: SubmissionCursor): string {
   return Buffer.from(JSON.stringify([cursor.at, cursor.id])).toString("base64url");
 }
 
+/** The shape alone lets `2026-99-99T25:61:00.000000Z` through to Postgres. */
+function isRealCursorTime(value: string): boolean {
+  // Milliseconds are enough to prove the calendar and clock fields are real;
+  // the full microsecond string is what is kept.
+  const millis = `${value.slice(0, 23)}Z`;
+  const date = new Date(millis);
+  return !Number.isNaN(date.getTime()) && date.toISOString() === millis;
+}
+
 export function decodeCursor(value: string): SubmissionCursor {
   try {
     const decoded: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
@@ -313,6 +335,7 @@ export function decodeCursor(value: string): SubmissionCursor {
       typeof decoded[0] === "string" &&
       typeof decoded[1] === "string" &&
       CURSOR_AT.test(decoded[0]) &&
+      isRealCursorTime(decoded[0]) &&
       UUID.test(decoded[1])
     ) {
       return { at: decoded[0], id: decoded[1] };

@@ -313,6 +313,10 @@ async function main() {
     t("a garbage cursor is a 400", await codeOf(() => listSubmissions(ctxA, { cursor: "not-a-cursor" })), "invalid_request");
     const injected = Buffer.from(JSON.stringify(["2026-01-01'; drop table submissions;--", "x"])).toString("base64url");
     t("a cursor carrying SQL is a 400", await codeOf(() => listSubmissions(ctxA, { cursor: injected })), "invalid_request");
+    for (const at of ["2026-99-99T00:00:00.000000Z", "2026-02-30T00:00:00.000000Z", "2026-01-01T25:61:00.000000Z"]) {
+      const forged = Buffer.from(JSON.stringify([at, "00000000-0000-7000-8000-000000000000"])).toString("base64url");
+      t(`a cursor at an impossible time (${at}) is a 400`, await codeOf(() => listSubmissions(ctxA, { cursor: forged })), "invalid_request");
+    }
     t("a limit above the cap is a 400", await codeOf(() => listSubmissions(ctxA, { limit: 1000 })), "invalid_request");
     t("an unknown filter is a 400", await codeOf(() => listSubmissions(ctxA, { colour: "red" })), "invalid_request");
   }
@@ -329,6 +333,10 @@ async function main() {
     ok("origin", agent.data.length === 3 && agent.data.every((s) => s.origin === "agent"), agent.data.length);
     const feb = await listSubmissions(ctxA, { from: "2026-02-01", to: "2026-02-15" });
     t("a date-only range includes its last day", feb.data.length, 2);
+    for (const bad of ["2026-99-99", "2026-02-30", "2026-01-01T25:00:00Z", "yesterday", "1"]) {
+      t(`an impossible date (${bad}) is a 400, not a crash`, await codeOf(() => listSubmissions(ctxA, { from: bad })), "invalid_request");
+    }
+    t("and in an export too", await codeOf(() => exportSubmissions(ctxA, { to: "2026-13-01" })), "invalid_request");
     const before = await listSubmissions(ctxA, { to: "2026-02-15T09:00:00Z" });
     t("a timestamp `to` is exclusive", before.data.length, 2);
     const byEndpoint = await listSubmissions(ctxA, { endpoint: a.endpointPublicId, limit: 200 });
