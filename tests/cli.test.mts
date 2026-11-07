@@ -294,6 +294,10 @@ async function main() {
     t("and is still the same JSON", JSON.parse(detail).values.email, hostile);
     const ttyCsv = (await cli(["submissions", "export"], { tty: true })).out;
     ok("export to a terminal escapes them too", !ttyCsv.includes("\u001b") && ttyCsv.includes("\\u001b"));
+    ok("including a carriage return or line break inside a cell", !ttyCsv.includes("x\rFAKE") && !ttyCsv.includes("FAKE\nrow") && ttyCsv.includes("x\\u000dFAKE\\u000arow"));
+    ok("while the record separators stay", ttyCsv.split("\r\n").length > 5);
+    const ttyJson = (await cli(["submissions", "export", "--format", "json"], { tty: true })).out;
+    ok("and a JSON export to a terminal has no raw controls", !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(ttyJson));
     const piped = (await cli(["submissions", "export"])).out;
     ok("positive control: piped, the export is byte-for-byte", piped.includes("\u001b]52"));
   }

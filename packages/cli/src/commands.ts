@@ -120,6 +120,21 @@ export function visible(text: string, keep: RegExp = /(?!)/): string {
 }
 
 /**
+ * A CSV for a terminal: the record separators stay, and every control
+ * character inside a quoted cell — a submitted `\r` or line break included —
+ * is escaped, so a cell can neither overwrite the line nor fake a row.
+ */
+export function visibleCsv(text: string): string {
+  let out = "";
+  let quoted = false;
+  for (const c of text) {
+    if (c === '"') quoted = !quoted;
+    out += !quoted && (c === "\r" || c === "\n") ? c : visible(c);
+  }
+  return out;
+}
+
+/**
  * JSON already escapes C0 controls; C1 (U+0080–U+009F) passes through, and
  * some terminals treat U+009B as CSI. Escaping it keeps the JSON identical.
  */
@@ -313,7 +328,7 @@ async function submissions(ctx: Context, sub: string | undefined, arg: string | 
       } else {
         // Piped, the file is passed through untouched. On a terminal, its
         // control characters are shown rather than obeyed; line ends are kept.
-        ctx.io.out(ctx.io.stdoutIsTTY ? visible(file.body, /[\r\n\t]/) : file.body);
+        ctx.io.out(ctx.io.stdoutIsTTY ? (format === "csv" ? visibleCsv(file.body) : visible(file.body, /\n/)) : file.body);
         if (file.truncated) ctx.io.err("Export truncated at the export limit; narrow the filters for the rest.\n");
       }
       return;
