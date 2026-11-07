@@ -1,0 +1,27 @@
+{
+  "name": "endpointforms",
+  "version": "0.1.0",
+  "description": "Command line for Endpoint Forms: endpoints, form schemas and submissions from your terminal or an agent.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "bin": {
+    "endpointforms": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coreyhaines31/endpointforms.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://endpointforms.com",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  }
+}
