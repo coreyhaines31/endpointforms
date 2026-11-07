@@ -313,6 +313,13 @@ async function main() {
     t("invalid JSON is a usage error", (await cli(["form", "set", a.endpointPublicId, "-"], { stdin: "{nope" })).code, 2);
     const invalid = await cli(["form", "set", a.endpointPublicId, "-"], { stdin: JSON.stringify({ fields: [{ key: "x", type: "nope" }] }) });
     t("an invalid schema is the API's 400", [invalid.code, /invalid_request/.test(invalid.err)], [1, true]);
+    const missing = await cli(["form", "set", a.endpointPublicId, join(configDir, "does-not-exist.json"), "--json"]);
+    t("a missing file is exit 1 with a JSON error under --json", [missing.code, JSON.parse(missing.err).error.code], [1, "file_error"]);
+    const echoed = await cli(["form", "set", a.endpointPublicId, "-"], {
+      stdin: JSON.stringify({ fields: [{ key: "c", type: "select", options: [{ value: "\u001b]52;c;eA==\u0007", label: "a" }, { value: "\u001b]52;c;eA==\u0007", label: "b" }] }] }),
+    });
+    t("positive control: the API's error quotes the bad value", [echoed.code, echoed.err.includes("52;c;eA==")], [1, true]);
+    ok("but stderr carries no raw escape", !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(echoed.err), echoed.err);
   }
 
   console.log("\nlogout");
