@@ -73,7 +73,7 @@ curl "https://app.endpointforms.com/api/v1/submissions?verdict=awaiting&limit=20
   -H "Authorization: Bearer $ENDPOINTFORMS_API_KEY"
 ```
 
-**Responses.** A success is `{"ok": true, "data": …}`, and a list adds `next_cursor`. An error is `{"ok": false, "error": {"code", "message"}}`. The status is one of 400 `invalid_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 409 `conflict` or 429 `rate_limited`. The message always says what to change. Unknown fields in a JSON body are a 400, and so are unknown query parameters on `/submissions` and `/submissions/export`. The other routes take no query parameters and ignore any that are sent. Every response is `Cache-Control: no-store`.
+**Responses.** A success is `{"ok": true, "data": …}`, and the submissions list adds `next_cursor`. The other lists return everything in one response. An error is `{"ok": false, "error": {"code", "message"}}`. The status is one of 400 `invalid_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 409 `conflict` or 429 `rate_limited`, or 500 `internal_error` when the failure is ours. The message always says what to change. Unknown fields in a JSON body are a 400, and so are unknown query parameters on `/submissions` and `/submissions/export`. The other routes take no query parameters and ignore any that are sent. Every response is `Cache-Control: no-store`.
 
 **No CORS.** This is a server-to-server API, and a key that can read every lead does not belong in a browser.
 
@@ -103,7 +103,7 @@ curl "https://app.endpointforms.com/api/v1/submissions?verdict=awaiting&limit=20
 
 A list filter accepts several values, comma separated (`verdict=won,lost`) or repeated (`verdict=won&verdict=lost`). Filters combine with AND.
 
-**Pagination is by cursor.** `limit` defaults to 50 and is at most 200. Pass `next_cursor` back as `cursor` to get the next page; it is `null` on the last page. The cursor holds the last row's timestamp, at microsecond precision, and its id. A walk therefore moves steadily into older rows and never repeats or skips one that existed when it started, including rows that share a timestamp. A submission that arrives during the walk is newer than the cursor, so it does not appear; start again from the first page to see it. The inbox in the app still pages by number.
+**Pagination is by cursor.** `limit` defaults to 50 and is at most 200. Pass `next_cursor` back as `cursor` to get the next page; it is `null` on the last page. The cursor holds the last row's timestamp, at microsecond precision, and its id. A walk therefore moves steadily into older rows and never repeats a row or skips one, including rows that share a timestamp, as long as the matching rows do not change while it runs. It is not a snapshot. Each page re-applies the filters to the live data, so a submission whose verdict or spam state changes mid-walk can enter or leave the results. A submission that arrives during the walk is newer than the cursor and does not appear; start again from the first page to see it. The inbox in the app still pages by number.
 
 **Export** produces the same file the inbox's Export button downloads, and the CSV and JSON formats share one implementation (`src/lib/workspaces/export-format.ts`). `format` is `csv` (the default) or `json`, and the filters are the ones above. The export is capped at 10,000 rows. `X-Export-Row-Count` gives the number of rows, and `X-Export-Truncated: true` appears when the cap was hit.
 
@@ -134,7 +134,7 @@ The account server ([`docs/32`](./32-agent-onboarding.md)) gained these tools, a
 | `update_form_schema(endpoint_id, document, mode?, activate?, confirm?)` | `endpoints:write` | Publishing in `strict` mode needs `confirm: true` |
 | `list_submissions(filters…, cursor?, limit?)` | `submissions:read` | Same filters as REST, with `endpoint_id` |
 | `get_submission(submission_id)` | `submissions:read` | |
-| `export_submissions(filters…, format?)` | `submissions:read` | Inline; refused above 1 MB of text (`export_too_large`) |
+| `export_submissions(filters…, format?)` | `submissions:read` | Inline; refused above 1,000,000 characters (`export_too_large`) |
 
 **Destructive tools ask first.** Called without `"confirm": true`, these tools change nothing. They return `confirmation_required` with a sentence saying exactly what would happen, which the agent relays to the person. Only `confirm === true` goes ahead; `"yes"` does not count. The preview needs the same write scope as the change.
 
