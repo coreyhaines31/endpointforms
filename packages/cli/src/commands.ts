@@ -407,14 +407,31 @@ export async function run(argv: string[], io: Io): Promise<number> {
     }
     return 0;
   } catch (error) {
-    if (error instanceof UsageError) {
-      io.err(json ? `${JSON.stringify({ ok: false, error: { code: "usage", message: error.message } })}\n` : `${error.message}\n`);
-      return 2;
-    }
-    if (error instanceof ApiFailure) {
-      io.err(json ? `${JSON.stringify({ ok: false, error: { code: error.code, message: error.message, status: error.status } })}\n` : `Error (${error.code}): ${error.message}\n`);
-      return 1;
-    }
-    throw error;
+    return report(io, json, error);
   }
+}
+
+/** A file the CLI was asked to read or write could not be. */
+function isFileError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && typeof (error as NodeJS.ErrnoException).syscall === "string";
+}
+
+/**
+ * Every failure, in the format the caller asked for. Messages can echo what
+ * a stranger submitted — a validation error quotes the bad value — so they
+ * are escaped like any other API text.
+ */
+function report(io: Io, json: boolean, error: unknown): number {
+  const write = (exit: number, code: string, message: string, extra: Record<string, unknown> = {}) => {
+    io.err(json ? `${safeJson({ ok: false, error: { code, message, ...extra } }).replace(/\n\s*/g, "")}\n` : `${visible(message)}\n`);
+    return exit;
+  };
+  if (error instanceof UsageError) return write(2, "usage", error.message);
+  if (error instanceof ApiFailure) {
+    return json
+      ? write(1, error.code, error.message, { status: error.status })
+      : write(1, error.code, `Error (${error.code}): ${error.message}`);
+  }
+  if (isFileError(error)) return write(1, "file_error", error.message);
+  throw error;
 }
