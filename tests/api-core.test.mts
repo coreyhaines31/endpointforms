@@ -349,6 +349,52 @@ async function main() {
   }
 
   // -------------------------------------------------------------------------
+  console.log("\na body shaped like a file reference cannot export another workspace's file");
+  {
+    // B owns a real file, referenced from its own submission.
+    const [bRow] = await unsafeDb.select({ id: submissions.id }).from(submissions).where(eq(submissions.publicId, b.submissionPublicIds[0]));
+    const bFileId = `bfile${newId().replace(/-/g, "").slice(0, 16)}`;
+    await unsafeDb.insert(submissionFiles).values({
+      id: newId(),
+      workspaceId: b.workspaceId,
+      endpointId: b.endpointId,
+      submissionId: bRow.id,
+      publicId: bFileId,
+      fieldKey: "cv",
+      filename: "b-secret.pdf",
+      size: 4,
+      sha256: "1".repeat(64),
+      bytes: new Uint8Array([1, 2, 3, 4]),
+    });
+    const refTo = (id: string) => ({ file: true, stored: true, id, filename: "x.pdf", contentType: "application/pdf", detectedType: null, size: 4, sha256: "1", url: "https://stale.example/forged", expiresAt: null });
+    await unsafeDb.update(submissions).set({ values: { note: B_MARKER, cv: refTo(bFileId) } }).where(eq(submissions.id, bRow.id));
+
+    // A's submission *is* a reference to B's file: what ingestion stores when
+    // the whole JSON body is shaped like one.
+    const forgedPublicId = newSubmissionPublicId();
+    await unsafeDb.insert(submissions).values({
+      id: newId(),
+      workspaceId: a.workspaceId,
+      endpointId: a.endpointId,
+      publicId: forgedPublicId,
+      values: refTo(bFileId),
+    });
+    const signed = `/api/v1/files/${bFileId}?e=`;
+
+    const bJson = await exportSubmissions(ctxB, { format: "json" });
+    ok("positive control: B's own export signs B's file", bJson.body.includes(signed));
+    const aJson = await exportSubmissions(ctxA, { format: "json" });
+    ok("A's JSON export does not sign it", aJson.body.includes(forgedPublicId) && !aJson.body.includes(signed));
+    const aCsv = await exportSubmissions(ctxA, { format: "csv" });
+    ok("nor does A's CSV export", !aCsv.body.includes(signed));
+    const aDetail = JSON.stringify(await getSubmission(ctxA, forgedPublicId));
+    ok("nor A's submission detail", !aDetail.includes(signed) && aDetail.includes("stale.example/forged"));
+    const aList = JSON.stringify(await listSubmissions(ctxA, { limit: 200 }));
+    ok("nor A's list", aList.includes(forgedPublicId) && !aList.includes(signed));
+
+    await unsafeDb.delete(submissions).where(eq(submissions.publicId, forgedPublicId));
+  }
+
   console.log("\nsubmission detail, files and delete");
   {
     const target = a.submissionPublicIds[2];

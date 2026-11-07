@@ -1,5 +1,5 @@
 import { formatValue } from "../submission-values.ts";
-import { refreshFileRefsIn } from "../uploads/links.ts";
+import { refreshOwnedFileRefsIn, type OwnedFiles } from "../uploads/links.ts";
 import { collectFileRefs, isStoredFileRef } from "../uploads/types.ts";
 import { PARTIALS_EXPORT_LIMIT, type PartialListItem } from "./partials.ts";
 import { collectValueKeys, EXPORT_LIMIT } from "./submissions.ts";
@@ -122,7 +122,11 @@ export function toJson(rows: SubmissionExportRow[]): string {
         // export downloaded today is an export whose links work today. The one
         // stored on the row was signed when the submission arrived and is
         // pointed at a webhook receiver, not at the person opening this file.
-        values: refreshFileRefsIn(row.values, "export"),
+        //
+        // Only files this submission owns are re-signed (#133): a body posted
+        // in the shape of a file reference must not be able to name another
+        // workspace's file and get a working link to it out of our export.
+        values: refreshOwnedFileRefsIn(row.values, row.ownedFiles, "export"),
         attribution: {
           utmSource: row.utmSource,
           utmMedium: row.utmMedium,
@@ -230,7 +234,7 @@ export function toCsv(rows: SubmissionExportRow[]): string {
       row.rawContentType ?? "",
       ...valueKeys.flatMap((key) =>
         fileKeys.has(key)
-          ? [formatValue(row.values[key]), fileUrls(row.values[key], now)]
+          ? [formatValue(row.values[key]), fileUrls(row.values[key], row.ownedFiles, now)]
           : [formatValue(row.values[key])],
       ),
     ];
@@ -248,11 +252,14 @@ export function toCsv(rows: SubmissionExportRow[]): string {
  * reader that splits on commas — a person, most often — should not see one link
  * become two broken ones. Re-signed here, not read off the row: see `toJson`.
  */
-function fileUrls(value: unknown, now: Date): string {
+function fileUrls(value: unknown, owned: OwnedFiles, now: Date): string {
   const entries = Array.isArray(value) ? value : [value];
+  // A reference this submission does not own gets no link at all — not even
+  // the one it arrived with, which is whatever the submitter wrote (#133).
   return entries
     .filter(isStoredFileRef)
-    .map((ref) => refreshFileRefsIn(ref, "export", now).url)
+    .filter((ref) => owned.has(ref.id))
+    .map((ref) => refreshOwnedFileRefsIn(ref, owned, "export", now).url)
     .join(" ");
 }
 

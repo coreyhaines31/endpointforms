@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 
 // Relative, extension-bearing imports, matching `./queries.ts` and `src/db/`.
 import { withWorkspace } from "../../db/index.ts";
@@ -361,6 +361,7 @@ export async function listSubmissionsForExport(
         verdictSource: submissions.verdictSource,
         rawBody: submissions.rawBody,
         rawContentType: submissions.rawContentType,
+        rowId: submissions.id,
       })
       .from(submissions)
       .innerJoin(endpoints, eq(endpoints.id, submissions.endpointId))
@@ -368,7 +369,34 @@ export async function listSubmissionsForExport(
       .orderBy(desc(submissions.submittedAt), desc(submissions.id))
       .limit(EXPORT_LIMIT);
 
+    // The attachments each row really owns. A file-shaped object in `values`
+    // is whatever the submitter typed; these rows are what we stored.
+    const owned = new Map<string, Map<string, Date | null>>();
+    const ids = rows.map((row) => row.rowId);
+    for (let i = 0; i < ids.length; i += 1_000) {
+      const files = await ws.tx
+        .select({
+          submissionId: submissionFiles.submissionId,
+          publicId: submissionFiles.publicId,
+          expiresAt: submissionFiles.expiresAt,
+        })
+        .from(submissionFiles)
+        .where(
+          ws.where(
+            submissionFiles,
+            inArray(submissionFiles.submissionId, ids.slice(i, i + 1_000)),
+            isNull(submissionFiles.purgedAt),
+          ),
+        );
+      for (const file of files) {
+        const forRow = owned.get(file.submissionId) ?? new Map<string, Date | null>();
+        forRow.set(file.publicId, file.expiresAt);
+        owned.set(file.submissionId, forRow);
+      }
+    }
+
     return rows.map((row) => ({
+      ownedFiles: owned.get(row.rowId) ?? new Map<string, Date | null>(),
       ...toListItem(row),
       spamReasons: asSpamReasons(row.spamReasons),
       utmTerm: row.utmTerm,

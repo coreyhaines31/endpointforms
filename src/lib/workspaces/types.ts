@@ -202,6 +202,11 @@ export type SubmissionDetail = SubmissionListItem & {
 };
 
 export type SubmissionExportRow = SubmissionListItem & {
+  /**
+   * The files this submission owns, from `submission_files`: public id → the
+   * row's retention expiry. Only these get a signed link in an export (#133).
+   */
+  ownedFiles: ReadonlyMap<string, Date | null>;
   originReasons: OriginReason[];
   spamReasons: SpamReason[];
   utmTerm: string | null;
