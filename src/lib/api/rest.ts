@@ -157,7 +157,14 @@ export async function handleRest(
 
   try {
     const now = options.now?.() ?? new Date();
-    const caller = await authenticateAccountKey(readApiKeyHeader(request.headers), {
+    const key = readApiKeyHeader(request.headers);
+    if (!key) {
+      // The shared message is written for an MCP client; this one is for HTTP.
+      throw new AccountAuthError(
+        "This API needs a workspace API key, sent as `Authorization: Bearer efv2.<id>.<secret>`. Run `npx endpointforms login`, or call verify_signup on the account MCP server (/api/mcp), to get one.",
+      );
+    }
+    const caller = await authenticateAccountKey(key, {
       ip: clientIp(request.headers),
       now,
     });
