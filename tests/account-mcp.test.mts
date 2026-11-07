@@ -17,8 +17,8 @@ import { createHash } from "node:crypto";
 import { eq, inArray, like } from "drizzle-orm";
 
 import { sqlClient, unsafeDb } from "../src/db/client.ts";
-import { newId } from "../src/db/ids.ts";
-import { authSessions, destinations, emailCodes, endpoints, memberships, users, workspaces } from "../src/db/schema.ts";
+import { newId, newSubmissionPublicId } from "../src/db/ids.ts";
+import { authSessions, destinations, emailCodes, endpoints, memberships, submissions, users, workspaces } from "../src/db/schema.ts";
 import { handleAccountMcpRequest } from "../src/lib/account/mcp.ts";
 import { MAX_ATTEMPTS } from "../src/lib/auth/email-code.ts";
 import type { MailMessage, MailResult } from "../src/lib/destinations/mail.ts";
@@ -45,6 +45,7 @@ const ok = (name: string, cond: boolean, detail?: unknown) => {
 };
 
 const DOMAIN = "onboarding.test";
+const SECRET_VALUE = "only-acme-may-read-this";
 let otherKeyForOwnership = "";
 const sent: MailMessage[] = [];
 let mailWorks = true;
@@ -119,7 +120,23 @@ async function main() {
     t(
       "tools/list publishes the onboarding tools",
       list.result?.tools?.map((tool: { name: string }) => tool.name),
-      ["start_signup", "verify_signup", "whoami", "list_endpoints", "create_endpoint", "get_install_snippet", "create_api_key"],
+      [
+        "start_signup",
+        "verify_signup",
+        "whoami",
+        "list_endpoints",
+        "create_endpoint",
+        "get_install_snippet",
+        "get_endpoint",
+        "update_endpoint",
+        "delete_endpoint",
+        "get_form_schema",
+        "update_form_schema",
+        "list_submissions",
+        "get_submission",
+        "export_submissions",
+        "create_api_key",
+      ],
     );
   }
 
@@ -183,6 +200,7 @@ async function main() {
   }
 
   let endpointId = "";
+  let submissionId = "";
   console.log("\nendpoints");
   {
     const created = await call("create_endpoint", { name: "Contact" }, key);
@@ -203,9 +221,56 @@ async function main() {
     const list = await call("list_endpoints", {}, key);
     t("list_endpoints shows it", list.structuredContent.endpoints.map((e: { id: string }) => e.id), [endpointId]);
 
+    submissionId = newSubmissionPublicId();
+    await unsafeDb.insert(submissions).values({
+      id: newId(),
+      workspaceId: row.workspaceId,
+      endpointId: row.id,
+      publicId: submissionId,
+      values: { email: "lead@example.com", message: SECRET_VALUE },
+    });
+
     const snippet = await call("get_install_snippet", { endpoint_id: endpointId }, key);
     t("get_install_snippet finds it", snippet.isError, false);
     t("and gives the Manifest URL", snippet.structuredContent.endpoint.manifest_url, `https://acme-onboarding.forms.test/e/${endpointId}/mcp`);
+  }
+
+  console.log("\nsubmissions, forms and endpoint management");
+  {
+    const list = await call("list_submissions", {}, key);
+    t("list_submissions shows the lead", list.structuredContent.submissions.map((s: { id: string }) => s.id), [submissionId]);
+    t("with no next page", list.structuredContent.next_cursor, null);
+    t("filters pass through", (await call("list_submissions", { verdict: ["won"] }, key)).structuredContent.submissions, []);
+    t("a bad filter is invalid_arguments", (await call("list_submissions", { verdict: ["maybe"] }, key)).structuredContent.code, "invalid_arguments");
+    const one = await call("get_submission", { submission_id: submissionId }, key);
+    t("get_submission returns the values", one.structuredContent.submission.values.message, SECRET_VALUE);
+    const csv = await call("export_submissions", { endpoint_id: endpointId }, key);
+    ok("export_submissions returns the CSV", csv.content[0].text.includes(SECRET_VALUE) && csv.structuredContent.count === 1, csv.structuredContent);
+
+    t("get_form_schema: none yet", (await call("get_form_schema", { endpoint_id: endpointId }, key)).structuredContent.schema, null);
+    const published = await call(
+      "update_form_schema",
+      { endpoint_id: endpointId, document: { formatVersion: 1, fields: [{ key: "email", type: "email", required: true }] } },
+      key,
+    );
+    t("update_form_schema publishes", [published.structuredContent.version, published.structuredContent.active], [1, true]);
+    t("and it reads back", (await call("get_form_schema", { endpoint_id: endpointId }, key)).structuredContent.schema.version, 1);
+
+    t("get_endpoint", (await call("get_endpoint", { endpoint_id: endpointId }, key)).structuredContent.endpoint.submission_count, 1);
+    t("update_endpoint renames without confirming", (await call("update_endpoint", { endpoint_id: endpointId, name: "Contact us" }, key)).structuredContent.endpoint.name, "Contact us");
+    await call("update_endpoint", { endpoint_id: endpointId, name: "Contact" }, key);
+
+    const unconfirmed = await call("delete_endpoint", { endpoint_id: endpointId }, key);
+    t("delete_endpoint without confirm asks first", unconfirmed.structuredContent.code, "confirmation_required");
+    ok("and says what would happen", /refuses every new submission/.test(unconfirmed.content[0].text), unconfirmed.content[0].text);
+    t("and changed nothing", (await call("get_endpoint", { endpoint_id: endpointId }, key)).structuredContent.endpoint.archived, false);
+    t("confirm: \"yes\" is not confirm: true", (await call("delete_endpoint", { endpoint_id: endpointId, confirm: "yes" }, key)).structuredContent.code, "confirmation_required");
+    const archiveUnconfirmed = await call("update_endpoint", { endpoint_id: endpointId, archived: true }, key);
+    t("archiving through update_endpoint asks first too", archiveUnconfirmed.structuredContent.code, "confirmation_required");
+    const confirmed = await call("delete_endpoint", { endpoint_id: endpointId, confirm: true }, key);
+    t("with confirm: true it archives", confirmed.structuredContent.endpoint.archived, true);
+    const restored = await call("update_endpoint", { endpoint_id: endpointId, archived: false }, key);
+    t("and update_endpoint restores it without confirming", restored.structuredContent.endpoint.archived, false);
   }
 
   console.log("\nscopes");
@@ -216,6 +281,7 @@ async function main() {
     t("which records outcomes", (await authenticateKey(crmKey)).slug, "acme-onboarding");
     t("but cannot create endpoints", (await call("create_endpoint", { name: "Nope" }, crmKey)).structuredContent.code, "unauthorized");
     t("or mint keys", (await call("create_api_key", { label: "ladder", scopes: ["keys:write"] }, crmKey)).structuredContent.code, "unauthorized");
+    t("or read submissions", (await call("list_submissions", {}, crmKey)).structuredContent.code, "unauthorized");
 
     const reader = await call("create_api_key", { label: "Reader", scopes: ["endpoints:read"] }, key);
     const readerKey = reader.structuredContent.api_key;
@@ -246,6 +312,22 @@ async function main() {
     t("their key cannot see the first company's endpoint", (await call("get_install_snippet", { endpoint_id: endpointId }, otherKey)).structuredContent.code, "not_found");
     t("positive control: the owner's key can", (await call("get_install_snippet", { endpoint_id: endpointId }, key)).isError, false);
     t("and their list is their own", (await call("list_endpoints", {}, otherKey)).structuredContent.endpoints, []);
+    for (const [tool, args] of [
+      ["get_endpoint", { endpoint_id: endpointId }],
+      ["update_endpoint", { endpoint_id: endpointId, name: "hijacked" }],
+      ["delete_endpoint", { endpoint_id: endpointId, confirm: true }],
+      ["get_form_schema", { endpoint_id: endpointId }],
+      ["update_form_schema", { endpoint_id: endpointId, document: { fields: [] } }],
+      ["list_submissions", { endpoint_id: endpointId }],
+      ["export_submissions", { endpoint_id: endpointId }],
+      ["get_submission", { submission_id: submissionId }],
+    ] as const) {
+      t(`${tool} cannot reach the first company's data`, (await call(tool, args, otherKey)).structuredContent.code, "not_found");
+    }
+    const ownerView = await call("get_endpoint", { endpoint_id: endpointId }, key);
+    t("positive control: and it is untouched for its owner", [ownerView.structuredContent.endpoint?.name, ownerView.structuredContent.endpoint?.archived], ["Contact", false]);
+    t("positive control: the owner reads the submission", (await call("get_submission", { submission_id: submissionId }, key)).isError, false);
+    ok("and the other company's list shows none of it", !JSON.stringify(await call("list_submissions", {}, otherKey)).includes(SECRET_VALUE));
   }
 
   console.log("\nreturning account");
