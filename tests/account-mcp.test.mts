@@ -255,6 +255,16 @@ async function main() {
     );
     t("update_form_schema publishes", [published.structuredContent.version, published.structuredContent.active], [1, true]);
     t("and it reads back", (await call("get_form_schema", { endpoint_id: endpointId }, key)).structuredContent.schema.version, 1);
+    const strictDoc = { formatVersion: 1, fields: [{ key: "email", type: "email", required: true }, { key: "phone", type: "phone", required: true }] };
+    const strictAsk = await call("update_form_schema", { endpoint_id: endpointId, document: strictDoc, mode: "strict" }, key);
+    t("publishing in strict mode asks first", strictAsk.structuredContent.code, "confirmation_required");
+    const live = (await call("get_form_schema", { endpoint_id: endpointId }, key)).structuredContent.schema;
+    t("and leaves the live schema alone", [live.version, live.mode], [1, "warn"]);
+    const strictDraft = await call("update_form_schema", { endpoint_id: endpointId, document: strictDoc, mode: "strict", activate: false }, key);
+    t("a strict draft does not need asking", [strictDraft.isError, strictDraft.structuredContent.active], [false, false]);
+    const strictYes = await call("update_form_schema", { endpoint_id: endpointId, document: strictDoc, mode: "strict", confirm: true }, key);
+    t("confirmed, strict mode goes live", [strictYes.structuredContent.mode, strictYes.structuredContent.active], ["strict", true]);
+    await call("update_form_schema", { endpoint_id: endpointId, document: { formatVersion: 1, fields: [{ key: "email", type: "email" }] } }, key);
 
     t("get_endpoint", (await call("get_endpoint", { endpoint_id: endpointId }, key)).structuredContent.endpoint.submission_count, 1);
     t("update_endpoint renames without confirming", (await call("update_endpoint", { endpoint_id: endpointId, name: "Contact us" }, key)).structuredContent.endpoint.name, "Contact us");
@@ -267,6 +277,12 @@ async function main() {
     t("confirm: \"yes\" is not confirm: true", (await call("delete_endpoint", { endpoint_id: endpointId, confirm: "yes" }, key)).structuredContent.code, "confirmation_required");
     const archiveUnconfirmed = await call("update_endpoint", { endpoint_id: endpointId, archived: true }, key);
     t("archiving through update_endpoint asks first too", archiveUnconfirmed.structuredContent.code, "confirmation_required");
+    const writeOnly = (await call("create_api_key", { label: "Writer", scopes: ["endpoints:write"] }, key)).structuredContent.api_key;
+    const writerAsk = await call("delete_endpoint", { endpoint_id: endpointId }, writeOnly);
+    t("a write-only key gets the preview too", writerAsk.structuredContent.code, "confirmation_required");
+    const readOnly = (await call("create_api_key", { label: "Reader2", scopes: ["endpoints:read"] }, key)).structuredContent.api_key;
+    t("a read-only key gets no preview", (await call("delete_endpoint", { endpoint_id: endpointId }, readOnly)).structuredContent.code, "unauthorized");
+    t("nor can it archive via update_endpoint", (await call("update_endpoint", { endpoint_id: endpointId, archived: true }, readOnly)).structuredContent.code, "unauthorized");
     const confirmed = await call("delete_endpoint", { endpoint_id: endpointId, confirm: true }, key);
     t("with confirm: true it archives", confirmed.structuredContent.endpoint.archived, true);
     const restored = await call("update_endpoint", { endpoint_id: endpointId, archived: false }, key);

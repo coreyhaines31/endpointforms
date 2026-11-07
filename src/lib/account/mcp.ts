@@ -1,11 +1,13 @@
 import { z } from "zod";
 
-import { isApiError, type ApiContext, type ApiError } from "../api/context.ts";
+import { isApiError, requireApiScope, type ApiContext, type ApiError } from "../api/context.ts";
 import {
   createEndpoint,
   deleteEndpoint,
+  endpointLinks,
   getEndpoint,
   listEndpoints,
+  loadEndpoint,
   updateEndpoint,
   whoami as coreWhoami,
 } from "../api/endpoints.ts";
@@ -192,7 +194,7 @@ export const ACCOUNT_INSTRUCTIONS = [
   "verify_signup returns an API key, shown once. Keep it for the rest of this conversation and send it as `Authorization: Bearer <key>` on every other tool. Tell the person to store it somewhere safe; it cannot be shown again.",
   "Then: create_endpoint makes a form endpoint and returns the HTML to paste into their site. Submissions are emailed to the person who verified the code.",
   "To work with what has arrived: list_submissions, get_submission and export_submissions read the leads; get_form_schema and update_form_schema read and change the form's fields; get_endpoint, update_endpoint and delete_endpoint manage endpoints. Submissions are personal data — show them to the person you are helping and nowhere else.",
-  'delete_endpoint and archiving with update_endpoint change what a live form does. Call them without "confirm" first, tell the person what the reply says will happen, and only call again with "confirm": true once they agree.',
+  'delete_endpoint, archiving with update_endpoint, and publishing a strict-mode schema with update_form_schema change what a live form does. Call them without "confirm" first, tell the person what the reply says will happen, and only call again with "confirm": true once they agree.',
 ].join("\n\n");
 
 function initializeResult(rpc: RpcRequest) {
@@ -404,13 +406,18 @@ const TOOLS: Tool[] = [
       properties: {
         endpoint_id: endpointIdArg,
         document: { type: "object", description: "The schema document." },
-        mode: { type: "string", enum: ["warn", "strict"], description: "warn (default) stores mismatches and flags them; strict rejects them." },
+        mode: {
+          type: "string",
+          enum: ["warn", "strict"],
+          description: 'warn (default) stores mismatches and flags them; strict rejects them, so publishing in strict mode needs "confirm": true.',
+        },
         activate: { type: "boolean", description: "Defaults to true." },
+        confirm: confirmArg,
       },
       required: ["endpoint_id", "document"],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     run: updateFormSchemaTool,
   },
   {
@@ -754,11 +761,28 @@ function needsConfirmation(what: string, preview: Record<string, unknown>): Tool
   );
 }
 
+/**
+ * What a confirmation preview shows about an endpoint. Authorised by the
+ * write scope the change itself needs, so a write-only key can finish the
+ * flow it is allowed to finish.
+ */
+async function previewEndpoint(context: ApiContext, endpointId: unknown) {
+  requireApiScope(context, "endpoints:write");
+  const row = await loadEndpoint(context, endpointId);
+  return {
+    id: row.publicId,
+    name: row.name,
+    archived: row.archivedAt !== null,
+    submission_count: row.submissionCount,
+    submit_url: endpointLinks(context, row.publicId).submit_url,
+  };
+}
+
 async function updateEndpointTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const { endpoint_id, confirm, ...patch } = args;
   const context = await api(ctx);
   if (patch.archived === true && confirm !== true) {
-    const endpoint = await getEndpoint(context, endpoint_id);
+    const endpoint = await previewEndpoint(context, endpoint_id);
     return needsConfirmation(
       `Archiving "${endpoint.name}" (${endpoint.id}) makes it refuse every new submission until it is restored. Its ${endpoint.submission_count} submissions are kept.`,
       { endpoint },
@@ -771,7 +795,7 @@ async function updateEndpointTool(args: Record<string, unknown>, ctx: ToolContex
 async function deleteEndpointTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   const context = await api(ctx);
   if (args.confirm !== true) {
-    const endpoint = await getEndpoint(context, args.endpoint_id);
+    const endpoint = await previewEndpoint(context, args.endpoint_id);
     return needsConfirmation(
       `Deleting "${endpoint.name}" (${endpoint.id}) archives it: it refuses every new submission, and forms pointing at ${endpoint.submit_url} stop working. Its ${endpoint.submission_count} submissions are kept, and it can be restored with update_endpoint.`,
       { endpoint },
@@ -792,8 +816,21 @@ async function getFormSchemaTool(args: Record<string, unknown>, ctx: ToolContext
 }
 
 async function updateFormSchemaTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const { endpoint_id, ...input } = args;
-  const published = await setFormSchema(await api(ctx), endpoint_id, input);
+  const { endpoint_id, confirm, ...input } = args;
+  const context = await api(ctx);
+
+  // Strict mode rejects any submission that does not match, so publishing one
+  // can make a live form start refusing leads. Warn mode only flags them, and
+  // a draft changes nothing live; neither needs asking.
+  if (input.mode === "strict" && input.activate !== false && confirm !== true) {
+    const endpoint = await previewEndpoint(context, endpoint_id);
+    return needsConfirmation(
+      `Publishing this schema in strict mode makes "${endpoint.name}" (${endpoint.id}) reject every submission that does not match it — including from forms already on the site that lack a newly required field. Publishing in warn mode, or as a draft (activate: false), would not.`,
+      { endpoint },
+    );
+  }
+
+  const published = await setFormSchema(context, endpoint_id, input);
   return ok(
     published.active
       ? `Published version ${published.version}. It is live now.`
