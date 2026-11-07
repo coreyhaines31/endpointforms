@@ -1,8 +1,7 @@
 import { z } from "zod";
 
 import { listDestinations as listDestinationRows } from "../destinations/store.ts";
-import { refreshFileRef, signDownloadUrl } from "../uploads/links.ts";
-import { isStoredFileRef } from "../uploads/types.ts";
+import { refreshOwnedFileRefsIn, signDownloadUrl } from "../uploads/links.ts";
 import { toCsv, toJson } from "../workspaces/export-format.ts";
 import {
   deleteSubmission as deleteSubmissionRow,
@@ -90,39 +89,6 @@ export type ApiSubmissionDetail = ApiSubmission & {
   deliveries: ApiDelivery[];
 };
 
-/**
- * `values` with fresh links on the file references this submission really
- * owns, and every other reference left exactly as stored.
- *
- * `isStoredFileRef` is structural, so a reference in `values` proves nothing
- * about which file it names. Only ids read from this submission's own
- * `submission_files` rows are re-signed; anything else — a legacy row, a
- * forged object — keeps the link it arrived with, which simply expires.
- * Rebuilt with `defineProperty` so a field named `__proto__` stays a field.
- */
-function resignOwnFiles(value: unknown, own: ReadonlyMap<string, Date | null>, now: Date): unknown {
-  if (isStoredFileRef(value)) {
-    if (!own.has(value.id)) return value;
-    // The retention ceiling comes from the row too, not from the reference.
-    const expiresAt = own.get(value.id) ?? null;
-    return refreshFileRef({ ...value, expiresAt: expiresAt ? expiresAt.toISOString() : null }, "export", now);
-  }
-  if (Array.isArray(value)) return value.map((entry) => resignOwnFiles(entry, own, now));
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      Object.defineProperty(out, key, {
-        value: resignOwnFiles(entry, own, now),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    }
-    return out;
-  }
-  return value;
-}
-
 function toApiSubmission(
   row: SubmissionListItem,
   now: Date,
@@ -137,7 +103,7 @@ function toApiSubmission(
     outcome: { verdict: row.verdict, value: row.verdictValue, currency: row.verdictCurrency },
     // A list row carries no file rows, so its references are as stored; the
     // detail re-signs the ones it can prove belong to it.
-    values: resignOwnFiles(row.values, ownFileIds, now) as Record<string, unknown>,
+    values: refreshOwnedFileRefsIn(row.values, ownFileIds, "export", now),
     attribution: {
       utm_source: row.utmSource,
       utm_medium: row.utmMedium,

@@ -223,3 +223,54 @@ export function refreshFileRefsIn<T>(value: T, audience: DownloadAudience, now: 
   }
   return value;
 }
+
+/**
+ * Which files a submission really owns: public id → the row's retention
+ * expiry. Built only from `submission_files` rows read inside the owning
+ * workspace's scope — never from `values`.
+ */
+export type OwnedFiles = ReadonlyMap<string, Date | null>;
+
+/**
+ * `refreshFileRefsIn`, for output that leaves the building (#133).
+ *
+ * `isStoredFileRef` is structural, so a reference in `values` proves nothing
+ * about which file it names — and a submitter can post a body that *is* one,
+ * which lands its fields at the top level of `values`. Signing whatever a
+ * reference says therefore hands out another workspace's file. Here only ids
+ * in `owned` are re-signed, with the retention ceiling taken from the row;
+ * any other reference keeps the link it arrived with, which simply expires.
+ * Rebuilt with `defineProperty`, so a field named `__proto__` stays a field.
+ */
+export function refreshOwnedFileRefsIn<T>(
+  value: T,
+  owned: OwnedFiles,
+  audience: DownloadAudience,
+  now: Date = new Date(),
+): T {
+  if (isStoredFileRef(value)) {
+    if (!owned.has(value.id)) return value;
+    const expiresAt = owned.get(value.id) ?? null;
+    return refreshFileRef(
+      { ...value, expiresAt: expiresAt ? expiresAt.toISOString() : null },
+      audience,
+      now,
+    ) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => refreshOwnedFileRefsIn(entry, owned, audience, now)) as unknown as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      Object.defineProperty(out, key, {
+        value: refreshOwnedFileRefsIn(entry, owned, audience, now),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
