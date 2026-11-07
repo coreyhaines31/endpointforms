@@ -1,4 +1,4 @@
-import { asc, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 
 // Relative, extension-bearing imports, matching `./queries.ts` and `src/db/`.
 import { withWorkspace } from "../../db/index.ts";
@@ -264,6 +264,81 @@ export async function listSubmissions(
       page: filters.page,
       pageSize: PAGE_SIZE,
     };
+  });
+}
+
+/**
+ * Where a cursor page resumes: the last row's `submitted_at` and id.
+ *
+ * `at` is Postgres's own text for the timestamp, at microsecond precision. A JS
+ * `Date` keeps milliseconds, and a cursor rounded to the millisecond would skip
+ * every row that arrived in the same millisecond as the last one on the page.
+ */
+export type SubmissionCursor = { at: string; id: string };
+
+export type SubmissionCursorPage = {
+  rows: (SubmissionListItem & { cursor: SubmissionCursor })[];
+  /** Null on the last page. */
+  next: SubmissionCursor | null;
+};
+
+/**
+ * One page of submissions after a cursor, for the agent API (#133).
+ *
+ * The inbox pages by offset (see the note at the top of this file); an API
+ * client paging through thousands of rows while new ones arrive needs a cursor
+ * that does not shift under it. Same predicate as the inbox and the export, same
+ * order — newest first, ties broken by id.
+ */
+export async function listSubmissionsAfter(
+  workspaceId: string,
+  filters: SubmissionFilters,
+  options: { after: SubmissionCursor | null; limit: number },
+): Promise<SubmissionCursorPage> {
+  return withWorkspace(workspaceId, async (ws) => {
+    const after = options.after
+      ? sql`(${submissions.submittedAt}, ${submissions.id}) < (${options.after.at}::timestamptz, ${options.after.id}::uuid)`
+      : undefined;
+
+    const rows = await ws.tx
+      .select({
+        ...listColumns,
+        cursorId: submissions.id,
+        cursorAt: sql<string>`to_char(${submissions.submittedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(submissions)
+      .innerJoin(endpoints, eq(endpoints.id, submissions.endpointId))
+      .where(ws.where(submissions, and(...filterConditions(filters), after)))
+      .orderBy(desc(submissions.submittedAt), desc(submissions.id))
+      .limit(options.limit + 1);
+
+    const page = rows.slice(0, options.limit).map((row) => ({
+      ...toListItem(row),
+      cursor: { at: row.cursorAt, id: row.cursorId },
+    }));
+
+    return {
+      rows: page,
+      next: rows.length > options.limit ? (page[page.length - 1]?.cursor ?? null) : null,
+    };
+  });
+}
+
+/**
+ * Soft-deletes one submission. False when it is not this workspace's, or is
+ * already deleted.
+ *
+ * Soft, like every other delete in the data model: the row stops appearing in
+ * the inbox, exports, the API and Yield, and outcome posts stop matching it.
+ */
+export async function deleteSubmission(workspaceId: string, publicId: string): Promise<boolean> {
+  return withWorkspace(workspaceId, async (ws) => {
+    const deleted = await ws.tx
+      .update(submissions)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(ws.where(submissions, eq(submissions.publicId, publicId)))
+      .returning({ id: submissions.id });
+    return deleted.length > 0;
   });
 }
 
