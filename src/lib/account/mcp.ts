@@ -1,8 +1,18 @@
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { unsafeDb } from "../../db/client.ts";
-import { users, workspaces } from "../../db/schema.ts";
+import { isApiError, requireApiScope, type ApiContext, type ApiError } from "../api/context.ts";
+import {
+  createEndpoint,
+  deleteEndpoint,
+  endpointLinks,
+  getEndpoint,
+  listEndpoints,
+  loadEndpoint,
+  updateEndpoint,
+  whoami as coreWhoami,
+} from "../api/endpoints.ts";
+import { getFormSchema, setFormSchema } from "../api/forms.ts";
+import { exportSubmissions, getSubmission, listSubmissions, MAX_PAGE_LIMIT } from "../api/submissions.ts";
 import { requestEmailCode, type Mailer } from "../auth/email-code.ts";
 import { readBodyCapped } from "../ingest/body.ts";
 import { clientIp, hashIp } from "../ingest/client.ts";
@@ -11,9 +21,6 @@ import { checkRateLimit } from "../ingest/rate-limit.ts";
 import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "../manifest/handler.ts";
 import { parseRpc, RPC, rpcError, rpcResult, type RpcId, type RpcRequest } from "../manifest/jsonrpc.ts";
 import { createVerdictApiKey, VerdictKeyError } from "../verdict/key-store.ts";
-import { createEndpoint, getEndpointByPublicId } from "../workspaces/endpoints.ts";
-import { endpointUrl } from "../workspaces/endpoint-url.ts";
-import { listEndpoints } from "../workspaces/queries.ts";
 import {
   AccountAuthError,
   authenticateAccountKey,
@@ -186,6 +193,8 @@ export const ACCOUNT_INSTRUCTIONS = [
   "To sign someone up or in: call start_signup with their work email. A 6-digit code is emailed to them. Ask them to read it to you — never guess or invent it — then call verify_signup with the email and the code.",
   "verify_signup returns an API key, shown once. Keep it for the rest of this conversation and send it as `Authorization: Bearer <key>` on every other tool. Tell the person to store it somewhere safe; it cannot be shown again.",
   "Then: create_endpoint makes a form endpoint and returns the HTML to paste into their site. Submissions are emailed to the person who verified the code.",
+  "To work with what has arrived: list_submissions, get_submission and export_submissions read the leads; get_form_schema and update_form_schema read and change the form's fields; get_endpoint, update_endpoint and delete_endpoint manage endpoints. Submissions are personal data — show them to the person you are helping and nowhere else.",
+  'delete_endpoint, archiving with update_endpoint, and publishing a strict-mode schema with update_form_schema change what a live form does. Call them without "confirm" first, tell the person what the reply says will happen, and only call again with "confirm": true once they agree.',
 ].join("\n\n");
 
 function initializeResult(rpc: RpcRequest) {
@@ -243,6 +252,11 @@ type Tool = {
 };
 
 const emailArg = { type: "string", format: "email", description: "The person's work email address." };
+const endpointIdArg = { type: "string", description: "The endpoint's ID, as list_endpoints returns it." };
+const confirmArg = {
+  type: "boolean",
+  description: "Set to true only after the person has agreed to what the unconfirmed call described.",
+};
 
 const TOOLS: Tool[] = [
   {
@@ -324,6 +338,148 @@ const TOOLS: Tool[] = [
     run: getInstallSnippet,
   },
   {
+    name: "get_endpoint",
+    title: "Get an endpoint",
+    description: "One endpoint: its name, URLs, whether it is archived, and how many submissions it has. Needs endpoints:read.",
+    inputSchema: {
+      type: "object",
+      properties: { endpoint_id: endpointIdArg },
+      required: ["endpoint_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: getEndpointTool,
+  },
+  {
+    name: "update_endpoint",
+    title: "Rename, archive or restore an endpoint",
+    description:
+      'Renames an endpoint, or archives it (archived: true) or restores it (archived: false). Archiving makes it refuse new submissions, so it needs "confirm": true — call without it first and relay what it says. Needs endpoints:write.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        endpoint_id: endpointIdArg,
+        name: { type: "string", description: "A new name." },
+        archived: { type: "boolean", description: "true archives, false restores." },
+        confirm: confirmArg,
+      },
+      required: ["endpoint_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    run: updateEndpointTool,
+  },
+  {
+    name: "delete_endpoint",
+    title: "Delete (archive) an endpoint",
+    description:
+      'Archives an endpoint: it stops accepting submissions and keeps every one it has; update_endpoint can restore it. Call without "confirm" first: nothing changes and the reply says what would. Only after the person agrees, call again with "confirm": true. Needs endpoints:write.',
+    inputSchema: {
+      type: "object",
+      properties: { endpoint_id: endpointIdArg, confirm: confirmArg },
+      required: ["endpoint_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    run: deleteEndpointTool,
+  },
+  {
+    name: "get_form_schema",
+    title: "Get the form schema",
+    description: "The endpoint's live form schema — its fields, types and which are required — or null when it accepts anything. Needs endpoints:read.",
+    inputSchema: {
+      type: "object",
+      properties: { endpoint_id: endpointIdArg },
+      required: ["endpoint_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: getFormSchemaTool,
+  },
+  {
+    name: "update_form_schema",
+    title: "Set the form schema",
+    description:
+      'Publishes a new version of the endpoint\'s form schema (versions are kept; the old one is not lost). document is { "formatVersion": 1, "fields": [{ "key": "email", "label": "Email", "type": "email", "required": true }] }; types are text, email, phone, number, select, multi_select, checkbox, textarea, date, hidden, and select types take "options". activate: false saves a draft without changing the live form. Needs endpoints:write.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        endpoint_id: endpointIdArg,
+        document: { type: "object", description: "The schema document." },
+        mode: {
+          type: "string",
+          enum: ["warn", "strict"],
+          description: 'warn (default) stores mismatches and flags them; strict rejects them, so publishing in strict mode needs "confirm": true.',
+        },
+        activate: { type: "boolean", description: "Defaults to true." },
+        confirm: confirmArg,
+      },
+      required: ["endpoint_id", "document"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    run: updateFormSchemaTool,
+  },
+  {
+    name: "list_submissions",
+    title: "List submissions",
+    description:
+      "Submissions, newest first, a page at a time. Filter by endpoint, origin (human, agent, unverified), verdict (won, lost, disqualified, awaiting), spam (clear, flagged, not_spam, confirmed_spam), date range and search text. Pass next_cursor back as cursor for the next page. Submissions are personal data: show them to the person, do not repeat them elsewhere. Needs submissions:read.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        endpoint_id: endpointIdArg,
+        origin: { type: "array", items: { type: "string", enum: ["human", "agent", "unverified"] } },
+        verdict: { type: "array", items: { type: "string", enum: ["won", "lost", "disqualified", "awaiting"] } },
+        spam: { type: "array", items: { type: "string", enum: ["clear", "flagged", "not_spam", "confirmed_spam"] } },
+        from: { type: "string", description: "On or after: YYYY-MM-DD or an ISO 8601 timestamp." },
+        to: { type: "string", description: "Before this timestamp, or through this date." },
+        q: { type: "string", description: "Search text, matched against the submitted values." },
+        cursor: { type: "string", description: "next_cursor from the previous page." },
+        limit: { type: "integer", minimum: 1, maximum: MAX_PAGE_LIMIT, description: "Defaults to 50." },
+      },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: listSubmissionsTool,
+  },
+  {
+    name: "get_submission",
+    title: "Get a submission",
+    description:
+      "One submission in full: values, provenance and spam reasons, attribution, outcome, attached files (with download links) and every delivery attempt. Needs submissions:read.",
+    inputSchema: {
+      type: "object",
+      properties: { submission_id: { type: "string", description: "The submission's ID, as list_submissions returns it." } },
+      required: ["submission_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: getSubmissionTool,
+  },
+  {
+    name: "export_submissions",
+    title: "Export submissions",
+    description:
+      "Every matching submission as CSV (default) or JSON — the same file the inbox's Export button downloads. Same filters as list_submissions. Large exports are refused here; use the REST API or CLI for those. Needs submissions:read.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        endpoint_id: endpointIdArg,
+        format: { type: "string", enum: ["csv", "json"] },
+        origin: { type: "array", items: { type: "string", enum: ["human", "agent", "unverified"] } },
+        verdict: { type: "array", items: { type: "string", enum: ["won", "lost", "disqualified", "awaiting"] } },
+        spam: { type: "array", items: { type: "string", enum: ["clear", "flagged", "not_spam", "confirmed_spam"] } },
+        from: { type: "string" },
+        to: { type: "string" },
+        q: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: exportSubmissionsTool,
+  },
+  {
     name: "create_api_key",
     title: "Create another API key",
     description:
@@ -378,11 +534,23 @@ async function callTool(request: Request, rpc: RpcRequest, options: AccountMcpOp
     return await tool.run(rawArgs as Record<string, unknown>, ctx);
   } catch (error) {
     if (error instanceof AccountAuthError) return fail("unauthorized", error.message);
+    if (isApiError(error)) return fail(...mcpCode(error));
     if (error instanceof z.ZodError) {
       return fail("invalid_arguments", error.issues.map((issue) => `${issue.path.join(".") || "arguments"}: ${issue.message}`).join(" "));
     }
     throw error;
   }
+}
+
+/**
+ * The core's error, in this server's vocabulary. `unauthorized` and
+ * `invalid_arguments` are the codes these tools returned before they called
+ * the core (#128), and an agent that branches on them must keep working.
+ */
+function mcpCode(error: ApiError): [string, string, Record<string, unknown>] {
+  const code =
+    error.code === "forbidden" ? "unauthorized" : error.code === "invalid_request" ? "invalid_arguments" : error.code;
+  return [code, error.message, error.details];
 }
 
 // ---------------------------------------------------------------------------
@@ -501,29 +669,22 @@ async function verifySignup(args: Record<string, unknown>, ctx: ToolContext): Pr
   );
 }
 
-async function whoami(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const caller = await ctx.caller();
-  const [workspace] = await unsafeDb
-    .select({ name: workspaces.name })
-    .from(workspaces)
-    .where(eq(workspaces.id, caller.workspaceId))
-    .limit(1);
-
-  return ok(`This key belongs to workspace "${workspace?.name ?? caller.workspaceSlug}" (${caller.workspaceSlug}). Scopes: ${caller.scopes.join(", ")}.`, {
-    workspace: { slug: caller.workspaceSlug, name: workspace?.name ?? null, url: `${appUrl(ctx.options)}/app/${caller.workspaceSlug}` },
-    scopes: caller.scopes,
-  });
+/** The core's view of this call: the authenticated key, and where links point. */
+async function api(ctx: ToolContext): Promise<ApiContext> {
+  return {
+    caller: await ctx.caller(),
+    renderDomain: renderDomain(ctx.options),
+    appUrl: appUrl(ctx.options),
+    now: ctx.now,
+  };
 }
 
-function describeEndpoint(slug: string, publicId: string, name: string, options: AccountMcpOptions) {
-  const url = endpointUrl(slug, renderDomain(options), publicId);
-  return {
-    id: publicId,
-    name,
-    submit_url: url,
-    manifest_url: `${url}/mcp`,
-    dashboard_url: `${appUrl(options)}/app/${slug}/endpoints/${publicId}`,
-  };
+async function whoami(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const me = await coreWhoami(await api(ctx));
+  return ok(
+    `This key belongs to workspace "${me.workspace.name ?? me.workspace.slug}" (${me.workspace.slug}). Scopes: ${me.scopes.join(", ")}.`,
+    me,
+  );
 }
 
 function installSnippet(url: string) {
@@ -540,70 +701,184 @@ function installSnippet(url: string) {
 }
 
 async function listEndpointsTool(_args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const caller = await ctx.caller();
-  requireScope(caller, "endpoints:read");
-
-  const rows = await listEndpoints(caller.workspaceId);
-  const items = rows.map((row) => describeEndpoint(caller.workspaceSlug, row.publicId, row.name, ctx.options));
-
+  const items = await listEndpoints(await api(ctx));
   return ok(
     items.length === 0
       ? "This workspace has no endpoints yet. create_endpoint makes one."
-      : items.map((item) => `${item.name} — ${item.id} — ${item.submit_url}`).join("\n"),
+      : items.map((item) => `${item.name} — ${item.id} — ${item.submit_url}${item.archived ? " (archived)" : ""}`).join("\n"),
     { endpoints: items },
   );
 }
 
-const createEndpointSchema = z.object({ name: z.string().trim().min(1).max(120) });
-
 async function createEndpointTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const caller = await ctx.caller();
-  requireScope(caller, "endpoints:write");
-  const { name } = createEndpointSchema.parse(args);
-
-  // The notification goes to the address that verified the code — read from
-  // the key's creator, never from an argument. An address in an argument is
-  // whatever the agent was told, and this one decides where strangers' leads go.
-  const notifyEmail = caller.createdByUserId ? await userEmail(caller.createdByUserId) : null;
-
-  const created = await createEndpoint(caller.workspaceId, name, { notifyEmail });
-  const endpoint = describeEndpoint(caller.workspaceSlug, created.publicId, name, ctx.options);
+  const created = await createEndpoint(await api(ctx), args);
+  const { notifies, ...endpoint } = created;
   const snippet = installSnippet(endpoint.submit_url);
 
   return ok(
     [
-      `Created "${name}". Paste this into the site, or point an existing form's action at ${endpoint.submit_url}:`,
+      `Created "${endpoint.name}". Paste this into the site, or point an existing form's action at ${endpoint.submit_url}:`,
       snippet.html,
-      created.notified
-        ? `Each submission is emailed to ${created.notified}.`
+      notifies
+        ? `Each submission is emailed to ${notifies}.`
         : "No notification email is set up for this endpoint; submissions are in the dashboard.",
       `Dashboard: ${endpoint.dashboard_url}`,
     ].join("\n\n"),
-    { endpoint, snippet, notifies: created.notified },
+    { endpoint, snippet, notifies },
   );
 }
 
-const snippetSchema = z.object({ endpoint_id: z.string().trim().min(1).max(64) });
-
 async function getInstallSnippet(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-  const caller = await ctx.caller();
-  requireScope(caller, "endpoints:read");
-  const { endpoint_id } = snippetSchema.parse(args);
-
-  const found = await getEndpointByPublicId(caller.workspaceId, endpoint_id);
-  if (!found) {
-    return fail("not_found", `No endpoint ${JSON.stringify(endpoint_id)} in this workspace. list_endpoints shows the ones that exist.`);
-  }
-
-  const endpoint = describeEndpoint(caller.workspaceSlug, found.publicId, found.name, ctx.options);
+  const endpoint = await getEndpoint(await api(ctx), args.endpoint_id);
   const snippet = installSnippet(endpoint.submit_url);
-  const archivedNote = found.archivedAt ? "\n\nThis endpoint is archived and refuses submissions until it is restored in the dashboard." : "";
+  const archivedNote = endpoint.archived ? "\n\nThis endpoint is archived and refuses submissions until it is restored." : "";
 
   return ok(`${snippet.html}\n\nTest it:\n\n${snippet.curl}${archivedNote}`, {
     endpoint,
     snippet,
-    archived: Boolean(found.archivedAt),
-    has_schema: found.hasSchema,
+    archived: endpoint.archived,
+    has_schema: endpoint.has_form_schema,
+  });
+}
+
+async function getEndpointTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const endpoint = await getEndpoint(await api(ctx), args.endpoint_id);
+  return ok(
+    `${endpoint.name} (${endpoint.id})${endpoint.archived ? " — archived" : ""}. ${endpoint.submission_count} submissions, ${endpoint.awaiting_outcome_count} awaiting an outcome. Submit URL: ${endpoint.submit_url}`,
+    { endpoint },
+  );
+}
+
+/**
+ * Destructive tools run in two steps. Without `confirm: true` nothing changes
+ * and the reply says what would; the agent relays that and asks the person.
+ */
+function needsConfirmation(what: string, preview: Record<string, unknown>): ToolResult {
+  return fail(
+    "confirmation_required",
+    `${what} Nothing has changed yet. Tell the person exactly this, and only if they say yes, call the tool again with "confirm": true.`,
+    { preview },
+  );
+}
+
+/**
+ * What a confirmation preview shows about an endpoint. Authorised by the
+ * write scope the change itself needs, so a write-only key can finish the
+ * flow it is allowed to finish.
+ */
+async function previewEndpoint(context: ApiContext, endpointId: unknown) {
+  requireApiScope(context, "endpoints:write");
+  const row = await loadEndpoint(context, endpointId);
+  return {
+    id: row.publicId,
+    name: row.name,
+    archived: row.archivedAt !== null,
+    submission_count: row.submissionCount,
+    submit_url: endpointLinks(context, row.publicId).submit_url,
+  };
+}
+
+async function updateEndpointTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const { endpoint_id, confirm, ...patch } = args;
+  const context = await api(ctx);
+  if (patch.archived === true && confirm !== true) {
+    const endpoint = await previewEndpoint(context, endpoint_id);
+    return needsConfirmation(
+      `Archiving "${endpoint.name}" (${endpoint.id}) makes it refuse every new submission until it is restored. Its ${endpoint.submission_count} submissions are kept.`,
+      { endpoint },
+    );
+  }
+  const endpoint = await updateEndpoint(context, endpoint_id, patch);
+  return ok(`Updated "${endpoint.name}" (${endpoint.id})${endpoint.archived ? " — archived" : ""}.`, { endpoint });
+}
+
+async function deleteEndpointTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const context = await api(ctx);
+  if (args.confirm !== true) {
+    const endpoint = await previewEndpoint(context, args.endpoint_id);
+    return needsConfirmation(
+      `Deleting "${endpoint.name}" (${endpoint.id}) archives it: it refuses every new submission, and forms pointing at ${endpoint.submit_url} stop working. Its ${endpoint.submission_count} submissions are kept, and it can be restored with update_endpoint.`,
+      { endpoint },
+    );
+  }
+  const endpoint = await deleteEndpoint(context, args.endpoint_id);
+  return ok(`Archived "${endpoint.name}" (${endpoint.id}). It refuses new submissions; update_endpoint with archived: false restores it.`, { endpoint });
+}
+
+async function getFormSchemaTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const result = await getFormSchema(await api(ctx), args.endpoint_id);
+  return ok(
+    result.schema
+      ? `Version ${result.schema.version} (${result.schema.mode} mode):\n\n${JSON.stringify(result.schema.document, null, 2)}`
+      : "This endpoint has no form schema. It accepts any field posted to it. update_form_schema declares one.",
+    result,
+  );
+}
+
+async function updateFormSchemaTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const { endpoint_id, confirm, ...input } = args;
+  const context = await api(ctx);
+
+  // Strict mode rejects any submission that does not match, so publishing one
+  // can make a live form start refusing leads. Warn mode only flags them, and
+  // a draft changes nothing live; neither needs asking.
+  if (input.mode === "strict" && input.activate !== false && confirm !== true) {
+    const endpoint = await previewEndpoint(context, endpoint_id);
+    return needsConfirmation(
+      `Publishing this schema in strict mode makes "${endpoint.name}" (${endpoint.id}) reject every submission that does not match it — including from forms already on the site that lack a newly required field. Publishing in warn mode, or as a draft (activate: false), would not.`,
+      { endpoint },
+    );
+  }
+
+  const published = await setFormSchema(context, endpoint_id, input);
+  return ok(
+    published.active
+      ? `Published version ${published.version}. It is live now.`
+      : `Saved version ${published.version} as a draft. The live form has not changed.`,
+    published,
+  );
+}
+
+async function listSubmissionsTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const { endpoint_id, ...rest } = args;
+  const page = await listSubmissions(await api(ctx), endpoint_id === undefined ? rest : { ...rest, endpoint: endpoint_id });
+  const lines = page.data.map(
+    (s) => `${s.submitted_at} — ${s.id} — ${s.endpoint.name} — ${s.origin}, ${s.outcome.verdict}${s.spam.state === "clear" ? "" : `, spam: ${s.spam.state}`}`,
+  );
+  return ok(
+    [
+      page.data.length === 0 ? "No submissions match." : lines.join("\n"),
+      page.next_cursor ? `More: call again with "cursor": "${page.next_cursor}".` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    { submissions: page.data, next_cursor: page.next_cursor },
+  );
+}
+
+async function getSubmissionTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const submission = await getSubmission(await api(ctx), args.submission_id);
+  return ok(JSON.stringify(submission, null, 2), { submission });
+}
+
+/** Past this, an export belongs in a file (the REST API or the CLI), not a chat. */
+const MAX_EXPORT_CHARS = 1_000_000;
+
+async function exportSubmissionsTool(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const { endpoint_id, ...rest } = args;
+  const file = await exportSubmissions(await api(ctx), endpoint_id === undefined ? rest : { ...rest, endpoint: endpoint_id });
+  if (file.body.length > MAX_EXPORT_CHARS) {
+    return fail(
+      "export_too_large",
+      `That export is ${file.count} submissions, too large to return in a conversation. Narrow it with from/to or endpoint_id, or download it with GET /api/v1/submissions/export or \`npx endpointforms submissions export\`.`,
+      { count: file.count },
+    );
+  }
+  return ok(file.body, {
+    format: file.format,
+    filename: file.filename,
+    count: file.count,
+    truncated: file.truncated,
   });
 }
 
@@ -647,9 +922,4 @@ async function createApiKeyTool(args: Record<string, unknown>, ctx: ToolContext)
     if (error instanceof VerdictKeyError) return fail(error.code, error.message);
     throw error;
   }
-}
-
-async function userEmail(userId: string): Promise<string | null> {
-  const [row] = await unsafeDb.select({ email: users.email }).from(users).where(eq(users.id, userId)).limit(1);
-  return row?.email ?? null;
 }
