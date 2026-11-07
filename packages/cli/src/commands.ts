@@ -34,7 +34,7 @@ export type Io = {
 export const HELP = `endpointforms — endpoints, form schemas and submissions from the command line
 
 Usage
-  endpointforms login [--key <efv2.key>] [--email <you@work.com>]
+  endpointforms login [--key <efv2.key>] [--email <you@work.com>] [--workspace <slug>]
   endpointforms logout
   endpointforms whoami
   endpointforms endpoints ls
@@ -62,6 +62,7 @@ const OPTIONS = {
   "api-url": { type: "string" },
   key: { type: "string" },
   email: { type: "string" },
+  workspace: { type: "string" },
   endpoint: { type: "string" },
   origin: { type: "string" },
   verdict: { type: "string" },
@@ -203,7 +204,21 @@ async function login(ctx: Context): Promise<void> {
     await callAccountTool(ctx.apiUrl, "start_signup", { email }, ctx.io.fetch);
     ctx.io.err(`A 6-digit code is on its way to ${email}.\n`);
     const code = (await ctx.io.prompt("Code: ")).trim();
-    const verified = await callAccountTool(ctx.apiUrl, "verify_signup", { email, code, client_name: "endpointforms CLI" }, ctx.io.fetch);
+    const workspace = ctx.values.workspace;
+    let verified: Record<string, unknown>;
+    try {
+      verified = await callAccountTool(
+        ctx.apiUrl,
+        "verify_signup",
+        { email, code, client_name: "endpointforms CLI", ...(workspace ? { workspace } : {}) },
+        ctx.io.fetch,
+      );
+    } catch (error) {
+      if (error instanceof ApiFailure && error.code === "choose_workspace") {
+        throw new ApiFailure(error.status, error.code, `${error.message} With the CLI: run \`endpointforms login --email ${email} --workspace <slug>\`.`);
+      }
+      throw error;
+    }
     if (typeof verified.api_key !== "string") throw new ApiFailure(0, "bad_response", "The server did not return a key.");
     key = verified.api_key;
   }

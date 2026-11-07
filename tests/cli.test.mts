@@ -243,6 +243,20 @@ async function main() {
     });
     t("login --email sends a code, takes it, and logs in", viaEmail.code, 0);
     ok("with a key saved", JSON.parse(await readFile(join(isolatedDir, "config.json"), "utf8")).apiKey?.startsWith("efv2."));
+
+    // Someone who owns several workspaces has to say which one.
+    const multi = `multi@${DOMAIN}`;
+    const multiId = newId();
+    await unsafeDb.insert(users).values({ id: multiId, email: multi });
+    const [alpha, beta] = await unsafeDb.select({ id: workspaces.id, slug: workspaces.slug }).from(workspaces).where(inArray(workspaces.slug, SLUGS));
+    for (const ws of [alpha, beta]) await unsafeDb.insert(memberships).values({ id: newId(), workspaceId: ws.id, userId: multiId, role: "owner" });
+    const latestCode = () => [...sent].reverse().find((m) => m.to[0] === multi)?.subject.match(/^(\d{6}) /)?.[1] ?? "";
+    const multiDir = await mkdtemp(join(tmpdir(), "endpointforms-cli-multi-"));
+    const unchosen = await cli(["login", "--email", multi], { env: { ENDPOINTFORMS_CONFIG_DIR: multiDir }, answers: [latestCode] });
+    t("an owner of several workspaces without --workspace is told to choose", [unchosen.code, /choose_workspace|several workspaces/.test(unchosen.err)], [1, true]);
+    ok("and how to with the CLI", unchosen.err.includes("--workspace"));
+    const chosen = await cli(["login", "--email", multi, "--workspace", beta.slug, "--json"], { env: { ENDPOINTFORMS_CONFIG_DIR: multiDir }, answers: [latestCode] });
+    t("login --workspace picks one", [chosen.code, chosen.code === 0 ? JSON.parse(chosen.out).workspace.slug : chosen.err], [0, beta.slug]);
   }
 
   console.log("\nendpoints");

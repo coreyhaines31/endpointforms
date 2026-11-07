@@ -12,6 +12,7 @@ npx endpointforms submissions ls
 ```sh
 endpointforms login                      # emails you a 6-digit code, then saves a key
 endpointforms login --email you@work.com
+endpointforms login --email you@work.com --workspace acme   # if you own several workspaces
 endpointforms login --key efv2.<id>.<secret>
 ```
 
