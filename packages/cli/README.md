@@ -39,7 +39,7 @@ endpointforms form set <endpoint-id> schema.json [--mode warn|strict] [--draft]
 cat schema.json | endpointforms form set <endpoint-id> -
 ```
 
-- Add `--json` to any command for machine-readable output. With `--json`, errors are also written to stderr as JSON.
+- Add `--json` to any command for machine-readable output. With `--json`, usage, API and file errors are also written to stderr as JSON.
 - `submissions ls` returns one page at a time. Pass `--cursor` to fetch a specific page, or `--all` to follow every page.
 - `form get` prints only the schema document, so you can edit the output and pass it straight back to `form set`.
 
@@ -48,7 +48,7 @@ cat schema.json | endpointforms form set <endpoint-id> -
 | Code | Meaning |
 |---|---|
 | 0 | Success |
-| 1 | The API refused the request (not found, missing scope, invalid input, network) |
+| 1 | Anything else: the API refused the request (not found, missing scope, invalid input), the network failed, or a file could not be read or written |
 | 2 | Usage error |
 
 ## Self-hosting
