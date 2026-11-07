@@ -109,6 +109,11 @@ export type SubmissionFilters = {
   endpointPublicId: string | null;
   origin: OriginState[];
   verdict: SubmissionVerdict[];
+  /**
+   * Spam state (#31). Optional because the inbox has no control for it yet;
+   * the agent API (#133) filters on it, and an absent list narrows nothing.
+   */
+  spam?: SpamState[];
   from: Date | null;
   /** Exclusive. See `parseSubmissionFilters` — it holds the day *after* the one typed. */
   to: Date | null;

@@ -108,6 +108,7 @@ export function hasActiveFilters(filters: SubmissionFilters): boolean {
     filters.endpointPublicId ||
       filters.origin.length > 0 ||
       filters.verdict.length > 0 ||
+      (filters.spam?.length ?? 0) > 0 ||
       filters.from ||
       filters.to ||
       filters.q,
@@ -159,6 +160,9 @@ function filterConditions(filters: SubmissionFilters): (SQL | undefined)[] {
   }
   if (filters.verdict.length > 0) {
     conditions.push(inArray(submissions.verdict, filters.verdict));
+  }
+  if (filters.spam && filters.spam.length > 0) {
+    conditions.push(inArray(submissions.spamState, filters.spam));
   }
   if (filters.from) conditions.push(gte(submissions.submittedAt, filters.from));
   if (filters.to) conditions.push(lt(submissions.submittedAt, filters.to));
