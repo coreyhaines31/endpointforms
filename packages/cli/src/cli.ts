@@ -24,6 +24,7 @@ run(process.argv.slice(2), {
   err: (text) => process.stderr.write(text),
   readStdin,
   prompt,
+  stdoutIsTTY: process.stdout.isTTY === true,
 }).then(
   (code) => {
     process.exitCode = code;

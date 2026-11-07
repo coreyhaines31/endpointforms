@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 
 import { ApiFailure, callAccountTool, createClient, type Client, type Fetch } from "./client.ts";
@@ -25,6 +26,8 @@ export type Io = {
   readStdin: () => Promise<string>;
   /** Asks one question on the terminal, for `login`. */
   prompt: (question: string) => Promise<string>;
+  /** True when stdout is a terminal, so raw file output is made safe to display. */
+  stdoutIsTTY?: boolean;
   fetch?: Fetch;
 };
 
@@ -104,8 +107,31 @@ async function authed(ctx: Context): Promise<Client> {
   return createClient(ctx.apiUrl, key, ctx.io.fetch);
 }
 
+/**
+ * Submitted values are typed by strangers, and a terminal obeys escape
+ * sequences in what it prints — an OSC 52 can rewrite the clipboard. So every
+ * control character from the API is shown, not obeyed. `keep` lets our own
+ * line breaks through.
+ */
+export function visible(text: string, keep: RegExp = /(?!)/): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) =>
+    keep.test(c) ? c : `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+/**
+ * JSON already escapes C0 controls; C1 (U+0080–U+009F) passes through, and
+ * some terminals treat U+009B as CSI. Escaping it keeps the JSON identical.
+ */
+export function safeJson(data: unknown): string {
+  return JSON.stringify(data, null, 2).replace(
+    /[\u007f-\u009f]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 function print(ctx: Context, data: unknown, human: () => string): void {
-  ctx.io.out(ctx.json ? `${JSON.stringify(data, null, 2)}\n` : `${human()}\n`);
+  ctx.io.out(ctx.json ? `${safeJson(data)}\n` : `${visible(human(), /\n/)}\n`);
 }
 
 function need(value: string | undefined, what: string): string {
@@ -135,18 +161,36 @@ type Submission = {
 
 function table(rows: string[][]): string {
   if (rows.length === 0) return "";
+  rows = rows.map((row) => row.map((cell) => visible(cell)));
   const widths = rows[0].map((_, i) => Math.max(...rows.map((row) => (row[i] ?? "").length)));
   return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ").trimEnd()).join("\n");
 }
 
 function summary(values: Record<string, unknown>): string {
+  // Escaped before truncating, so a cut can never land inside a sequence.
   const preferred = ["email", "name", "message"];
   const keys = [...preferred.filter((k) => k in values), ...Object.keys(values).filter((k) => !preferred.includes(k))];
   const text = keys
     .slice(0, 2)
-    .map((k) => `${k}=${typeof values[k] === "string" ? values[k] : JSON.stringify(values[k])}`)
+    .map((k) => visible(`${k}=${typeof values[k] === "string" ? values[k] : JSON.stringify(values[k])}`))
     .join(" ");
   return text.length > 60 ? `${text.slice(0, 57)}...` : text;
+}
+
+/**
+ * Writes a file of leads readable only by its owner — including when it
+ * replaces one that was not: `mode` applies only to a file being created, so
+ * the bytes go to a fresh 0600 file that is then renamed over the target.
+ */
+async function writePrivately(path: string, body: string): Promise<void> {
+  const temporary = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporary, body, { mode: 0o600, flag: "wx" });
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +298,7 @@ async function submissions(ctx: Context, sub: string | undefined, arg: string | 
     case "get": {
       const s = await client.get(`/submissions/${encodeURIComponent(need(arg, "a submission id"))}`);
       // The detail is nested and arbitrary; JSON is the honest human format too.
-      ctx.io.out(`${JSON.stringify(s, null, 2)}\n`);
+      ctx.io.out(`${safeJson(s)}\n`);
       return;
     }
     case "export": {
@@ -264,10 +308,12 @@ async function submissions(ctx: Context, sub: string | undefined, arg: string | 
       query.set("format", format);
       const file = await client.download("/submissions/export", query);
       if (ctx.values.output) {
-        await writeFile(ctx.values.output, file.body, { mode: 0o600 });
+        await writePrivately(ctx.values.output, file.body);
         ctx.io.err(`Wrote ${file.count ?? "?"} submissions to ${ctx.values.output}${file.truncated ? " (truncated at the export limit; narrow the filters for the rest)" : ""}.\n`);
       } else {
-        ctx.io.out(file.body);
+        // Piped, the file is passed through untouched. On a terminal, its
+        // control characters are shown rather than obeyed; line ends are kept.
+        ctx.io.out(ctx.io.stdoutIsTTY ? visible(file.body, /[\r\n\t]/) : file.body);
         if (file.truncated) ctx.io.err("Export truncated at the export limit; narrow the filters for the rest.\n");
       }
       return;
@@ -289,7 +335,7 @@ async function form(ctx: Context, sub: string | undefined, endpointId: string | 
         ctx.io.out("This endpoint has no form schema; it accepts any field posted to it.\n");
       } else {
         // The document alone, so `form get id > schema.json` round-trips into `form set`.
-        ctx.io.out(`${JSON.stringify(result.schema.document, null, 2)}\n`);
+        ctx.io.out(`${safeJson(result.schema.document)}\n`);
         ctx.io.err(`Version ${result.schema.version}, ${result.schema.mode} mode.\n`);
       }
       return;

@@ -111,7 +111,7 @@ type Result = { code: number; out: string; err: string };
 let apiUrl = "";
 let configDir = "";
 
-async function cli(args: string[], extra: { env?: Record<string, string>; answers?: (string | (() => string))[]; stdin?: string } = {}): Promise<Result> {
+async function cli(args: string[], extra: { env?: Record<string, string>; answers?: (string | (() => string))[]; stdin?: string; tty?: boolean } = {}): Promise<Result> {
   let out = "";
   let err = "";
   const answers = [...(extra.answers ?? [])];
@@ -120,6 +120,7 @@ async function cli(args: string[], extra: { env?: Record<string, string>; answer
     out: (text) => (out += text),
     err: (text) => (err += text),
     readStdin: async () => extra.stdin ?? "",
+    stdoutIsTTY: extra.tty ?? false,
     prompt: async () => {
       const next = answers.shift();
       return typeof next === "function" ? next() : (next ?? "");
@@ -274,6 +275,27 @@ async function main() {
     t("export --output writes a file", toFile.code, 0);
     t("with every row", JSON.parse(await readFile(file, "utf8")).count, 5);
     t("privately (0600)", ((await stat(file)).mode & 0o777).toString(8), "600");
+    const shared = join(configDir, "shared.csv");
+    await writeFile(shared, "old", { mode: 0o644 });
+    t("positive control: the existing file starts world-readable", ((await stat(shared)).mode & 0o777).toString(8), "644");
+    t("exporting over it", (await cli(["submissions", "export", "--output", shared])).code, 0);
+    t("leaves it private", ((await stat(shared)).mode & 0o777).toString(8), "600");
+    ok("with the new contents", (await readFile(shared, "utf8")).includes("lead4@example.com"));
+
+    // A stranger's submission carrying terminal escapes: OSC 52 (clipboard),
+    // a carriage return, a newline, and a C1 CSI.
+    const hostile = "\u001b]52;c;cHduZWQ=\u0007x\rFAKE\nrow\u009b31m";
+    await unsafeDb.update(submissions).set({ values: { email: hostile } }).where(eq(submissions.publicId, a.ids[1]));
+    const table = (await cli(["submissions", "ls"])).out;
+    ok("the table shows escapes instead of obeying them", !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(table) && table.includes("\\u001b]52"), table);
+    ok("and an embedded newline does not start a fake row", !table.includes("\nrow"));
+    const detail = (await cli(["submissions", "get", a.ids[1]])).out;
+    ok("submission get output carries no raw control characters", !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(detail));
+    t("and is still the same JSON", JSON.parse(detail).values.email, hostile);
+    const ttyCsv = (await cli(["submissions", "export"], { tty: true })).out;
+    ok("export to a terminal escapes them too", !ttyCsv.includes("\u001b") && ttyCsv.includes("\\u001b"));
+    const piped = (await cli(["submissions", "export"])).out;
+    ok("positive control: piped, the export is byte-for-byte", piped.includes("\u001b]52"));
   }
 
   console.log("\nform");
