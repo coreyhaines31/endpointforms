@@ -1,4 +1,5 @@
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -46,10 +47,25 @@ export async function writeConfig(env: Env, config: Config): Promise<string> {
   const dir = configDir(env);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const path = configPath(env);
-  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  // `mode` only applies when the file is created; an older file keeps its own.
-  await chmod(path, 0o600);
+  await writePrivately(path, `${JSON.stringify(config, null, 2)}\n`);
   return path;
+}
+
+/**
+ * Writes a file readable only by its owner — including when it replaces one
+ * that was not: `mode` applies only to a file being created, and rewriting an
+ * old file in place would hand the new bytes to anyone already holding it
+ * open. So the bytes go to a fresh 0600 file that is renamed over the target.
+ */
+export async function writePrivately(path: string, body: string): Promise<void> {
+  const temporary = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporary, body, { mode: 0o600, flag: "wx" });
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
 }
 
 export async function clearConfig(env: Env): Promise<void> {

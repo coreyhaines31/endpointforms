@@ -9,7 +9,7 @@
  *
  * Needs a database: `npm run db:up && npm run db:migrate`.
  */
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -211,8 +211,21 @@ async function main() {
     t("and holds the key", JSON.parse(await readFile(join(configDir, "config.json"), "utf8")).apiKey, a.key);
     ok("the key went as a bearer header", requests.some((r) => r.auth === `Bearer ${a.key}`));
 
+    // An older, world-readable config that someone already holds open must
+    // not receive the new key through that open descriptor.
+    const looseDir = await mkdtemp(join(tmpdir(), "endpointforms-cli-loose-"));
+    const loosePath = join(looseDir, "config.json");
+    await writeFile(loosePath, "{}\n", { mode: 0o644 });
+    t("positive control: the old config starts world-readable", ((await stat(loosePath)).mode & 0o777).toString(8), "644");
+    const held = await open(loosePath, "r");
+    t("logging in over it", (await cli(["login", "--key", a.key], { env: { ENDPOINTFORMS_CONFIG_DIR: looseDir } })).code, 0);
+    ok("never writes the key into the file already held open", !(await held.readFile("utf8")).includes(a.key));
+    await held.close();
+    t("leaves the config private", ((await stat(loosePath)).mode & 0o777).toString(8), "600");
+    t("with the new key", JSON.parse(await readFile(loosePath, "utf8")).apiKey, a.key);
+
     const me = await cli(["whoami"]);
-    t("whoami uses the saved key", [me.code, me.out.includes(SLUGS[0])], [0, true]);
+    t("whoami uses the saved key",[me.code, me.out.includes(SLUGS[0])], [0, true]);
     const env = await cli(["whoami", "--json"], { env: { ENDPOINTFORMS_API_KEY: b.key } });
     t("ENDPOINTFORMS_API_KEY overrides it", JSON.parse(env.out).workspace.slug, SLUGS[1]);
 

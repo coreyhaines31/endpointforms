@@ -1,5 +1,4 @@
-import { randomBytes } from "node:crypto";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 
 import { ApiFailure, callAccountTool, createClient, type Client, type Fetch } from "./client.ts";
@@ -10,6 +9,7 @@ import {
   resolveApiUrl,
   UsageError,
   writeConfig,
+  writePrivately,
   type Env,
 } from "./config.ts";
 
@@ -190,22 +190,6 @@ function summary(values: Record<string, unknown>): string {
     .map((k) => visible(`${k}=${typeof values[k] === "string" ? values[k] : JSON.stringify(values[k])}`))
     .join(" ");
   return text.length > 60 ? `${text.slice(0, 57)}...` : text;
-}
-
-/**
- * Writes a file of leads readable only by its owner — including when it
- * replaces one that was not: `mode` applies only to a file being created, so
- * the bytes go to a fresh 0600 file that is then renamed over the target.
- */
-async function writePrivately(path: string, body: string): Promise<void> {
-  const temporary = `${path}.${randomBytes(6).toString("hex")}.tmp`;
-  try {
-    await writeFile(temporary, body, { mode: 0o600, flag: "wx" });
-    await rename(temporary, path);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
 }
 
 // ---------------------------------------------------------------------------
