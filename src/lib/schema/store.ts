@@ -169,10 +169,12 @@ export async function listSchemaVersions(
   endpointId: string,
 ): Promise<SchemaVersion[]> {
   return withWorkspace(workspaceId, async (ws) => {
+    // Archived endpoints included: archiving keeps everything, and the form
+    // an archived endpoint was using is part of what it keeps (#133).
     const endpoint = await ws.tx
       .select({ activeSchemaVersionId: endpoints.activeSchemaVersionId })
       .from(endpoints)
-      .where(ws.where(endpoints, eq(endpoints.id, endpointId)))
+      .where(ws.whereIncludingDeleted(endpoints, eq(endpoints.id, endpointId)))
       .limit(1);
 
     const activeId = endpoint[0]?.activeSchemaVersionId ?? null;

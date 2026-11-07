@@ -171,7 +171,7 @@ async function main() {
   {
     const me = await call("whoami", {}, key);
     t("whoami names the workspace", me.structuredContent.workspace?.slug, "acme-onboarding");
-    t("with every scope", me.structuredContent.scopes, ["endpoints:read", "endpoints:write", "keys:write", "outcomes:write"]);
+    t("with every scope", me.structuredContent.scopes, ["endpoints:read", "endpoints:write", "keys:write", "outcomes:write", "submissions:read", "submissions:write"]);
 
     t("no key is refused", (await call("whoami")).structuredContent.code, "unauthorized");
     t("a garbage key is refused", (await call("whoami", {}, "efv2.nope.nope")).structuredContent.code, "unauthorized");

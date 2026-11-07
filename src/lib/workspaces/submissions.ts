@@ -1,4 +1,4 @@
-import { asc, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 
 // Relative, extension-bearing imports, matching `./queries.ts` and `src/db/`.
 import { withWorkspace } from "../../db/index.ts";
@@ -108,6 +108,7 @@ export function hasActiveFilters(filters: SubmissionFilters): boolean {
     filters.endpointPublicId ||
       filters.origin.length > 0 ||
       filters.verdict.length > 0 ||
+      (filters.spam?.length ?? 0) > 0 ||
       filters.from ||
       filters.to ||
       filters.q,
@@ -159,6 +160,9 @@ function filterConditions(filters: SubmissionFilters): (SQL | undefined)[] {
   }
   if (filters.verdict.length > 0) {
     conditions.push(inArray(submissions.verdict, filters.verdict));
+  }
+  if (filters.spam && filters.spam.length > 0) {
+    conditions.push(inArray(submissions.spamState, filters.spam));
   }
   if (filters.from) conditions.push(gte(submissions.submittedAt, filters.from));
   if (filters.to) conditions.push(lt(submissions.submittedAt, filters.to));
@@ -263,6 +267,81 @@ export async function listSubmissions(
   });
 }
 
+/**
+ * Where a cursor page resumes: the last row's `submitted_at` and id.
+ *
+ * `at` is Postgres's own text for the timestamp, at microsecond precision. A JS
+ * `Date` keeps milliseconds, and a cursor rounded to the millisecond would skip
+ * every row that arrived in the same millisecond as the last one on the page.
+ */
+export type SubmissionCursor = { at: string; id: string };
+
+export type SubmissionCursorPage = {
+  rows: (SubmissionListItem & { cursor: SubmissionCursor })[];
+  /** Null on the last page. */
+  next: SubmissionCursor | null;
+};
+
+/**
+ * One page of submissions after a cursor, for the agent API (#133).
+ *
+ * The inbox pages by offset (see the note at the top of this file); an API
+ * client paging through thousands of rows while new ones arrive needs a cursor
+ * that does not shift under it. Same predicate as the inbox and the export, same
+ * order — newest first, ties broken by id.
+ */
+export async function listSubmissionsAfter(
+  workspaceId: string,
+  filters: SubmissionFilters,
+  options: { after: SubmissionCursor | null; limit: number },
+): Promise<SubmissionCursorPage> {
+  return withWorkspace(workspaceId, async (ws) => {
+    const after = options.after
+      ? sql`(${submissions.submittedAt}, ${submissions.id}) < (${options.after.at}::timestamptz, ${options.after.id}::uuid)`
+      : undefined;
+
+    const rows = await ws.tx
+      .select({
+        ...listColumns,
+        cursorId: submissions.id,
+        cursorAt: sql<string>`to_char(${submissions.submittedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(submissions)
+      .innerJoin(endpoints, eq(endpoints.id, submissions.endpointId))
+      .where(ws.where(submissions, and(...filterConditions(filters), after)))
+      .orderBy(desc(submissions.submittedAt), desc(submissions.id))
+      .limit(options.limit + 1);
+
+    const page = rows.slice(0, options.limit).map((row) => ({
+      ...toListItem(row),
+      cursor: { at: row.cursorAt, id: row.cursorId },
+    }));
+
+    return {
+      rows: page,
+      next: rows.length > options.limit ? (page[page.length - 1]?.cursor ?? null) : null,
+    };
+  });
+}
+
+/**
+ * Soft-deletes one submission. False when it is not this workspace's, or is
+ * already deleted.
+ *
+ * Soft, like every other delete in the data model: the row stops appearing in
+ * the inbox, exports, the API and Yield, and outcome posts stop matching it.
+ */
+export async function deleteSubmission(workspaceId: string, publicId: string): Promise<boolean> {
+  return withWorkspace(workspaceId, async (ws) => {
+    const deleted = await ws.tx
+      .update(submissions)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(ws.where(submissions, eq(submissions.publicId, publicId)))
+      .returning({ id: submissions.id });
+    return deleted.length > 0;
+  });
+}
+
 /** Every matching row, for an export. Same predicate, no page. */
 export async function listSubmissionsForExport(
   workspaceId: string,
@@ -282,6 +361,7 @@ export async function listSubmissionsForExport(
         verdictSource: submissions.verdictSource,
         rawBody: submissions.rawBody,
         rawContentType: submissions.rawContentType,
+        rowId: submissions.id,
       })
       .from(submissions)
       .innerJoin(endpoints, eq(endpoints.id, submissions.endpointId))
@@ -289,7 +369,34 @@ export async function listSubmissionsForExport(
       .orderBy(desc(submissions.submittedAt), desc(submissions.id))
       .limit(EXPORT_LIMIT);
 
+    // The attachments each row really owns. A file-shaped object in `values`
+    // is whatever the submitter typed; these rows are what we stored.
+    const owned = new Map<string, Map<string, Date | null>>();
+    const ids = rows.map((row) => row.rowId);
+    for (let i = 0; i < ids.length; i += 1_000) {
+      const files = await ws.tx
+        .select({
+          submissionId: submissionFiles.submissionId,
+          publicId: submissionFiles.publicId,
+          expiresAt: submissionFiles.expiresAt,
+        })
+        .from(submissionFiles)
+        .where(
+          ws.where(
+            submissionFiles,
+            inArray(submissionFiles.submissionId, ids.slice(i, i + 1_000)),
+            isNull(submissionFiles.purgedAt),
+          ),
+        );
+      for (const file of files) {
+        const forRow = owned.get(file.submissionId) ?? new Map<string, Date | null>();
+        forRow.set(file.publicId, file.expiresAt);
+        owned.set(file.submissionId, forRow);
+      }
+    }
+
     return rows.map((row) => ({
+      ownedFiles: owned.get(row.rowId) ?? new Map<string, Date | null>(),
       ...toListItem(row),
       spamReasons: asSpamReasons(row.spamReasons),
       utmTerm: row.utmTerm,
