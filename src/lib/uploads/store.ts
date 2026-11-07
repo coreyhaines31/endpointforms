@@ -3,7 +3,7 @@ import { and, asc, eq, inArray, isNotNull, isNull, lte } from "drizzle-orm";
 import { unsafeDb } from "../../db/client.ts";
 import { newId } from "../../db/ids.ts";
 import { withWorkspace, type WorkspaceScope } from "../../db/scoped.ts";
-import { submissionFiles } from "../../db/schema.ts";
+import { submissionFiles, submissions } from "../../db/schema.ts";
 import type { PendingUpload } from "./types.ts";
 
 /**
@@ -122,6 +122,13 @@ export async function loadFile(publicId: string): Promise<FileLoad> {
         expiresAt: submissionFiles.expiresAt,
       })
       .from(submissionFiles)
+      // A deleted submission takes its attachments with it (#133): a link
+      // minted before the delete must stop working, exactly as it would had
+      // the row been removed. `ws.where` is what excludes the deleted parent.
+      .innerJoin(
+        submissions,
+        and(eq(submissions.id, submissionFiles.submissionId), ws.where(submissions)),
+      )
       .where(
         and(
           eq(submissionFiles.workspaceId, located.workspaceId),

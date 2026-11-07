@@ -7,12 +7,20 @@
  * person who verified the code is the workspace's owner and an agent setting up
  * a form needs the whole loop: create an endpoint, mint a key for the CRM, grade
  * the outcomes.
+ *
+ * `submissions:read` and `submissions:write` (#133) are separate from the
+ * endpoint scopes because submissions are end-user PII: a key that can set up
+ * a form should not, by that fact alone, be able to read every lead it ever
+ * received. A key minted before they existed does not get them retroactively;
+ * a new `verify_signup` does.
  */
 export const SCOPES = [
   "endpoints:read",
   "endpoints:write",
   "keys:write",
   "outcomes:write",
+  "submissions:read",
+  "submissions:write",
 ] as const;
 
 export type Scope = (typeof SCOPES)[number];
