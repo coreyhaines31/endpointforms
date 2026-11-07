@@ -20,7 +20,7 @@ Every surface uses the same workspace API key, `efv2.<id>.<secret>`. Send it as 
 
 There are three ways to get a key:
 
-- **`npx endpointforms login`.** This emails you a 6-digit code and saves a key with every scope.
+- **`npx endpointforms login`.** This emails you a 6-digit code and saves a key with every scope. If you own several workspaces, add `--workspace <slug>`.
 - **`start_signup` then `verify_signup` on the account MCP server.** This is the same flow, run from a chat ([`docs/32`](./32-agent-onboarding.md)).
 - **`create_api_key` with an existing key.** The new key can only receive scopes the existing key already holds.
 
