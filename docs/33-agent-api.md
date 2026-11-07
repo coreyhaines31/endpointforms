@@ -8,7 +8,7 @@
 | MCP | `POST https://app.endpointforms.com/api/mcp` | An AI agent working in a chat |
 | CLI | `npx endpointforms` | A terminal, CI, or an agent with a shell |
 
-All three call **one typed core** in `src/lib/api/`. REST and MCP call it directly, and the CLI calls REST. Nothing outside the core decides who can see what.
+All three reach endpoints, form schemas and submissions through **one typed core** in `src/lib/api/`. REST and MCP call it directly, and the CLI calls REST. That core decides which workspace, which rows and which scopes apply. Authenticating the key happens one step earlier, in `src/lib/account/auth.ts`: it checks the key is valid and not revoked, and that its creator is still an owner. Signing up and minting keys (`start_signup`, `verify_signup`, `create_api_key`) stay MCP-only and live in `src/lib/account/`.
 
 Everything here was read from the implementation and is pinned by tests. `tests/api-core.test.mts` covers the core, `tests/api-rest.test.mts` and `tests/api-openapi.test.mts` cover REST, `tests/account-mcp.test.mts` covers MCP, and `tests/cli.test.mts` runs the CLI end to end against the real REST and MCP handlers.
 
@@ -24,7 +24,7 @@ There are three ways to get a key:
 - **`start_signup` then `verify_signup` on the account MCP server.** This is the same flow, run from a chat ([`docs/32`](./32-agent-onboarding.md)).
 - **`create_api_key` with an existing key.** The new key can only receive scopes the existing key already holds.
 
-Keys made on the settings page are outcome keys (`outcomes:write`) and cannot use this API.
+Keys made on the settings page are outcome keys (`outcomes:write`). They authenticate, so `GET /me` works, but they cannot touch endpoints, forms or submissions.
 
 A key is accepted only while all three of these hold:
 
@@ -45,7 +45,7 @@ The `submissions:*` scopes are separate from the endpoint scopes because submiss
 
 ### Workspace scoping
 
-**A key reads and writes its own workspace and nothing else.** The core takes the workspace from the authenticated key and accepts no workspace id, slug or internal row id from the caller. Objects are named by their public ids. Every query runs inside `withWorkspace()`, which applies both the predicate and row-level security ([`docs/21`](./21-data-model.md)). Another workspace's id therefore gets exactly the answer an id that never existed gets: `404 not_found`.
+**A key reads and writes its own workspace and nothing else.** The core takes the workspace from the authenticated key and accepts no workspace id, slug or internal row id from the caller. Objects are named by their public ids. Every query on a workspace-scoped table runs inside `withWorkspace()`, which applies both the predicate and row-level security ([`docs/21`](./21-data-model.md)). Two lookups are not workspace-scoped tables and run outside it: the workspace's own name (`whoami`) and the key creator's email address (`createEndpoint`). Both are keyed by ids read from the key. Another workspace's id therefore gets exactly the answer an id that never existed gets: `404 not_found`.
 
 ---
 
@@ -69,11 +69,11 @@ The `submissions:*` scopes are separate from the endpoint scopes because submiss
 | `GET` | `/submissions/{id}/deliveries` | `submissions:read` | Every delivery attempt |
 
 ```sh
-curl https://app.endpointforms.com/api/v1/submissions?verdict=awaiting&limit=20 \
+curl "https://app.endpointforms.com/api/v1/submissions?verdict=awaiting&limit=20" \
   -H "Authorization: Bearer $ENDPOINTFORMS_API_KEY"
 ```
 
-**Responses.** A success is `{"ok": true, "data": …}`, and a list adds `next_cursor`. An error is `{"ok": false, "error": {"code", "message"}}`. The status is one of 400 `invalid_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 409 `conflict` or 429 `rate_limited`. The message always says what to change. Unknown fields and query parameters are a 400, never ignored silently. Every response is `Cache-Control: no-store`.
+**Responses.** A success is `{"ok": true, "data": …}`, and a list adds `next_cursor`. An error is `{"ok": false, "error": {"code", "message"}}`. The status is one of 400 `invalid_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 409 `conflict` or 429 `rate_limited`. The message always says what to change. Unknown fields in a JSON body are a 400, and so are unknown query parameters on `/submissions` and `/submissions/export`. The other routes take no query parameters and ignore any that are sent. Every response is `Cache-Control: no-store`.
 
 **No CORS.** This is a server-to-server API, and a key that can read every lead does not belong in a browser.
 
@@ -103,7 +103,7 @@ curl https://app.endpointforms.com/api/v1/submissions?verdict=awaiting&limit=20 
 
 A list filter accepts several values, comma separated (`verdict=won,lost`) or repeated (`verdict=won&verdict=lost`). Filters combine with AND.
 
-**Pagination is by cursor.** `limit` defaults to 50 and is at most 200. Pass `next_cursor` back as `cursor` to get the next page; it is `null` on the last page. The cursor holds the last row's timestamp at microsecond precision, so a walk visits each row exactly once even when rows arrive while it runs. The inbox in the app still pages by number.
+**Pagination is by cursor.** `limit` defaults to 50 and is at most 200. Pass `next_cursor` back as `cursor` to get the next page; it is `null` on the last page. The cursor holds the last row's timestamp, at microsecond precision, and its id. A walk therefore moves steadily into older rows and never repeats or skips one that existed when it started, including rows that share a timestamp. A submission that arrives during the walk is newer than the cursor, so it does not appear; start again from the first page to see it. The inbox in the app still pages by number.
 
 **Export** produces the same file the inbox's Export button downloads, and the CSV and JSON formats share one implementation (`src/lib/workspaces/export-format.ts`). `format` is `csv` (the default) or `json`, and the filters are the ones above. The export is capped at 10,000 rows. `X-Export-Row-Count` gives the number of rows, and `X-Export-Truncated: true` appears when the cap was hit.
 
@@ -155,8 +155,9 @@ npx endpointforms form get <endpoint-id> > schema.json
 npx endpointforms form set <endpoint-id> schema.json --draft
 ```
 
-- **`--json` works on every command.** With it, errors also go to stderr as JSON.
-- **Exit codes:** `0` for ok, `1` when the API refused, `2` for a usage mistake.
+- **`--json` works on every command.** With it, usage, API and file errors also go to stderr as one JSON line, `{"ok":false,"error":{"code","message"}}`.
+- **Exit codes:** `0` for ok, `2` for a usage mistake, and `1` for anything else: the API refused, the network failed, a file could not be read or written, or an unexpected error.
+- **Text from submissions is shown, not obeyed.** Control characters in values and in error messages are escaped on the terminal, so a submitted escape sequence cannot act on it. A piped export is passed through byte for byte.
 - **Key storage:** the key is saved to `~/.config/endpointforms/config.json` with mode 0600. `ENDPOINTFORMS_API_KEY` overrides it.
 - **Transport:** the key is sent over https only. Plain http is allowed for localhost alone.
 - **Self-hosted installs:** pass `--api-url`, or set `ENDPOINTFORMS_API_URL`.
