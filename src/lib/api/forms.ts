@@ -67,12 +67,13 @@ export async function setFormSchema(
   requireApiScope(ctx, "endpoints:write");
   const body = parseInput(setSchema, input ?? {});
   const endpoint = await loadEndpoint(ctx, endpointId);
-  const activate = body.activate ?? true;
 
-  if (activate && endpoint.archivedAt) {
+  // Drafts too: the schema store only writes versions for a live endpoint, the
+  // same rule the builder follows.
+  if (endpoint.archivedAt) {
     throw new ApiError(
       "conflict",
-      "That endpoint is archived and refuses submissions. Restore it (archived: false) before publishing a form schema, or save a draft with activate: false.",
+      "That endpoint is archived. Restore it (update it with archived: false) before changing its form schema.",
     );
   }
 
@@ -90,7 +91,7 @@ export async function setFormSchema(
     source: "file",
     mode: body.mode,
     createdByUserId: ctx.caller.createdByUserId,
-    activate,
+    activate: body.activate ?? true,
   });
 
   return {

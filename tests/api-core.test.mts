@@ -47,6 +47,7 @@ import {
   listSubmissionDeliveries,
   listSubmissions,
 } from "../src/lib/api/submissions.ts";
+import { handleFileDownload } from "../src/lib/uploads/download.ts";
 import { createVerdictApiKey, revokeVerdictApiKey } from "../src/lib/verdict/key-store.ts";
 
 let pass = 0;
@@ -364,6 +365,7 @@ async function main() {
       declaredContentType: "application/pdf",
       size: 1234,
       sha256: "0".repeat(64),
+      bytes: new Uint8Array([37, 80, 68, 70]),
     });
     // One genuine reference to that file, and one forged reference to B's
     // (made-up) file id, both in `values`.
@@ -381,7 +383,12 @@ async function main() {
     t("a forged reference is left exactly as stored, never signed", values.forged.url, "https://stale.example/old");
     t("deliveries are listed (none here)", await listSubmissionDeliveries(ctxA, target), []);
 
+    const link = detail.files[0]?.download_url ?? "";
+    const before = await handleFileDownload(new Request(link), filePublicId);
+    t("positive control: the file downloads before the delete", before.status, 200);
     t("delete works", (await deleteSubmission(ctxA, target)).deleted, true);
+    const after = await handleFileDownload(new Request(link), filePublicId);
+    t("and the same signed link stops working", after.status, 403);
     t("and the submission is gone", await codeOf(() => getSubmission(ctxA, target)), "not_found");
     t("from the list too", (await listSubmissions(ctxA, { limit: 200 })).data.length, TIMES.length - 1);
     t("deleting it again is a 404", await codeOf(() => deleteSubmission(ctxA, target)), "not_found");
@@ -435,6 +442,8 @@ async function main() {
 
     await deleteEndpoint(ctxA, a.endpointPublicId);
     t("publishing to an archived endpoint is a conflict", await codeOf(() => setFormSchema(ctxA, a.endpointPublicId, { document })), "conflict");
+    t("so is saving a draft", await codeOf(() => setFormSchema(ctxA, a.endpointPublicId, { document, activate: false })), "conflict");
+    t("but its schema is still readable", (await getFormSchema(ctxA, a.endpointPublicId)).schema?.version, 1);
     await updateEndpoint(ctxA, a.endpointPublicId, { archived: false });
   }
 
