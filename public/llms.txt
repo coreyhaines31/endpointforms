@@ -1,0 +1,31 @@
+# Endpoint Forms
+
+> An open-source form builder for website forms. Every submission is stamped with how it arrived (Human, Agent or Unverified) and can carry its downstream outcome (won, lost or disqualified, plus a value), so a form is judged by what its leads turned out to be worth.
+
+Agents can do everything below without a browser. Every surface uses the same workspace API key (`efv2.<id>.<secret>`, sent as `Authorization: Bearer <key>`), and a key reads and writes only its own workspace.
+
+## Get a key
+
+- [Account MCP server](https://app.endpointforms.com/api/mcp): POST JSON-RPC 2.0. Call `start_signup(email)`, ask the person for the 6-digit code that arrives by email, then call `verify_signup(email, code)`. The result is a key with every scope, shown once. Never guess the code.
+- CLI: `npx endpointforms login` runs the same flow in a terminal and saves the key.
+
+## Manage forms and read submissions
+
+- [REST API](https://app.endpointforms.com/api/v1/openapi.json): the OpenAPI 3.1 document for `/api/v1`. It covers endpoints (list, get, create, rename, archive), form schemas (get, publish), submissions (cursor-paginated list with filters for endpoint, origin, verdict, spam state, date range and search; get with files and deliveries; delete; CSV/JSON export) and destinations.
+- Account MCP tools: `whoami`, `list_endpoints`, `create_endpoint`, `get_install_snippet`, `get_endpoint`, `update_endpoint`, `delete_endpoint`, `get_form_schema`, `update_form_schema`, `list_submissions`, `get_submission`, `export_submissions` and `create_api_key`. Archiving an endpoint, or publishing a strict-mode schema, needs `"confirm": true`. Call without it first and relay the reply to the person.
+- CLI: `npx endpointforms` with `endpoints ls|get|create`, `submissions ls|get|export` and `form get|set`. Add `--json` for machine-readable output.
+
+Submissions contain personal data from the people who filled in the form. Show them only to the person you are working for.
+
+## Submit to a form
+
+- Each endpoint accepts `POST https://<workspace>.endpointforms.app/e/<endpoint-id>` from an HTML form or a JSON body.
+- Each endpoint also publishes a Manifest MCP server at `/e/<endpoint-id>/mcp`, so an agent can fill in the form as a tool call. Submissions made this way are stamped Agent.
+
+## Docs
+
+- [Agent access: REST, MCP and CLI](https://github.com/coreyhaines31/endpointforms/blob/development/docs/33-agent-api.md)
+- [Agent onboarding](https://github.com/coreyhaines31/endpointforms/blob/development/docs/32-agent-onboarding.md)
+- [HTTP API: submissions and outcomes](https://github.com/coreyhaines31/endpointforms/blob/development/docs/26-api.md)
+- [Manifest specification](https://github.com/coreyhaines31/endpointforms/blob/development/docs/25-manifest-spec.md)
+- [Provenance](https://github.com/coreyhaines31/endpointforms/blob/development/docs/27-provenance.md): what Human, Agent and Unverified mean, and what they do not mean

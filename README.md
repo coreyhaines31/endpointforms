@@ -104,6 +104,22 @@ Every one of them, with defaults and what happens when you leave it out: [`docs/
 
 One thing worth reading before you build an outcome integration: because the verdict key is derived rather than stored, **rotation is fleet-wide** — revoking one workspace's key rotates everyone's — and renaming a workspace invalidates its key. Both are explained in §3.1.
 
+## For agents and scripts
+
+Endpoints, form schemas and submissions are all reachable without a browser. The three surfaces below share one core, and a workspace API key can only reach its own workspace.
+
+```sh
+npx endpointforms login                      # emails a code, saves a key
+npx endpointforms submissions ls --verdict awaiting --json
+curl https://app.endpointforms.com/api/v1/endpoints -H "Authorization: Bearer $KEY"
+```
+
+- **REST:** `/api/v1`, described at `/api/v1/openapi.json`.
+- **MCP:** the account server at `/api/mcp`. Its tools cover listing, reading and exporting submissions, and reading and changing endpoints and form schemas. Destructive tools ask for confirmation first.
+- **CLI:** the `endpointforms` package, in [`packages/cli`](packages/cli).
+
+[`docs/33-agent-api.md`](docs/33-agent-api.md) covers all three, and [`/llms.txt`](public/llms.txt) is the summary written for agents.
+
 ## Documentation
 
 | | |
@@ -111,6 +127,8 @@ One thing worth reading before you build an outcome integration: because the ver
 | [Self-hosting](docs/24-self-hosting.md) | Run your own instance |
 | [The Manifest specification](docs/25-manifest-spec.md) | The MCP surface every form publishes — the public protocol |
 | [HTTP API](docs/26-api.md) | The submission endpoint and `POST /api/v1/verdict` |
+| [Agent access](docs/33-agent-api.md) | REST (`/api/v1`, OpenAPI at `/api/v1/openapi.json`), MCP tools and the `endpointforms` CLI for endpoints, forms and submissions |
+| [Agent onboarding](docs/32-agent-onboarding.md) | Sign up, create an endpoint and get a key from inside an AI chat |
 | [Provenance](docs/27-provenance.md) | What Human · Agent · Unverified means, and what it does not |
 | [Origin findings](docs/23-origin-findings.md) | The adversarial write-up behind that model |
 | [Contributing](CONTRIBUTING.md) | |

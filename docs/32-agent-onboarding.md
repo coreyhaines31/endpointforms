@@ -51,6 +51,14 @@ stateless JSON-RPC over HTTP, the same transport as the per-endpoint Manifest se
 | `get_install_snippet(endpoint_id)` | `endpoints:read` | HTML, curl test, Manifest URL |
 | `create_api_key(label, scopes?)` | `keys:write` | Another key, by default `outcomes:write` only — for a CRM |
 
+Since #133 the server also manages what the endpoints receive: `get_endpoint`, `update_endpoint`,
+`delete_endpoint`, `get_form_schema`, `update_form_schema`, `list_submissions`, `get_submission` and
+`export_submissions`. Every tool that reads or changes endpoints, forms or submissions, old and
+new, now calls the shared core in `src/lib/api/`. Sign-up and key minting stay here, in
+`src/lib/account/`.
+Keys from `verify_signup` also carry `submissions:read` and `submissions:write`. See
+[`docs/33-agent-api.md`](./33-agent-api.md).
+
 Errors are tool results with `isError: true` and a sentence the agent can repeat to the person,
 not bare JSON-RPC errors. That is the same convention as Manifest.
 

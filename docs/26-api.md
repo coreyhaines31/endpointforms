@@ -13,6 +13,10 @@ The agent-facing surface, `POST /e/{endpointId}/mcp`, has its own specification:
 The account MCP server, `POST /api/mcp` — signing up, creating endpoints and minting keys from
 an AI chat — is described in [`docs/32-agent-onboarding.md`](./32-agent-onboarding.md).
 
+The agent API — `/api/v1/endpoints`, `/api/v1/submissions` and the rest of the REST surface for
+managing endpoints, form schemas and submissions with a key, its MCP tools and the
+`endpointforms` CLI — is described in [`docs/33-agent-api.md`](./33-agent-api.md).
+
 Everything below is read out of the implementation and pinned by assertions in
 `tests/ingest.test.mts`, `tests/schema-ingest.test.mts` and `tests/verdict.test.mts`. Anything
 not stated here is not promised.
@@ -365,7 +369,8 @@ us — can display it again. If you lose one, revoke it and create another.
 **Keys have scopes.** Recording outcomes needs `outcomes:write`. Every key created in settings
 has exactly that scope, and so does every key that existed before scopes did. A key an agent
 created without it gets a `401 unauthorized` here that says which scope is missing. The other
-scopes (`endpoints:read`, `endpoints:write`, `keys:write`) only matter on the account MCP server.
+scopes (`endpoints:*`, `submissions:*`, `keys:write`) only matter on the account MCP server and
+the agent API ([`docs/33`](./33-agent-api.md)).
 
 **Revocation is per key.** Revoking one key does not affect any other key, any other workspace,
 or any other deployment. The row is kept rather than deleted, so `created_at`, `last_used_at`
