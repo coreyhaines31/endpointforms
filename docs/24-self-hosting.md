@@ -110,6 +110,8 @@ SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'endpoint';
 -- endpoint | f | f
 ```
 
+The app checks this too. Before its first workspace-scoped query, it reads these two attributes for the role it connected as. In production it refuses to run scoped queries if either is true, and elsewhere it logs a warning. If you upgrade and every dashboard request starts failing with `Database role "…" has BYPASSRLS`, your `DATABASE_URL` is using an owner role, such as Neon's `neondb_owner`. Point it at the `endpoint` role.
+
 Then confirm the isolation actually holds:
 
 ```bash

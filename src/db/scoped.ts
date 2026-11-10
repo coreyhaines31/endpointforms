@@ -2,6 +2,19 @@ import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import { unsafeDb, type Database } from "./client.ts";
+import { createRoleGuard } from "./role-guard.ts";
+
+const ensureRlsEnforced = createRoleGuard(
+  async () => {
+    const rows = (await unsafeDb.execute(
+      sql`select current_user as role, rolsuper, rolbypassrls from pg_roles where rolname = current_user`,
+    )) as unknown as { role: string; rolsuper: boolean; rolbypassrls: boolean }[];
+    const row = rows[0];
+    if (!row) throw new Error("withWorkspace: could not read the connected database role");
+    return { role: row.role, superuser: row.rolsuper, bypassRls: row.rolbypassrls };
+  },
+  { production: process.env.NODE_ENV === "production", warn: console.warn },
+);
 
 /**
  * Workspace scoping.
@@ -80,6 +93,10 @@ export async function withWorkspace<T>(
     // the cast anyway — with a much worse error.
     throw new Error(`withWorkspace: invalid workspace id ${JSON.stringify(workspaceId)}`);
   }
+
+  // Row-level security is the layer that saves a forgotten predicate, and a
+  // BYPASSRLS role turns it off without an error. Checked once per process.
+  await ensureRlsEnforced();
 
   return unsafeDb.transaction(async (tx) => {
     // `true` is is_local: the setting is reverted when this transaction ends,
