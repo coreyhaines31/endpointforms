@@ -80,8 +80,8 @@ export function Field({ spec, value, clamped, onChange }: FieldProps) {
 
       <div
         className={cn(
-          "mt-2 flex h-11 items-center rounded-md border bg-card focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring",
-          clamped ? "border-destructive" : "border-border-control",
+          "mt-2 flex h-11 items-center rounded-md border bg-card transition-colors duration-(--dur-quick) focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring",
+          clamped ? "border-destructive" : "border-border-control hover:border-foreground/60",
         )}
       >
         {prefix ? (
@@ -152,9 +152,12 @@ export function ResetButton({ onClick, disabled }: { onClick: () => void; disabl
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex items-center gap-2 rounded-md border border-border-control px-3 py-2 text-sm text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-40"
+      className="press group/reset inline-flex min-h-11 items-center gap-2 rounded-md border border-border-control px-3 py-2 text-sm text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-40"
     >
-      <RotateCcw className="size-3.5" aria-hidden="true" />
+      <RotateCcw
+        className="size-3.5 transition-transform duration-(--dur-base) ease-enter group-hover/reset:-rotate-45 group-disabled/reset:rotate-0"
+        aria-hidden="true"
+      />
       Reset to the example
     </button>
   );

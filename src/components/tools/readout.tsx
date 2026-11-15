@@ -148,7 +148,9 @@ export function Meter({
     <div
       role="img"
       aria-label={label}
-      className="h-1.5 w-full overflow-hidden rounded-sm bg-sunken"
+      // The ring is the track's visible end: bg-sunken alone is 1.10:1
+      // against the page, so the proportion had nothing to be read against.
+      className="h-1.5 w-full overflow-hidden rounded-sm bg-sunken ring-1 ring-border-control ring-inset"
     >
       {/* scaleX, not width: the bar follows every keystroke, and a transform
           moves without re-laying-out the result panel around it. */}
@@ -188,7 +190,13 @@ export function ResultTable({
   caption?: string;
 }) {
   return (
-    <div className="-mx-[5%] overflow-x-auto px-[5%] lg:mx-0 lg:px-0">
+    // Focusable so a keyboard can scroll it when it overflows (WCAG 2.1.1).
+    <div
+      tabIndex={0}
+      role="region"
+      aria-label={caption ?? "Result table"}
+      className="-mx-[5%] overflow-x-auto px-[5%] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring lg:mx-0 lg:px-0"
+    >
       <table className="w-full min-w-[34rem] border-collapse text-left">
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <thead>

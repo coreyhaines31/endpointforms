@@ -161,7 +161,13 @@ export function Formula({
   return (
     <div>
       <p className="font-mono text-label uppercase text-muted-foreground">{label}</p>
-      <p className="mt-2 overflow-x-auto whitespace-pre font-mono text-sm text-foreground">
+      {/* Focusable so a keyboard can scroll a long line (WCAG 2.1.1). */}
+      <p
+        tabIndex={0}
+        role="region"
+        aria-label={label}
+        className="mt-2 overflow-x-auto whitespace-pre font-mono text-sm text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      >
         {expr}
       </p>
       {note ? (
