@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ChevronRight } from "lucide-react";
 import { redirect } from "next/navigation";
 
 import {
@@ -15,9 +16,11 @@ import { safeNextPath } from "@/actions/form-state";
  * Sign in.
  *
  * Email and password is the form on the page. Google is a button under it. The
- * magic link is behind a disclosure, because it is a real option and a small
- * one: two visible email fields on one screen is a page asking someone to work
- * out which one they meant.
+ * code and magic-link forms are behind disclosures, because they are real
+ * options and small ones: two visible email fields on one screen is a page
+ * asking someone to work out which one they meant. The code disclosure's
+ * summary is the forgot-password sentence, because that is where somebody who
+ * cannot use their password goes looking.
  *
  * There is **no "forgot password" link**, because there is nothing behind one —
  * a reset needs a mail transport (#41). A link to a dead end is worse than the
@@ -88,13 +91,6 @@ export default async function LoginPage({
         <PasswordSignInForm next={next} />
       </div>
 
-      <div className="my-7 flex items-center gap-4">
-        <span className="h-px flex-1 bg-border" />
-        <span className="font-mono text-label uppercase text-muted-foreground">or</span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-      <EmailCodeSignInForm next={next} />
-
       {googleSignInAvailable ? (
         <>
           <div className="my-7 flex items-center gap-4">
@@ -105,6 +101,24 @@ export default async function LoginPage({
           <GoogleSignInForm next={next} />
         </>
       ) : null}
+
+      <details className="group mt-8 border-t border-border pt-6">
+        <summary className="flex cursor-pointer list-none items-center gap-2 rounded-sm text-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+          <ChevronRight
+            aria-hidden="true"
+            className="size-4 shrink-0 transition-[rotate] duration-(--dur-quick) ease-enter group-open:rotate-90"
+          />
+          <span>
+            Forgot your password, or never set one?{" "}
+            <span className="text-foreground underline decoration-border-control underline-offset-4">
+              Sign in with a code instead
+            </span>
+          </span>
+        </summary>
+        <div className="mt-5 group-open:animate-swap">
+          <EmailCodeSignInForm next={next} />
+        </div>
+      </details>
 
       {magicLinkAvailable ? (
         <details className="group mt-8 border-t border-border pt-6">
@@ -117,9 +131,6 @@ export default async function LoginPage({
         </details>
       ) : null}
 
-      <p className="mt-8 text-sm text-muted-foreground">
-        Forgot your password, or never set one? Sign in with a code instead.
-      </p>
     </>
   );
 }
