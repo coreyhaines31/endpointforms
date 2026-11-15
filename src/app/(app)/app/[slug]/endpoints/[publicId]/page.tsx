@@ -237,11 +237,16 @@ export default async function EndpointDetailPage({
             </thead>
             <tbody className="[&>tr:last-child>td]:border-b-0">
               {rows.map((row) => (
-                <tr key={row.publicId}>
+                <tr
+                  key={row.publicId}
+                  className="group/row relative transition-colors duration-(--dur-quick) hover:bg-sunken"
+                >
                   <Td dim>
                     <Link
                       href={`/app/${workspace.slug}/submissions/${row.publicId}`}
-                      className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                      // The after: box stretches this link over the whole row, so the row
+                      // opens from anywhere on it, not only from the timestamp.
+                      className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 after:absolute after:inset-0 group-hover/row:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                     >
                       <RelativeTime value={row.submittedAt} />
                     </Link>

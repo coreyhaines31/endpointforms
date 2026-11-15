@@ -211,11 +211,16 @@ export default async function SubmissionsPage({
             </thead>
             <tbody className="[&>tr:last-child>td]:border-b-0">
               {page.rows.map((row) => (
-                <tr key={row.publicId} className="hover:bg-sunken">
+                <tr
+                  key={row.publicId}
+                  className="group/row relative transition-colors duration-(--dur-quick) hover:bg-sunken"
+                >
                   <Td dim className="whitespace-nowrap">
                     <Link
                       href={`/app/${workspace.slug}/submissions/${row.publicId}`}
-                      className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                      // The after: box stretches this link over the whole row, so the row
+                      // opens from anywhere on it, not only from the timestamp.
+                      className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 after:absolute after:inset-0 group-hover/row:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                     >
                       <RelativeTime value={row.submittedAt} />
                     </Link>
@@ -244,7 +249,8 @@ export default async function SubmissionsPage({
                   <Td dim className="whitespace-nowrap">
                     <Link
                       href={`/app/${workspace.slug}/endpoints/${row.endpointPublicId}`}
-                      className="rounded-sm hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                      // Above the row's stretched link, so it still goes to the endpoint.
+                      className="relative z-[1] rounded-sm hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                     >
                       {row.endpointName}
                     </Link>
