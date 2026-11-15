@@ -203,7 +203,7 @@ export default function OpenSourcePage() {
               href={GITHUB_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="signal-fill inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 text-base font-medium transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              className="signal-fill press inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 text-base font-medium hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
               <Star className="size-4" aria-hidden="true" />
               Star the repo
