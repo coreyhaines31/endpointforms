@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Container } from "@/components/container";
 import { IllustrationTag } from "@/components/mockup/frame";
-import { useTweenedNumber } from "@/components/motion/use-tweened-number";
 import { cn } from "@/lib/utils";
 
 type Metric = "completion" | "yield";
@@ -147,10 +146,11 @@ function format(value: number) {
 }
 
 /**
- * One variant's scoreboard. When the metric switches, the headline number
- * travels to its new value, the bar rescales (transform only, never width),
- * and the Leading/Trailing stamp swaps with a short drop-in. The text that
- * screen readers get is always the final value, never a frame of the tween.
+ * One variant's scoreboard. When the metric switches, the bar rescales
+ * (transform only, never width) and carries the motion; the headline number,
+ * the metric caption and the Leading/Trailing stamp swap with a short drop-in.
+ * The number deliberately does not count through in-between values: every
+ * figure on screen should be one the illustration actually claims.
  */
 function VariantColumn({
   variant,
@@ -164,7 +164,6 @@ function VariantColumn({
   label: string;
 }) {
   const bar = metric === "completion" ? variant.completion : variant.yield;
-  const shown = useTweenedNumber(bar.value);
   const final = format(bar.value);
   // A sliver for any non-zero bar, so a small value never reads as none.
   const scale = bar.ratio > 0 ? Math.max(bar.ratio, 0.04) : 0;
@@ -186,8 +185,9 @@ function VariantColumn({
       <p className="mt-1 text-sm text-muted-foreground">{variant.fields}</p>
 
       <p className="mt-6 font-mono text-display tabular text-foreground">
-        <span aria-hidden="true">{format(shown)}</span>
-        <span className="sr-only">{final}</span>
+        <span key={metric} className="animate-swap inline-block">
+          {final}
+        </span>
       </p>
       <p
         key={metric}
@@ -203,7 +203,7 @@ function VariantColumn({
       >
         <div
           className={cn(
-            "h-full w-full origin-left transition-transform duration-[calc(var(--dur-slow)*1.5)] ease-move",
+            "h-full w-full origin-left transition-transform duration-(--dur-slow) ease-move",
             leading ? "signal-fill" : "bg-muted-foreground",
           )}
           style={{ transform: `scaleX(${scale})` }}
