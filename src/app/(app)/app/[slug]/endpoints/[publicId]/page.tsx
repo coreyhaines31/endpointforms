@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { Container } from "@/components/container";
+import { HelpTip } from "@/components/app/help-tip";
 import { EmptyState, Panel, PanelBody, PanelHeader } from "@/components/app/panel";
 import { ArchiveEndpointForm, RenameEndpointForm } from "@/components/app/endpoint-forms";
 import { EndpointSnippet } from "@/components/app/endpoint-snippet";
@@ -224,8 +225,14 @@ export default async function EndpointDetailPage({
               <tr>
                 <Th>Received</Th>
                 <Th>Submitted</Th>
-                <Th>Origin</Th>
-                <Th>Verdict</Th>
+                <Th>
+                  Origin
+                  <HelpTip term="origin" label="Origin" />
+                </Th>
+                <Th>
+                  Verdict
+                  <HelpTip term="verdict" label="Verdict" />
+                </Th>
               </tr>
             </thead>
             <tbody className="[&>tr:last-child>td]:border-b-0">

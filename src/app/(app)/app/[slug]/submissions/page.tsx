@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { Container } from "@/components/container";
+import { HelpTip } from "@/components/app/help-tip";
 import { EmptyState, Panel, PanelHeader } from "@/components/app/panel";
 import { ProvenanceChip } from "@/components/provenance-chip";
 import { NowhereChip } from "@/components/app/reach-alert";
@@ -196,8 +197,14 @@ export default async function SubmissionsPage({
               <tr>
                 <Th>Received</Th>
                 <Th>Submitted</Th>
-                <Th>Origin</Th>
-                <Th>Verdict</Th>
+                <Th>
+                  Origin
+                  <HelpTip term="origin" label="Origin" />
+                </Th>
+                <Th>
+                  Verdict
+                  <HelpTip term="verdict" label="Verdict" />
+                </Th>
                 <Th>Source</Th>
                 <Th>Endpoint</Th>
               </tr>
