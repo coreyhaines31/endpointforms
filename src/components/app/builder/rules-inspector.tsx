@@ -242,7 +242,7 @@ function StatusTag({ status }: { status: "matched" | "not_matched" | "skipped" }
           ? "font-mono text-label uppercase text-foreground"
           : status === "skipped"
             ? "font-mono text-label uppercase text-destructive"
-            : "font-mono text-label uppercase text-subtle-foreground"
+            : "font-mono text-label uppercase text-muted-foreground"
       }
     >
       {text}
@@ -264,7 +264,7 @@ function ConditionRow({ line }: { line: InspectedConditionLine }) {
       className="text-sm"
       style={{ paddingLeft: `${line.depth * 0.875}rem` }}
     >
-      <span className={line.matched ? "text-foreground" : "text-subtle-foreground"}>
+      <span className={line.matched ? "text-foreground" : "text-muted-foreground"}>
         {line.matched ? "✓" : "✕"}
       </span>{" "}
       <span className={cn("font-mono", line.matched ? "text-foreground" : "text-muted-foreground")}>

@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
  */
 
 const FIELD_CLASS =
-  "w-full min-w-0 rounded-md border border-border-control bg-card px-2.5 py-2 text-sm text-foreground placeholder:text-subtle-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-60";
+  "w-full min-w-0 rounded-md border border-border-control bg-card px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-60";
 
 /** The mono uppercase caption the app uses for a field's name. docs/03 §6. */
 export function EditorLabel({
@@ -201,7 +201,7 @@ export function IconButton({
   children,
   className,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
+}: React.ComponentProps<"button"> & { label: string }) {
   return (
     <button
       type="button"
@@ -209,7 +209,7 @@ export function IconButton({
       title={label}
       {...props}
       className={cn(
-        "inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:border-border-control hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-40",
+        "press inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-border-control hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-40",
         className,
       )}
     >
@@ -223,13 +223,13 @@ export function QuietButton({
   children,
   className,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+}: React.ComponentProps<"button">) {
   return (
     <button
       type="button"
       {...props}
       className={cn(
-        "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-control px-3 text-sm font-medium text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50",
+        "press inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-control px-3 text-sm font-medium text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50",
         className,
       )}
     >

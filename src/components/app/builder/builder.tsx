@@ -1,14 +1,16 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import { useActionState, useMemo, useRef, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import { saveSchemaAction } from "@/actions/schemas";
 import { Panel, PanelBody, PanelHeader } from "@/components/app/panel";
 import { EmbedPanel } from "./embed-panel";
-import { FieldCard } from "./field-card";
+import { FieldCard, describe } from "./field-card";
+import { useFlipList } from "@/components/motion/use-flip-list";
 import { ImportPanel } from "./import-panel";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CheckboxField, IssueLine, QuietButton, TextField } from "./inputs";
 import { PreviewPane } from "./preview-pane";
 import { RulesInspector } from "./rules-inspector";
@@ -201,6 +203,16 @@ export function SchemaBuilder({
   const ruleIssueList = issues.filter((issue) => issue.ruleId !== undefined);
   const dirty = fingerprint !== saved;
 
+  // Closing the tab or reloading with unsaved edits asks first. Browsers show
+  // their own wording; all a page can do is ask for the prompt. Links inside
+  // the app are client navigations and do not fire this.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
   // Publishing what is already live writes an identical version and moves the
   // pointer to it, which is a row of history that records nothing. It is
   // allowed when there is a saved draft to promote, when there is nothing live
@@ -216,10 +228,20 @@ export function SchemaBuilder({
       ),
     }));
 
+  // The field added most recently, so its card can rise in and take focus.
+  const [added, setAdded] = useState<string | null>(null);
+  // Said to screen readers after a move or removal, which otherwise happen
+  // silently: the card just changes place under the cursor, or disappears.
+  const [announcement, setAnnouncement] = useState("");
+  const addButton = useRef<HTMLButtonElement>(null);
+  const fieldList = useFlipList<HTMLUListElement>(doc.fields.map((field) => field.id));
+
   const addField = () => {
     const id = mintId();
     setDoc((current) => ({ ...current, fields: [...current.fields, newDraftField(id)] }));
     setExpanded((current) => new Set(current).add(id));
+    setAdded(id);
+    setAnnouncement("Field added at the end of the list.");
   };
 
   /**
@@ -236,6 +258,7 @@ export function SchemaBuilder({
     setImportOpen(false);
   };
 
+  const [discarding, setDiscarding] = useState(false);
   const discard = () => {
     setDoc(seed === null ? emptyDraft() : fromDocument(seed));
     setMode(draft?.mode ?? published?.mode ?? "warn");
@@ -252,7 +275,7 @@ export function SchemaBuilder({
             title="Fields"
             description="Each one becomes a control on the hosted form, an argument on the agent tool, and a column in an export. The name is the contract; everything else is presentation."
             action={
-              <QuietButton onClick={addField} className="shrink-0">
+              <QuietButton ref={addButton} onClick={addField} className="shrink-0">
                 <Plus aria-hidden="true" className="size-4" />
                 Add field
               </QuietButton>
@@ -272,10 +295,11 @@ export function SchemaBuilder({
                 </p>
               </div>
             ) : (
-              <ul className="grid gap-2">
+              <ul ref={fieldList} className="grid gap-2">
                 {doc.fields.map((field, index) => (
                   <FieldCard
                     key={field.id}
+                    entering={field.id === added}
                     field={field}
                     index={index}
                     total={doc.fields.length}
@@ -292,25 +316,44 @@ export function SchemaBuilder({
                       })
                     }
                     onChange={(next) => patch(field.id, next)}
-                    onMove={(to) =>
+                    onMove={(to) => {
                       setDoc((current) => ({
                         ...current,
                         fields: moveField(current.fields, index, to),
-                      }))
-                    }
-                    onRemove={() =>
+                      }));
+                      setAnnouncement(
+                        `Moved ${describe(field)} to position ${to + 1} of ${doc.fields.length}.`,
+                      );
+                    }}
+                    onRemove={() => {
+                      // Focus goes to the card that slides into this one's
+                      // place, or the one above if this was last, or Add
+                      // field if the list is now empty. Never to <body>.
+                      const neighbour = doc.fields[index + 1] ?? doc.fields[index - 1];
                       setDoc((current) => ({
                         ...current,
                         fields: current.fields.filter(
                           (entry) => entry.id !== field.id,
                         ),
-                      }))
-                    }
+                      }));
+                      setAnnouncement(`Removed ${describe(field)}.`);
+                      requestAnimationFrame(() => {
+                        const target = neighbour
+                          ? document.querySelector<HTMLElement>(
+                              `[data-flip-id="${neighbour.id}"] button[aria-expanded]`,
+                            )
+                          : addButton.current;
+                        target?.focus();
+                      });
+                    }}
                     mintId={mintId}
                   />
                 ))}
               </ul>
             )}
+            <p role="status" aria-live="polite" className="sr-only">
+              {announcement}
+            </p>
 
             {documentIssues.length > 0 ? (
               <div className="mt-4 grid gap-1.5 rounded-md border border-border bg-sunken px-3.5 py-3">
@@ -479,9 +522,18 @@ export function SchemaBuilder({
                     live={published !== null}
                   />
                   <SaveDraftButton disabled={errorCount > 0 || !dirty} />
-                  <QuietButton onClick={discard} disabled={!dirty}>
+                  <QuietButton onClick={() => setDiscarding(true)} disabled={!dirty}>
                     Discard changes
                   </QuietButton>
+                  <ConfirmDialog
+                    open={discarding}
+                    onOpenChange={setDiscarding}
+                    onConfirm={discard}
+                    title="Discard your changes?"
+                    description="The editor goes back to the last saved version. Edits you have not saved or published are lost, and this cannot be undone."
+                    confirmLabel="Discard changes"
+                    destructive
+                  />
                 </div>
 
                 <p

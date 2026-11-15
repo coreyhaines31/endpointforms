@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { HelpTip } from "@/components/app/help-tip";
 import { DataTable, Td, Th } from "@/components/app/table";
 import { RelativeTime } from "@/components/app/time";
 import { ProvenanceChip } from "@/components/provenance-chip";
@@ -37,7 +38,10 @@ export function PartialsTable({
         <tr>
           <Th>Reached</Th>
           <Th>Filled in</Th>
-          <Th>Origin</Th>
+          <Th>
+                  Origin
+                  <HelpTip term="origin" label="Origin" />
+                </Th>
           <Th>Started</Th>
           <Th>Last seen</Th>
           <Th>Source</Th>

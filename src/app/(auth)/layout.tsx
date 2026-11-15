@@ -37,7 +37,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
           <LogoLockup className="h-6 w-auto" />
         </Link>
 
-        <div className="mt-12 w-full max-w-[26rem]">{children}</div>
+        <div className="mt-12 w-full max-w-[26rem] animate-rise">{children}</div>
       </div>
     </RootShell>
   );

@@ -17,6 +17,7 @@ import {
   idleDestinationState,
   type DestinationState,
 } from "@/actions/destinations-state";
+import { CopyButton } from "@/components/copy-button";
 import { Field, FormMessage, SubmitButton } from "@/components/app/forms";
 import type {
   AdapterOption,
@@ -149,8 +150,6 @@ function QuietSubmit({
  * before someone closes the tab.
  */
 function SecretOnce({ secret }: { secret: string }) {
-  const [copied, setCopied] = useState(false);
-
   return (
     <div className="mt-4 rounded-md border border-signal-edge/40 bg-signal/10 p-4">
       <p className="font-mono text-label uppercase text-signal-ink">Signing secret</p>
@@ -159,21 +158,15 @@ function SecretOnce({ secret }: { secret: string }) {
         its config from — it is shown once and cannot be shown again.
       </p>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-        <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-card px-3 py-2.5 font-mono text-sm">
+        {/* Scrolls rather than truncates: a secret shown once has to be
+            readable in full, not cut off with an ellipsis. */}
+        <code
+          tabIndex={0}
+          className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md border border-border bg-card px-3 py-2.5 font-mono text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
           {secret}
         </code>
-        <button
-          type="button"
-          onClick={() => {
-            void navigator.clipboard.writeText(secret).then(
-              () => setCopied(true),
-              () => setCopied(false),
-            );
-          }}
-          className="h-11 shrink-0 rounded-md border border-border-control px-4 text-sm font-medium text-foreground hover:bg-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <CopyButton value={secret} label="Copy signing secret" size="lg" />
       </div>
     </div>
   );
@@ -590,7 +583,7 @@ export function UnavailableKinds({ options }: { options: AdapterOption[] }) {
             <dt className="shrink-0 text-sm font-medium text-muted-foreground sm:w-36">
               {option.label}
             </dt>
-            <dd className="mt-0.5 max-w-[62ch] text-sm text-subtle-foreground sm:mt-0">
+            <dd className="mt-0.5 max-w-[62ch] text-sm text-muted-foreground sm:mt-0">
               {option.blurb}
             </dd>
           </div>
@@ -737,7 +730,17 @@ export function DeleteDestinationForm({
       <input type="hidden" name="endpointPublicId" value={endpointPublicId} />
       <input type="hidden" name="destinationId" value={destinationId} />
 
-      <SubmitButton pendingLabel="Removing…" variant="destructive">
+      <SubmitButton
+        pendingLabel="Removing…"
+        variant="destructive"
+        confirm={{
+          title: "Remove this destination?",
+          description:
+            "New submissions stop being delivered to it as soon as you confirm. Your submissions and its delivery history are kept. To use it again you would add it again, with a new signing secret.",
+          confirmLabel: "Remove destination",
+          destructive: true,
+        }}
+      >
         Remove destination
       </SubmitButton>
       <FormMessage state={state} />

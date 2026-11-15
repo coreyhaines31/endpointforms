@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { Container } from "@/components/container";
+import { HelpTip } from "@/components/app/help-tip";
 import { EmptyState, Panel, PanelBody, PanelHeader } from "@/components/app/panel";
 import { ArchiveEndpointForm, RenameEndpointForm } from "@/components/app/endpoint-forms";
 import { EndpointSnippet } from "@/components/app/endpoint-snippet";
@@ -224,17 +225,28 @@ export default async function EndpointDetailPage({
               <tr>
                 <Th>Received</Th>
                 <Th>Submitted</Th>
-                <Th>Origin</Th>
-                <Th>Verdict</Th>
+                <Th>
+                  Origin
+                  <HelpTip term="origin" label="Origin" />
+                </Th>
+                <Th>
+                  Verdict
+                  <HelpTip term="verdict" label="Verdict" />
+                </Th>
               </tr>
             </thead>
             <tbody className="[&>tr:last-child>td]:border-b-0">
               {rows.map((row) => (
-                <tr key={row.publicId}>
+                <tr
+                  key={row.publicId}
+                  className="group/row relative transition-colors duration-(--dur-quick) hover:bg-sunken"
+                >
                   <Td dim>
                     <Link
                       href={`/app/${workspace.slug}/submissions/${row.publicId}`}
-                      className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                      // The after: box stretches this link over the whole row, so the row
+                      // opens from anywhere on it, not only from the timestamp.
+                      className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 after:absolute after:inset-0 group-hover/row:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                     >
                       <RelativeTime value={row.submittedAt} />
                     </Link>

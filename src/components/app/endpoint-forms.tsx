@@ -119,6 +119,18 @@ export function ArchiveEndpointForm({
       <SubmitButton
         pendingLabel={archived ? "Restoring…" : "Archiving…"}
         variant={archived ? "quiet" : "destructive"}
+        // Restoring is harmless; archiving stops live traffic at once.
+        confirm={
+          archived
+            ? undefined
+            : {
+                title: "Archive this endpoint?",
+                description:
+                  "New submissions get a 410 from the moment you confirm, so any form pointed at this URL stops working. Every submission it already took is kept, and you can restore it from this page.",
+                confirmLabel: "Archive endpoint",
+                destructive: true,
+              }
+        }
       >
         {archived ? "Restore endpoint" : "Archive endpoint"}
       </SubmitButton>

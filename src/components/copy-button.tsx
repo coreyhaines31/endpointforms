@@ -28,16 +28,23 @@ const announced: Record<CopyState, string> = {
  * failure is stated, not swallowed. The text stays selectable either way.
  *
  * All three labels share one grid cell, so the button never changes width.
- * The visual box is 32px; an `after:` box stretches the hit area to 44px.
+ * At the default size the visual box is 32px and an `after:` box stretches
+ * the hit area to 44px; `size="lg"` is a full 44px box, for a button that
+ * sits beside a 44px field.
+ *
+ * The live region is a sibling of the button, not a child: inside a button
+ * that has an aria-label, a screen reader may never announce it.
  */
 export function CopyButton({
   value,
   label,
+  size = "sm",
   className,
 }: {
   value: string;
   /** Accessible name, e.g. "Copy install commands". */
   label: string;
+  size?: "sm" | "lg";
   className?: string;
 }) {
   const [state, setState] = useState<CopyState>("idle");
@@ -60,48 +67,51 @@ export function CopyButton({
   }
 
   return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={copy}
-      data-state={state}
-      className={cn(
-        "press relative inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-control bg-card px-2.5 text-sm font-medium text-foreground after:absolute after:-inset-1.5 hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-        className,
-      )}
-    >
-      <span aria-hidden="true" className="grid size-3.5 place-items-center">
-        {(["idle", "copied", "failed"] as const).map((key) => {
-          const Icon = key === "idle" ? Copy : key === "copied" ? Check : X;
-          return (
-            <Icon
+    <>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={copy}
+        data-state={state}
+        className={cn(
+          "press relative inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-control bg-card text-sm font-medium text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+          size === "lg" ? "h-11 px-4" : "h-8 px-2.5 after:absolute after:-inset-1.5",
+          className,
+        )}
+      >
+        <span aria-hidden="true" className="grid size-3.5 place-items-center">
+          {(["idle", "copied", "failed"] as const).map((key) => {
+            const Icon = key === "idle" ? Copy : key === "copied" ? Check : X;
+            return (
+              <Icon
+                key={key}
+                className={cn(
+                  "col-start-1 row-start-1 size-3.5 transition-[opacity,translate,scale,rotate] duration-(--dur-base) ease-enter",
+                  key === "copied" && "text-signal-ink",
+                  key === "failed" && "text-destructive",
+                  state === key ? "scale-100 opacity-100" : "scale-50 opacity-0",
+                )}
+              />
+            );
+          })}
+        </span>
+        <span aria-hidden="true" className="grid">
+          {(["idle", "copied", "failed"] as const).map((key) => (
+            <span
               key={key}
               className={cn(
-                "col-start-1 row-start-1 size-3.5 transition-[opacity,translate,scale,rotate] duration-(--dur-base) ease-enter",
-                key === "copied" && "text-signal-ink",
-                key === "failed" && "text-destructive",
-                state === key ? "scale-100 opacity-100" : "scale-50 opacity-0",
+                "col-start-1 row-start-1 transition-[opacity,translate,scale,rotate] duration-(--dur-quick) ease-enter",
+                state === key ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0",
               )}
-            />
-          );
-        })}
-      </span>
-      <span aria-hidden="true" className="grid">
-        {(["idle", "copied", "failed"] as const).map((key) => (
-          <span
-            key={key}
-            className={cn(
-              "col-start-1 row-start-1 transition-[opacity,translate,scale,rotate] duration-(--dur-quick) ease-enter",
-              state === key ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0",
-            )}
-          >
-            {visible[key]}
-          </span>
-        ))}
-      </span>
+            >
+              {visible[key]}
+            </span>
+          ))}
+        </span>
+      </button>
       <span role="status" aria-live="polite" className="sr-only">
         {announced[state]}
       </span>
-    </button>
+    </>
   );
 }

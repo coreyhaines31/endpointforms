@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowDown, ArrowUp, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import {
   CheckboxField,
@@ -56,6 +57,8 @@ export type FieldCardProps = {
   onRemove: () => void;
   /** Ids are minted by the builder so they stay unique across the whole draft. */
   mintId: () => string;
+  /** Just added: rise in, and put the cursor in its label. */
+  entering?: boolean;
 };
 
 export function FieldCard({
@@ -69,7 +72,24 @@ export function FieldCard({
   onMove,
   onRemove,
   mintId,
+  entering = false,
 }: FieldCardProps) {
+  const up = useRef<HTMLButtonElement>(null);
+  const down = useRef<HTMLButtonElement>(null);
+  // Which move button was pressed, kept until the card has re-rendered at its
+  // new index. Moving to the top disables Up, and a disabled button drops
+  // focus to <body>; this hands it to whichever arrow can still be used.
+  const refocus = useRef<"up" | "down" | null>(null);
+
+  useEffect(() => {
+    const wanted = refocus.current;
+    if (!wanted) return;
+    refocus.current = null;
+    const first = wanted === "up" ? up.current : down.current;
+    const other = wanted === "up" ? down.current : up.current;
+    (first && !first.disabled ? first : other)?.focus();
+  }, [index]);
+
   const errors = issues.filter((issue) => issue.severity === "error");
   const warnings = issues.filter((issue) => issue.severity === "warning");
   // A card with an error is always open. Collapsing the thing somebody has to
@@ -80,7 +100,9 @@ export function FieldCard({
 
   return (
     <li
+      data-flip-id={field.id}
       className={cn(
+        entering && "animate-rise [animation-duration:var(--dur-slow)]",
         // `min-w-0` is load-bearing, not tidiness. A grid item's default
         // `min-width: auto` refuses to shrink below its own min-content, so
         // without it the widest card's header sets the width of the whole list
@@ -107,7 +129,7 @@ export function FieldCard({
           <span className="min-w-0 truncate text-sm font-medium text-foreground">
             {field.label.trim() || field.key.trim() || "Untitled field"}
           </span>
-          <span className="shrink-0 font-mono text-label uppercase text-subtle-foreground">
+          <span className="shrink-0 font-mono text-label uppercase text-muted-foreground">
             {FIELD_TYPE_LABELS[field.type]}
           </span>
           {/* Dropped on a narrow screen. Both chips are `shrink-0`, so on a
@@ -124,16 +146,24 @@ export function FieldCard({
 
         <div className="flex shrink-0 items-center gap-1">
           <IconButton
+            ref={up}
             label={`Move "${describe(field)}" up`}
             disabled={index === 0}
-            onClick={() => onMove(index - 1)}
+            onClick={() => {
+              refocus.current = "up";
+              onMove(index - 1);
+            }}
           >
             <ArrowUp aria-hidden="true" className="size-4" />
           </IconButton>
           <IconButton
+            ref={down}
             label={`Move "${describe(field)}" down`}
             disabled={index === total - 1}
-            onClick={() => onMove(index + 1)}
+            onClick={() => {
+              refocus.current = "down";
+              onMove(index + 1);
+            }}
           >
             <ArrowDown aria-hidden="true" className="size-4" />
           </IconButton>
@@ -168,6 +198,9 @@ export function FieldCard({
 
           <TextField
             label="Label"
+            // Only for a field that was just added, so the next keystroke
+            // names it. Never on load or on expanding an existing card.
+            autoFocus={entering}
             value={field.label}
             onChange={(event) => {
               const label = event.target.value;
@@ -258,7 +291,7 @@ export function FieldCard({
   );
 }
 
-function describe(field: DraftField): string {
+export function describe(field: DraftField): string {
   return field.label.trim() || field.key.trim() || "this field";
 }
 

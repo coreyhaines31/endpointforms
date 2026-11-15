@@ -71,7 +71,7 @@ export function SpamChip({
       </svg>
       {labels[state]}
       {state === "flagged" && typeof score === "number" ? (
-        <span className="opacity-70">{score}</span>
+        <span className="tabular">{score}</span>
       ) : null}
     </span>
   );
