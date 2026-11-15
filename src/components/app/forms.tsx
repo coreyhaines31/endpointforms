@@ -77,8 +77,8 @@ export function Field({
 
       <div
         className={cn(
-          "mt-2 flex items-center rounded-md border bg-card focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring",
-          invalid ? "border-destructive" : "border-border-control",
+          "mt-2 flex items-center rounded-md border bg-card transition-colors duration-(--dur-quick) focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring",
+          invalid ? "border-destructive" : "border-border-control hover:border-foreground/60",
         )}
       >
         {prefix ? (

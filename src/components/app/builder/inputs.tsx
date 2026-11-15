@@ -209,7 +209,7 @@ export function IconButton({
       title={label}
       {...props}
       className={cn(
-        "inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:border-border-control hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-40",
+        "press inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:border-border-control hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-40",
         className,
       )}
     >
@@ -229,7 +229,7 @@ export function QuietButton({
       type="button"
       {...props}
       className={cn(
-        "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-control px-3 text-sm font-medium text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50",
+        "press inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-control px-3 text-sm font-medium text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50",
         className,
       )}
     >

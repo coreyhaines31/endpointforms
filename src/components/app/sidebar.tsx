@@ -201,7 +201,7 @@ export function AppSidebar({
             id={COLLAPSE_BUTTON_ID}
             type="button"
             onClick={toggleCollapsed}
-            className="hidden size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring lg:inline-flex lg:group-data-[nav=collapsed]/app:hidden"
+            className="press relative hidden size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground after:absolute after:-inset-1.5 hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring lg:inline-flex lg:group-data-[nav=collapsed]/app:hidden"
           >
             <PanelLeftClose className="size-4" aria-hidden="true" />
             <span className="sr-only">Collapse sidebar</span>
@@ -211,7 +211,7 @@ export function AppSidebar({
             id={EXPAND_BUTTON_ID}
             type="button"
             onClick={toggleCollapsed}
-            className="hidden size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring lg:group-data-[nav=collapsed]/app:inline-flex"
+            className="press relative hidden size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground after:absolute after:-inset-1.5 hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring lg:group-data-[nav=collapsed]/app:inline-flex"
           >
             <PanelLeftOpen className="size-4" aria-hidden="true" />
             <span className="sr-only">Expand sidebar</span>
@@ -224,7 +224,7 @@ export function AppSidebar({
               setOpen(false);
               openButton.current?.focus();
             }}
-            className="ml-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring lg:hidden"
+            className="press relative ml-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground after:absolute after:-inset-1.5 hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring lg:hidden"
           >
             <X className="size-4" aria-hidden="true" />
             <span className="sr-only">Close navigation</span>
