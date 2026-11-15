@@ -156,6 +156,7 @@
   --animate-rise: ef-rise var(--dur-enter) var(--ease-enter) both;
   --animate-swap: ef-swap var(--dur-base) var(--ease-enter) both;
   --animate-pop: ef-pop var(--dur-base) var(--ease-enter) both;
+  --animate-menu: ef-menu var(--dur-quick) var(--ease-enter) both;
 
   @keyframes ef-rise {
     from {
@@ -175,6 +176,13 @@
     from {
       opacity: 0;
       transform: scale(0.9);
+    }
+  }
+  /* A menu opening out of its trigger. Pair with an origin at the trigger. */
+  @keyframes ef-menu {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
     }
   }
 }

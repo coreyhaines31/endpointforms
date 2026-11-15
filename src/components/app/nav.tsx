@@ -113,20 +113,27 @@ export function WorkspaceSwitcher({ workspaces }: { workspaces: WorkspaceSummary
         <span className="sr-only">Switch workspace</span>
       </summary>
 
-      <div className="absolute left-0 top-full z-50 mt-1.5 w-64 rounded-lg border border-border bg-popover p-1 shadow-lg">
+      {/* No shadow (the brand has none), so the edge does the separating:
+          border-control is 3.2:1 on dark and 3.5:1 on light, where the plain
+          border was 1.25:1 against a sidebar of the same colour. Opens out of
+          the trigger, top left. */}
+      <div className="animate-menu absolute left-0 top-full z-50 mt-1.5 w-64 origin-top-left rounded-lg border border-border-control bg-popover p-1">
         <ul>
           {workspaces.map((workspace) => (
             <li key={workspace.id}>
               <Link
                 href={`/app/${workspace.slug}`}
                 aria-current={workspace.slug === activeSlug ? "true" : undefined}
+                // The <details> outlives the navigation, so close it by hand
+                // or it is still open on the next page.
+                onClick={(event) => event.currentTarget.closest("details")?.removeAttribute("open")}
                 className={cn(
                   "flex items-baseline justify-between gap-3 rounded-md px-2.5 py-2 text-sm hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
                   workspace.slug === activeSlug ? "text-foreground" : "text-muted-foreground",
                 )}
               >
                 <span className="truncate">{workspace.name}</span>
-                <span className="shrink-0 font-mono text-label uppercase text-subtle-foreground">
+                <span className="shrink-0 font-mono text-label uppercase text-muted-foreground">
                   {workspace.role}
                 </span>
               </Link>
@@ -137,6 +144,7 @@ export function WorkspaceSwitcher({ workspaces }: { workspaces: WorkspaceSummary
         <div className="mt-1 border-t border-border pt-1">
           <Link
             href="/app/new"
+            onClick={(event) => event.currentTarget.closest("details")?.removeAttribute("open")}
             className="block rounded-md px-2.5 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             New workspace
