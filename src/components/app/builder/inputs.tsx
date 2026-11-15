@@ -201,7 +201,7 @@ export function IconButton({
   children,
   className,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
+}: React.ComponentProps<"button"> & { label: string }) {
   return (
     <button
       type="button"
