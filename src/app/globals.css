@@ -428,6 +428,14 @@
   }
 }
 
+/* Theme switch: the default root crossfade, shortened. Scoped to the
+   attribute the toggle sets, so route view transitions keep their own. */
+html[data-theme-switch]::view-transition-old(root),
+html[data-theme-switch]::view-transition-new(root) {
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-enter);
+}
+
 /* Same-page anchors land below the 64px sticky header, not under it. */
 html {
   scroll-padding-top: 5rem;
