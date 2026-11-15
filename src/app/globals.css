@@ -316,10 +316,12 @@
     @apply font-sans;
   }
   /* The reduced-motion policy, in one place. Durations collapse to zero
-     rather than `animation: none`, so anything waiting on an animation or
-     transition to finish (Base UI's exit states) still hears that it did. The
-     site's own entrance and reveal rules are additionally scoped to
-     `no-preference`, so under `reduce` they never apply at all. */
+     rather than `animation: none`, so every state change lands at once.
+     A zero-length keyframe animation still fires `animationend`; a zero-length
+     transition fires no `transitionend` at all, so nothing may wait on one.
+     Base UI does not: it asks `getAnimations()`, which is empty. The site's
+     own entrance and reveal rules are additionally scoped to `no-preference`,
+     so under `reduce` they never apply at all. */
   @media (prefers-reduced-motion: reduce) {
     *,
     ::before,
