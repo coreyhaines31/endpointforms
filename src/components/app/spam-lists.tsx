@@ -120,7 +120,7 @@ export function SpamListsForm({ slug, entries }: { slug: string; entries: SpamLi
                 required
                 aria-invalid={state.status === "error" || undefined}
                 aria-describedby={hintId}
-                className="h-11 w-full min-w-0 flex-1 rounded-md border border-border-control bg-card px-3 font-mono text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                className="h-11 w-full min-w-0 sm:flex-1 rounded-md border border-border-control bg-card px-3 font-mono text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
               />
               <SubmitButton pendingLabel="Adding…">Add</SubmitButton>
             </div>

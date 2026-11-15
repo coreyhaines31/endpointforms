@@ -52,7 +52,7 @@ export function ImportUrlPrompt({ action }: { action: string }) {
           spellCheck={false}
           required
           placeholder="https://example.com/contact"
-          className="h-11 min-w-0 flex-1 rounded-md border border-border-control bg-card px-3 text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          className="h-11 w-full min-w-0 sm:flex-1 rounded-md border border-border-control bg-card px-3 text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         />
         <button
           type="submit"
