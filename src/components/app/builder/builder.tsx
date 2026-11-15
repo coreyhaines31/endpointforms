@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import { useActionState, useMemo, useRef, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import { saveSchemaAction } from "@/actions/schemas";
@@ -201,6 +201,16 @@ export function SchemaBuilder({
   );
   const ruleIssueList = issues.filter((issue) => issue.ruleId !== undefined);
   const dirty = fingerprint !== saved;
+
+  // Closing the tab or reloading with unsaved edits asks first. Browsers show
+  // their own wording; all a page can do is ask for the prompt. Links inside
+  // the app are client navigations and do not fire this.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   // Publishing what is already live writes an identical version and moves the
   // pointer to it, which is a row of history that records nothing. It is
