@@ -63,14 +63,14 @@ export function RecordJourney({ animated = false }: { animated?: boolean }) {
         {steps.map((item, index) => (
           <li
             key={item.step}
-            {...(animated ? enterStep(6 + index * 2) : {})}
+            {...(animated ? enterStep(4 + index) : {})}
             className="border-b border-border px-4 py-5 last:border-b-0 sm:px-5 sm:[&:nth-child(2n)]:border-l sm:[&:nth-child(n+3)]:border-b-0 lg:border-b-0 lg:border-l lg:first:border-l-0"
           >
             <p className="flex items-baseline gap-2 font-mono text-label uppercase text-muted-foreground">
               <span>{item.step}</span>
               <span className="text-foreground">{item.when}</span>
             </p>
-            <div {...(animated ? enterStep(7 + index * 2) : {})} className="mt-3 text-base">
+            <div {...(animated ? enterStep(4.5 + index) : {})} className="mt-3 text-base">
               {item.value}
             </div>
             <p className="mt-2 max-w-[30ch] text-sm text-muted-foreground">{item.body}</p>

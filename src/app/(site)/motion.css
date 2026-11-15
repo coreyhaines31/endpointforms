@@ -98,7 +98,7 @@ html {
 }
 @media (prefers-reduced-motion: no-preference) {
   .record-write-head {
-    animation: ef-write-head calc(var(--stagger) * 9 + var(--dur-enter)) var(--ease-move) calc(var(--stagger) * 5) both;
+    animation: ef-write-head calc(var(--stagger) * 4 + var(--dur-enter)) var(--ease-move) calc(var(--stagger) * 4) both;
   }
 }
 @keyframes ef-write-head {

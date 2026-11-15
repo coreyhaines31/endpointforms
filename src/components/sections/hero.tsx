@@ -29,23 +29,23 @@ export function Hero() {
           Form builder · Pre-launch
         </p>
 
-        <h1 {...enterStep(1)} className="mt-6 max-w-[19ch] text-display sm:text-display-xl lg:max-w-[22ch]">
+        <h1 {...enterStep(0)} className="mt-6 max-w-[19ch] text-display sm:text-display-xl lg:max-w-[22ch]">
           The open-source form builder for marketers.
         </h1>
 
-        <p {...enterStep(2)} className="mt-7 max-w-[60ch] text-lead text-muted-foreground">
+        <p {...enterStep(1)} className="mt-7 max-w-[60ch] text-lead text-muted-foreground">
           Build high-converting forms for your website, and pipe the data wherever you
           need it &mdash; your CRM, your warehouse, a webhook. Open source, self-hostable,
           and it tells you when a sync breaks instead of failing quietly.
         </p>
 
-        <div {...enterStep(3)} className="mt-10">
+        <div {...enterStep(2)} className="mt-10">
           <WaitlistForm note="Waitlist" />
         </div>
       </Container>
 
       <Container className="mt-[clamp(3rem,6vw,4.5rem)]">
-        <div {...enterStep(4)}>
+        <div {...enterStep(3)}>
           <RecordJourney animated />
         </div>
       </Container>
