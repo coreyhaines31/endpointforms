@@ -79,8 +79,12 @@ export default function PrivacyPage() {
             This page said “no analytics” until September 2026, and promised that if that
             changed it would change first and name the tool. It changed, so here is the tool:
             this site counts page views with{" "}
-            <a href="https://usefathom.com" rel="noreferrer">Fathom Analytics</a>, loaded
-            through <a href="https://tracerkit.com" rel="noreferrer">TracerKit</a>, which is
+            <TextLink href="https://usefathom.com" external>
+              Fathom Analytics
+            </TextLink>, loaded
+            through <TextLink href="https://tracerkit.com" external>
+              TracerKit
+            </TextLink>, which is
             our own tag manager. Still no Google Analytics, no Meta pixel, no session
             recording, no heatmaps.
           </p>
