@@ -43,11 +43,11 @@ export function ThemeToggle() {
       {/* Both icons are always rendered and trade places with a quarter turn,
           so the swap reads as one control changing state. */}
       <Sun
-        className="absolute size-4 transition-[opacity,transform] duration-(--dur-slow) ease-enter dark:-rotate-90 dark:scale-50 dark:opacity-0"
+        className="absolute size-4 transition-[opacity,translate,scale,rotate] duration-(--dur-slow) ease-enter dark:-rotate-90 dark:scale-50 dark:opacity-0"
         aria-hidden="true"
       />
       <Moon
-        className="absolute size-4 rotate-90 scale-50 opacity-0 transition-[opacity,transform] duration-(--dur-slow) ease-enter dark:rotate-0 dark:scale-100 dark:opacity-100"
+        className="absolute size-4 rotate-90 scale-50 opacity-0 transition-[opacity,translate,scale,rotate] duration-(--dur-slow) ease-enter dark:rotate-0 dark:scale-100 dark:opacity-100"
         aria-hidden="true"
       />
     </button>

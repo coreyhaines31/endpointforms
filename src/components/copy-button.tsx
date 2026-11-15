@@ -77,7 +77,7 @@ export function CopyButton({
             <Icon
               key={key}
               className={cn(
-                "col-start-1 row-start-1 size-3.5 transition-[opacity,transform] duration-(--dur-base) ease-enter",
+                "col-start-1 row-start-1 size-3.5 transition-[opacity,translate,scale,rotate] duration-(--dur-base) ease-enter",
                 key === "copied" && "text-signal-ink",
                 key === "failed" && "text-destructive",
                 state === key ? "scale-100 opacity-100" : "scale-50 opacity-0",
@@ -91,7 +91,7 @@ export function CopyButton({
           <span
             key={key}
             className={cn(
-              "col-start-1 row-start-1 transition-[opacity,transform] duration-(--dur-quick) ease-enter",
+              "col-start-1 row-start-1 transition-[opacity,translate,scale,rotate] duration-(--dur-quick) ease-enter",
               state === key ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0",
             )}
           >

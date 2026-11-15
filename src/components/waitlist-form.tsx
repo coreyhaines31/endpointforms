@@ -233,7 +233,7 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
           <span
             aria-hidden={busy || undefined}
             className={cn(
-              "col-start-1 row-start-1 inline-flex items-center gap-1.5 transition-[opacity,transform] duration-(--dur-quick) ease-enter",
+              "col-start-1 row-start-1 inline-flex items-center gap-1.5 transition-[opacity,translate,scale,rotate] duration-(--dur-quick) ease-enter",
               busy && "-translate-y-1 opacity-0",
             )}
           >
@@ -246,7 +246,7 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
           <span
             aria-hidden={!busy || undefined}
             className={cn(
-              "col-start-1 row-start-1 inline-flex items-center gap-1.5 transition-[opacity,transform] duration-(--dur-quick) ease-enter",
+              "col-start-1 row-start-1 inline-flex items-center gap-1.5 transition-[opacity,translate,scale,rotate] duration-(--dur-quick) ease-enter",
               !busy && "translate-y-1 opacity-0",
             )}
           >
