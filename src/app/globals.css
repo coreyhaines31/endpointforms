@@ -412,6 +412,27 @@
   }
 }
 
+/* The marketing header's bottom rule fades in over the first 48px of scroll,
+   driven by the scroll position itself (no listener, no JavaScript). Where
+   scroll timelines are unsupported the rule is simply always there. */
+@supports (animation-timeline: scroll()) {
+  .site-header {
+    animation: ef-header-rule linear both;
+    animation-timeline: scroll(root);
+    animation-range: 0 48px;
+  }
+}
+@keyframes ef-header-rule {
+  from {
+    border-bottom-color: transparent;
+  }
+}
+
+/* Same-page anchors land below the 64px sticky header, not under it. */
+html {
+  scroll-padding-top: 5rem;
+}
+
 /* The hero record's write head: a hairline that runs across the four steps as
    they arrive, then fades into the frame's own rule. Hidden when motion is
    reduced, since it only exists to move. */

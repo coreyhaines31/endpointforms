@@ -101,8 +101,18 @@ export default function SiteLayout({ children }: { children: React.ReactNode }) 
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
+      {/* First in tab order, visible only when focused: skips the nine
+          header stops that would otherwise come before every page. */}
+      <a
+        href="#content"
+        className="sr-only z-[60] rounded-md bg-foreground px-3 py-2 text-sm font-medium text-background focus-visible:not-sr-only focus-visible:fixed focus-visible:left-4 focus-visible:top-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      >
+        Skip to content
+      </a>
       <SiteHeader />
-      <div className="flex flex-1 flex-col">{children}</div>
+      <div id="content" tabIndex={-1} className="flex flex-1 flex-col outline-none">
+        {children}
+      </div>
       <SiteFooter />
     </RootShell>
   );

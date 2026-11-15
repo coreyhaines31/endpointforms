@@ -43,7 +43,7 @@ export async function GithubLink({ className, compact }: GithubLinkProps) {
           : `GitHub repository, ${count} stars (opens in a new tab)`
       }
       className={cn(
-        "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-border-control px-3 text-sm text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+        "press relative inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-border-control px-3 text-sm text-foreground after:absolute after:inset-x-0 after:-inset-y-1 hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
         className,
       )}
     >
