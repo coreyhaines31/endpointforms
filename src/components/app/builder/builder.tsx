@@ -9,6 +9,7 @@ import { Panel, PanelBody, PanelHeader } from "@/components/app/panel";
 import { EmbedPanel } from "./embed-panel";
 import { FieldCard } from "./field-card";
 import { ImportPanel } from "./import-panel";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { CheckboxField, IssueLine, QuietButton, TextField } from "./inputs";
 import { PreviewPane } from "./preview-pane";
 import { RulesInspector } from "./rules-inspector";
@@ -236,6 +237,7 @@ export function SchemaBuilder({
     setImportOpen(false);
   };
 
+  const [discarding, setDiscarding] = useState(false);
   const discard = () => {
     setDoc(seed === null ? emptyDraft() : fromDocument(seed));
     setMode(draft?.mode ?? published?.mode ?? "warn");
@@ -479,9 +481,18 @@ export function SchemaBuilder({
                     live={published !== null}
                   />
                   <SaveDraftButton disabled={errorCount > 0 || !dirty} />
-                  <QuietButton onClick={discard} disabled={!dirty}>
+                  <QuietButton onClick={() => setDiscarding(true)} disabled={!dirty}>
                     Discard changes
                   </QuietButton>
+                  <ConfirmDialog
+                    open={discarding}
+                    onOpenChange={setDiscarding}
+                    onConfirm={discard}
+                    title="Discard your changes?"
+                    description="The editor goes back to the last saved version. Edits you have not saved or published are lost, and this cannot be undone."
+                    confirmLabel="Discard changes"
+                    destructive
+                  />
                 </div>
 
                 <p

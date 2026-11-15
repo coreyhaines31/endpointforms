@@ -730,7 +730,17 @@ export function DeleteDestinationForm({
       <input type="hidden" name="endpointPublicId" value={endpointPublicId} />
       <input type="hidden" name="destinationId" value={destinationId} />
 
-      <SubmitButton pendingLabel="Removing…" variant="destructive">
+      <SubmitButton
+        pendingLabel="Removing…"
+        variant="destructive"
+        confirm={{
+          title: "Remove this destination?",
+          description:
+            "New submissions stop being delivered to it as soon as you confirm. Your submissions and its delivery history are kept. To use it again you would add it again, with a new signing secret.",
+          confirmLabel: "Remove destination",
+          destructive: true,
+        }}
+      >
         Remove destination
       </SubmitButton>
       <FormMessage state={state} />

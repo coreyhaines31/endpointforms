@@ -219,7 +219,17 @@ function VerdictKeyRow({
           <form action={action}>
             <input type="hidden" name="slug" value={slug} />
             {entry.id ? <input type="hidden" name="keyId" value={entry.id} /> : null}
-            <SubmitButton pendingLabel="Revoking…" variant="quiet">
+            <SubmitButton
+              pendingLabel="Revoking…"
+              variant="quiet"
+              confirm={{
+                title: `Revoke ${entry.label ? `“${entry.label}”` : "this key"}?`,
+                description:
+                  "Anything still sending outcomes with this key starts getting refused straight away. A revoked key cannot be turned back on; you would create a new one and update the integration.",
+                confirmLabel: "Revoke key",
+                destructive: true,
+              }}
+            >
               Revoke
             </SubmitButton>
           </form>

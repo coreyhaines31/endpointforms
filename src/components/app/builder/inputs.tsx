@@ -223,7 +223,7 @@ export function QuietButton({
   children,
   className,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+}: React.ComponentProps<"button">) {
   return (
     <button
       type="button"

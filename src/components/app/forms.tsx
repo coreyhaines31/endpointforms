@@ -2,7 +2,7 @@
 
 import { ChevronDown } from "lucide-react";
 
-import { useActionState, useId, useState } from "react";
+import { useActionState, useId, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
@@ -20,6 +20,7 @@ import {
   signUpWithPassword,
 } from "@/actions/auth";
 import { CopyButton } from "@/components/copy-button";
+import { ConfirmDialog, type ConfirmCopy } from "@/components/app/confirm-dialog";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth/password-policy";
 import {
   acceptInvitationAction,
@@ -108,35 +109,69 @@ export function Field({
   );
 }
 
+/**
+ * Puts a confirmation between a submit button and its form. With `confirm`
+ * set, the button no longer submits: it opens a ConfirmDialog, and only the
+ * dialog's confirm submits the button's own form, through requestSubmit, so
+ * the server action and its pending state are exactly what they were.
+ */
+function useConfirmGate(confirm: ConfirmCopy | undefined) {
+  const button = useRef<HTMLButtonElement>(null);
+  const [asking, setAsking] = useState(false);
+
+  const buttonProps = confirm
+    ? { ref: button, type: "button" as const, onClick: () => setAsking(true) }
+    : { ref: button, type: "submit" as const };
+
+  const dialog = confirm ? (
+    <ConfirmDialog
+      {...confirm}
+      open={asking}
+      onOpenChange={setAsking}
+      returnFocus={button}
+      onConfirm={() => button.current?.form?.requestSubmit()}
+    />
+  ) : null;
+
+  return { buttonProps, dialog };
+}
+
 export function SubmitButton({
   children,
   pendingLabel,
   variant = "primary",
+  confirm,
   className,
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   pendingLabel: string;
   variant?: "primary" | "quiet" | "destructive";
+  /** Ask before submitting. For actions that are hard to take back. */
+  confirm?: ConfirmCopy;
 }) {
   const { pending } = useFormStatus();
+  const { buttonProps, dialog } = useConfirmGate(confirm);
 
   return (
-    <button
-      type="submit"
-      disabled={pending || props.disabled}
-      {...props}
-      className={cn(
-        "inline-flex h-11 shrink-0 items-center justify-center rounded-md px-4 text-base font-medium transition-opacity focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-60",
-        variant === "primary" && "signal-fill hover:opacity-90",
-        variant === "quiet" &&
-          "border border-border-control text-foreground hover:bg-sunken",
-        variant === "destructive" &&
-          "border border-border-control text-destructive hover:bg-destructive-surface",
-        className,
-      )}
-    >
-      {pending ? pendingLabel : children}
-    </button>
+    <>
+      <button
+        disabled={pending || props.disabled}
+        {...props}
+        {...buttonProps}
+        className={cn(
+          "press inline-flex h-11 shrink-0 items-center justify-center rounded-md px-4 text-base font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-60",
+          variant === "primary" && "signal-fill hover:brightness-95",
+          variant === "quiet" &&
+            "border border-border-control text-foreground hover:bg-sunken",
+          variant === "destructive" &&
+            "border border-border-control text-destructive hover:bg-destructive-surface",
+          className,
+        )}
+      >
+        {pending ? pendingLabel : children}
+      </button>
+      {dialog}
+    </>
   );
 }
 
@@ -598,7 +633,17 @@ export function RemoveMemberForm({
     <form action={action} className="flex items-center gap-3">
       <input type="hidden" name="slug" value={slug} />
       <input type="hidden" name="membershipId" value={membershipId} />
-      <QuietSubmit pendingLabel="Removing…" aria-label={`Remove ${label}`}>
+      <QuietSubmit
+        pendingLabel="Removing…"
+        aria-label={`Remove ${label}`}
+        confirm={{
+          title: `Remove ${label} from this workspace?`,
+          description:
+            "They lose access to every endpoint and submission here as soon as you confirm. To bring them back you would send a new invitation.",
+          confirmLabel: "Remove member",
+          destructive: true,
+        }}
+      >
         Remove
       </QuietSubmit>
       <InlineMessage state={state} />
@@ -624,19 +669,27 @@ export function AcceptInvitationForm({ token }: { token: string }) {
 function QuietSubmit({
   children,
   pendingLabel,
+  confirm,
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { pendingLabel: string }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  pendingLabel: string;
+  confirm?: ConfirmCopy;
+}) {
   const { pending } = useFormStatus();
+  const { buttonProps, dialog } = useConfirmGate(confirm);
 
   return (
-    <button
-      type="submit"
-      disabled={pending}
-      {...props}
-      className="rounded-md border border-border px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:border-border-control hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
-    >
-      {pending ? pendingLabel : children}
-    </button>
+    <>
+      <button
+        disabled={pending}
+        {...props}
+        {...buttonProps}
+        className="press rounded-md border border-border px-2.5 py-1.5 text-sm text-muted-foreground hover:border-border-control hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
+      >
+        {pending ? pendingLabel : children}
+      </button>
+      {dialog}
+    </>
   );
 }
 

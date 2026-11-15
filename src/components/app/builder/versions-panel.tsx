@@ -1,12 +1,13 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import { activateVersionAction, clearSchemaAction } from "@/actions/schemas";
 import { QuietButton } from "./inputs";
 import { idleSchemaState } from "./state";
 import { RelativeTime } from "@/components/app/time";
+import { ConfirmDialog, type ConfirmCopy } from "@/components/app/confirm-dialog";
 
 /**
  * Every version this endpoint's schema has ever had (#35).
@@ -134,7 +135,17 @@ export function VersionsPanel({
             What you lose is the hosted form, the agent-callable tool and server-side
             validation.
           </p>
-          <RowSubmit>Take the schema off this endpoint</RowSubmit>
+          <RowSubmit
+            confirm={{
+              title: "Take the schema off this endpoint?",
+              description:
+                "The hosted form, the agent-callable tool and server-side validation stop as soon as you confirm, and the endpoint accepts whatever is posted to it. Nothing is deleted; any version above can be made live again.",
+              confirmLabel: "Take the schema off",
+              destructive: true,
+            }}
+          >
+            Take the schema off this endpoint
+          </RowSubmit>
         </form>
       ) : null}
 
@@ -146,15 +157,37 @@ export function VersionsPanel({
 function RowSubmit({
   children,
   disabled,
+  confirm,
 }: {
   children: React.ReactNode;
   disabled?: boolean;
+  /** Ask first, then submit this button's form. See ConfirmDialog. */
+  confirm?: ConfirmCopy;
 }) {
   const { pending } = useFormStatus();
+  const button = useRef<HTMLButtonElement>(null);
+  const [asking, setAsking] = useState(false);
   return (
-    <QuietButton type="submit" disabled={pending || disabled} className="mt-3 shrink-0">
-      {pending ? "Working…" : children}
-    </QuietButton>
+    <>
+      <QuietButton
+        ref={button}
+        type={confirm ? "button" : "submit"}
+        onClick={confirm ? () => setAsking(true) : undefined}
+        disabled={pending || disabled}
+        className="mt-3 shrink-0"
+      >
+        {pending ? "Working…" : children}
+      </QuietButton>
+      {confirm ? (
+        <ConfirmDialog
+          {...confirm}
+          open={asking}
+          onOpenChange={setAsking}
+          returnFocus={button}
+          onConfirm={() => button.current?.form?.requestSubmit()}
+        />
+      ) : null}
+    </>
   );
 }
 
