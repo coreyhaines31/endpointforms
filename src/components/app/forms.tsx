@@ -19,6 +19,7 @@ import {
   signInWithPassword,
   signUpWithPassword,
 } from "@/actions/auth";
+import { CopyButton } from "@/components/copy-button";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth/password-policy";
 import {
   acceptInvitationAction,
@@ -539,8 +540,6 @@ export function InviteForm({ slug }: { slug: string }) {
  * than letting someone discover it after closing the tab.
  */
 function InviteLink({ url }: { url: string }) {
-  const [copied, setCopied] = useState(false);
-
   return (
     <div className="mt-4 rounded-md border border-border bg-sunken p-4">
       <p className="font-mono text-label uppercase text-muted-foreground">
@@ -551,18 +550,15 @@ function InviteLink({ url }: { url: string }) {
         once and cannot be shown again — only its hash is stored.
       </p>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-        <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-card px-3 py-2.5 font-mono text-sm">
+        {/* Scrolls rather than truncates: a link shown once has to be
+            readable in full, not cut off with an ellipsis. */}
+        <code
+          tabIndex={0}
+          className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md border border-border bg-card px-3 py-2.5 font-mono text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
           {url}
         </code>
-        <button
-          type="button"
-          onClick={() => {
-            void navigator.clipboard.writeText(url).then(() => setCopied(true));
-          }}
-          className="h-11 shrink-0 rounded-md border border-border-control px-4 text-sm font-medium text-foreground hover:bg-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <CopyButton value={url} label="Copy invitation link" size="lg" />
       </div>
     </div>
   );

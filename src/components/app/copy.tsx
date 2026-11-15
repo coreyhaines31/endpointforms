@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
-
+import { CopyButton } from "@/components/copy-button";
 import { cn } from "@/lib/utils";
+
+// The app and the marketing site share one copy button, so feedback looks and
+// is announced the same everywhere. Re-exported for the app's existing imports.
+export { CopyButton };
 
 /**
  * A block of code with a button that actually copies it.
@@ -50,48 +53,5 @@ export function CopyBlock({
         <code className="font-mono text-sm text-foreground">{code}</code>
       </pre>
     </div>
-  );
-}
-
-export function CopyButton({
-  value,
-  label,
-  className,
-}: {
-  value: string;
-  label: string;
-  className?: string;
-}) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(value);
-          setState("copied");
-        } catch {
-          setState("failed");
-        }
-        setTimeout(() => setState("idle"), 2500);
-      }}
-      className={cn(
-        "shrink-0 rounded-md border border-border-control px-2.5 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-        className,
-      )}
-    >
-      <span aria-hidden="true">
-        {state === "copied" ? "Copied" : state === "failed" ? "Select and copy" : "Copy"}
-      </span>
-      <span role="status" aria-live="polite" className="sr-only">
-        {state === "copied"
-          ? "Copied to the clipboard."
-          : state === "failed"
-            ? "Copying failed. Select the text and copy it."
-            : ""}
-      </span>
-    </button>
   );
 }
