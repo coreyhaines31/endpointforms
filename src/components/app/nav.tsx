@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Inbox,
@@ -173,19 +173,14 @@ export function WorkspaceNav({ slug }: { slug: string }) {
               title={item.label}
               aria-current={active ? "page" : undefined}
               className={cn(
-                "relative flex items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
+                "press relative flex items-center gap-3 rounded-md px-2.5 py-2 text-sm focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
                 active
                   ? "bg-muted font-medium text-foreground"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 "lg:group-data-[nav=collapsed]/app:justify-center lg:group-data-[nav=collapsed]/app:px-0",
               )}
             >
-              {active ? (
-                <span
-                  aria-hidden="true"
-                  className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-foreground"
-                />
-              ) : null}
+              <NavIndicator active={active} />
               <Icon className="size-4 shrink-0" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate lg:group-data-[nav=collapsed]/app:sr-only">
                 {item.label}
@@ -195,5 +190,29 @@ export function WorkspaceNav({ slug }: { slug: string }) {
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * The bar at the left edge of a nav item. It grows in on the item you are on,
+ * and on the item you just clicked while its page is still loading it shows
+ * at half strength, so a slow navigation is visibly underway rather than
+ * ignored. The pending state waits 120ms before showing, so fast navigations
+ * never flash it. Must render inside the `Link` (useLinkStatus reads it).
+ */
+function NavIndicator({ active }: { active: boolean }) {
+  const { pending } = useLinkStatus();
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "absolute inset-y-1.5 left-0 w-0.5 origin-center rounded-full bg-foreground transition-[transform,opacity] duration-(--dur-base) ease-enter",
+        active
+          ? "scale-y-100 opacity-100"
+          : pending
+            ? "scale-y-100 opacity-40 delay-[120ms]"
+            : "scale-y-0 opacity-0",
+      )}
+    />
   );
 }
