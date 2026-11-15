@@ -45,7 +45,11 @@ export function ResultHeadline({
       {/* Size token and colour never share a cn() call — twMerge reads
           `text-display` as a colour and drops it. See src/components/prose.tsx. */}
       <p className="mt-3 font-mono text-display tabular">
-        <span className="text-foreground">{value}</span>
+        {/* Keyed on the value, so each new answer drops in and the eye
+            catches that it changed while the inputs are being typed. */}
+        <span key={value} className="animate-swap inline-block text-foreground">
+          {value}
+        </span>
       </p>
       {sub ? <div className="mt-3 max-w-[46ch] text-sm text-muted-foreground">{sub}</div> : null}
     </div>
@@ -102,7 +106,15 @@ export function Stat({
       <dt className="font-mono text-label uppercase text-muted-foreground">{label}</dt>
       <dd className="mt-2">
         <span className="font-mono text-h3 tabular">
-          <span className={tone === "neutral" ? "text-foreground" : toneText[tone]}>{value}</span>
+          <span
+            key={value}
+            className={cn(
+              "animate-swap inline-block",
+              tone === "neutral" ? "text-foreground" : toneText[tone],
+            )}
+          >
+            {value}
+          </span>
         </span>
         {note ? <p className="mt-2 max-w-[34ch] text-sm text-muted-foreground">{note}</p> : null}
       </dd>
@@ -138,7 +150,15 @@ export function Meter({
       aria-label={label}
       className="h-1.5 w-full overflow-hidden rounded-sm bg-sunken"
     >
-      <div className={cn("h-full", fill)} style={{ width: `${safe * 100}%` }} />
+      {/* scaleX, not width: the bar follows every keystroke, and a transform
+          moves without re-laying-out the result panel around it. */}
+      <div
+        className={cn(
+          "h-full w-full origin-left transition-transform duration-(--dur-slow) ease-move",
+          fill,
+        )}
+        style={{ transform: `scaleX(${safe})` }}
+      />
     </div>
   );
 }

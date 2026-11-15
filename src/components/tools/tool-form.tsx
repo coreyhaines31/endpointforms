@@ -188,8 +188,11 @@ export function CalculatorFrame({
         </div>
       </div>
 
+      {/* <output> is role=status, which is atomic by default: every keystroke
+          re-read the whole panel. Non-atomic announces only what changed. */}
       <output
         aria-live="polite"
+        aria-atomic="false"
         className="block min-w-0 border-t border-border pt-8 lg:border-l lg:border-t-0 lg:pl-12 lg:pt-0"
       >
         {result}
