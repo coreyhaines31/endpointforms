@@ -397,6 +397,19 @@
   [data-reveal-stagger][data-revealed] > :nth-child(4) { transition-delay: calc(var(--stagger) * 3); }
   [data-reveal-stagger][data-revealed] > :nth-child(5) { transition-delay: calc(var(--stagger) * 4); }
   [data-reveal-stagger][data-revealed] > :nth-child(n + 6) { transition-delay: calc(var(--stagger) * 5); }
+
+  /* A meter inside revealed content fills from the left once, after the
+     content has settled, so the eye reads the proportion as a quantity. */
+  [data-revealed=""] [data-grow] {
+    transform-origin: left;
+    animation: ef-grow calc(var(--dur-slow) * 2) var(--ease-move) var(--dur-base) both;
+  }
+}
+
+@keyframes ef-grow {
+  from {
+    transform: scaleX(0);
+  }
 }
 
 /* The hero record's write head: a hairline that runs across the four steps as

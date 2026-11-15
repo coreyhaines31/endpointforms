@@ -27,7 +27,10 @@ export function RevealObserver() {
       return;
     }
 
-    const reveal = (element: Element) => element.setAttribute("data-revealed", "");
+    // "initial" marks content that was already on screen at load. It is shown
+    // as painted; nothing inside it replays an entrance after hydration.
+    const reveal = (element: Element, how: "" | "initial" = "") =>
+      element.setAttribute("data-revealed", how);
 
     const io = new IntersectionObserver(
       (entries) => {
@@ -45,7 +48,7 @@ export function RevealObserver() {
       scope.querySelectorAll(SELECTOR).forEach((element) => {
         const box = element.getBoundingClientRect();
         // Already on screen, or already scrolled past: show it as it is.
-        if (box.top < viewport) reveal(element);
+        if (box.top < viewport) reveal(element, "initial");
         else io.observe(element);
       });
     };

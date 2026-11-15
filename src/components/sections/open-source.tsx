@@ -43,7 +43,7 @@ export function OpenSource() {
           </p>
         </div>
 
-        <dl className="self-start border-t border-border">
+        <dl data-reveal-stagger className="self-start border-t border-border">
           {facts.map((fact) => (
             <div
               key={fact.label}

@@ -74,7 +74,7 @@ export function Proof() {
           wait for the phone call. Switch the metric and watch the winner change.
         </p>
 
-        <div className="mt-10 border border-border bg-card">
+        <div data-reveal className="mt-10 border border-border bg-card">
           <div className="flex flex-col gap-4 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
             <div className="flex flex-wrap items-center gap-3">
               <p className="font-mono text-label uppercase text-muted-foreground">

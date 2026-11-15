@@ -130,7 +130,7 @@ export function MockupMeter({
       aria-hidden="true"
       className={cn("h-2 w-full border border-border bg-background", className)}
     >
-      <div className={cn("h-full", meterFill[tone])} style={{ width: `${width}%` }} />
+      <div data-grow className={cn("h-full", meterFill[tone])} style={{ width: `${width}%` }} />
     </div>
   );
 }
