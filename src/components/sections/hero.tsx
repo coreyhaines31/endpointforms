@@ -59,7 +59,8 @@ export function Hero() {
             >
               <dt className="font-mono text-h2 tabular text-foreground">{figure.value}</dt>
               <dd className="mt-2 max-w-[28ch] text-sm text-muted-foreground">
-                <span className="text-foreground">{figure.label}</span> {figure.detail}
+                <span className="block text-foreground">{figure.label}</span>
+                <span className="mt-1 block">{figure.detail}</span>
               </dd>
             </div>
           ))}
