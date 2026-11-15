@@ -39,7 +39,7 @@ export function Hero() {
           and it tells you when a sync breaks instead of failing quietly.
         </p>
 
-        <div {...enterStep(2)} className="mt-10">
+        <div {...enterStep(2)} id="hero-waitlist" className="mt-10 scroll-mt-28">
           <WaitlistForm note="Waitlist" />
         </div>
       </Container>

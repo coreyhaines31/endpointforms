@@ -4,6 +4,7 @@ import { GithubLink } from "@/components/github-link";
 import { LogoLockup, LogoMark } from "@/components/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { NavLink } from "@/components/nav-link";
+import { WaitlistLink } from "@/components/waitlist-link";
 import { PRIMARY_NAV } from "@/lib/site";
 
 /**
@@ -61,12 +62,7 @@ export function SiteHeader() {
             </Link>
             <ThemeToggle />
             <GithubLink compact />
-            <Link
-              href="/#waitlist"
-              className="press relative inline-flex h-9 shrink-0 items-center rounded-md border border-border-control px-3 text-sm font-medium text-foreground after:absolute after:inset-x-0 after:-inset-y-1 hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-            >
-              Join the waitlist
-            </Link>
+            <WaitlistLink className="press relative inline-flex h-9 shrink-0 items-center rounded-md border border-border-control px-3 text-sm font-medium text-foreground after:absolute after:inset-x-0 after:-inset-y-1 hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" />
           </div>
         </Container>
       </header>
