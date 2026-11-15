@@ -86,6 +86,7 @@ export function AppSidebar({
   const [open, setOpen] = useState(false);
   const openButton = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const topBar = useRef<HTMLElement>(null);
 
   // Navigating is the one thing a drawer is for, so it closes itself when the
   // route changes rather than leaving the page it just loaded behind a scrim.
@@ -101,6 +102,13 @@ export function AppSidebar({
     if (!open) return;
     closeButton.current?.focus();
 
+    // While the drawer is open, the page behind it is out of reach: Tab stays
+    // in the drawer and a screen reader does not wander into the content.
+    const behind = [document.getElementById("main"), topBar.current].filter(
+      (element): element is HTMLElement => element !== null,
+    );
+    behind.forEach((element) => (element.inert = true));
+
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       setOpen(false);
@@ -108,7 +116,10 @@ export function AppSidebar({
     }
 
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      behind.forEach((element) => (element.inert = false));
+    };
   }, [open]);
 
   const active = workspaces.find((workspace) => workspace.slug === slug);
@@ -116,14 +127,17 @@ export function AppSidebar({
   return (
     <>
       {/* The mobile top bar. `lg:hidden`, so it is not a flex item at all on desktop. */}
-      <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur-sm lg:hidden">
+      <header
+        ref={topBar}
+        className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-4 lg:hidden"
+      >
         <button
           ref={openButton}
           type="button"
           onClick={() => setOpen(true)}
           aria-controls="app-sidebar"
           aria-expanded={open}
-          className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-border-control text-muted-foreground transition-colors hover:bg-sunken hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          className="press relative inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-border-control text-muted-foreground after:absolute after:-inset-1 hover:bg-sunken hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
           <Menu className="size-4" aria-hidden="true" />
           <span className="sr-only">Open navigation</span>
@@ -135,17 +149,19 @@ export function AppSidebar({
       </header>
 
       {/*
-        The scrim. Rendered only while the drawer is open — a permanently
-        mounted `pointer-events-none` overlay is one stacking-context bug away
-        from swallowing every click on the page.
+        The scrim. Always mounted so it can fade, but `invisible` when closed:
+        a hidden element takes no clicks, which is the guarantee a merely
+        transparent `pointer-events-none` overlay could lose to a stacking
+        bug. Visibility flips at the end of the fade out, the start of the fade in.
       */}
-      {open ? (
-        <div
-          aria-hidden="true"
-          onClick={() => setOpen(false)}
-          className="fixed inset-0 z-40 bg-black/40 lg:hidden"
-        />
-      ) : null}
+      <div
+        aria-hidden="true"
+        onClick={() => setOpen(false)}
+        className={cn(
+          "fixed inset-0 z-40 bg-black/40 transition-[opacity,visibility] duration-(--dur-slow) ease-drawer lg:hidden",
+          open ? "visible opacity-100" : "invisible opacity-0",
+        )}
+      />
 
       <aside
         id="app-sidebar"
@@ -153,8 +169,12 @@ export function AppSidebar({
           // Closed on mobile it is `invisible`, not merely translated: an
           // off-screen link is still in the tab order, and tabbing into a
           // sidebar you cannot see is the classic drawer bug.
-          "fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r border-border bg-card transition-[transform,width] duration-200 ease-out",
-          open ? "translate-x-0" : "invisible -translate-x-full",
+          // Transform and visibility only. Visibility is in the transition so
+          // the drawer stays painted while it slides out; dropping it at once
+          // used to cut the close animation. The desktop collapse is instant:
+          // animating width relays out the whole page every frame.
+          "fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r border-border bg-card transition-[transform,visibility] duration-(--dur-slow) ease-drawer lg:transition-none",
+          open ? "visible translate-x-0" : "invisible -translate-x-full",
           "lg:visible lg:sticky lg:top-0 lg:z-30 lg:h-dvh lg:w-[15.5rem] lg:translate-x-0",
           "lg:group-data-[nav=collapsed]/app:w-[4.5rem]",
         )}

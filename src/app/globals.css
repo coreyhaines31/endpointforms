@@ -150,6 +150,8 @@
      something already on screen changing size or place. No linear UI motion. */
   --ease-enter: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-move: cubic-bezier(0.77, 0, 0.175, 1);
+  /* Drawers and sheets: fast out of the edge, long settle. */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 
   --animate-rise: ef-rise var(--dur-enter) var(--ease-enter) both;
   --animate-swap: ef-swap var(--dur-base) var(--ease-enter) both;
