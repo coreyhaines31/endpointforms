@@ -1,5 +1,6 @@
 import { MockupBand, MockupFrame } from "@/components/mockup/frame";
 import { ProvenanceChip } from "@/components/provenance-chip";
+import { enterStep } from "@/lib/motion";
 
 /**
  * The hero mockup: one submission, from arrival to ending.
@@ -39,24 +40,39 @@ const steps = [
   },
 ];
 
-export function RecordJourney() {
+/**
+ * `animated` plays the record being written on load: the four steps arrive in
+ * order, each value landing a beat after its label, while a hairline runs
+ * across the top like a write head. CSS only; see `[data-enter]` in
+ * globals.css. Off by default so the record can sit anywhere else static.
+ */
+export function RecordJourney({ animated = false }: { animated?: boolean }) {
   return (
     <MockupFrame
       title="Submission record"
       meta="sub_8f21"
       caption="Illustration of a single submission record, drawn to show the shape of the thing. Endpoint Forms is pre-launch: the identifier, the dates and the amount are invented, not a customer result."
     >
-      <ol className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-        {steps.map((item) => (
+      <ol className="relative grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+        {animated ? (
+          <span
+            aria-hidden="true"
+            className="record-write-head pointer-events-none absolute inset-x-0 top-0 hidden h-px origin-left bg-foreground lg:block"
+          />
+        ) : null}
+        {steps.map((item, index) => (
           <li
             key={item.step}
+            {...(animated ? enterStep(6 + index * 2) : {})}
             className="border-b border-border px-4 py-5 last:border-b-0 sm:px-5 sm:[&:nth-child(2n)]:border-l sm:[&:nth-child(n+3)]:border-b-0 lg:border-b-0 lg:border-l lg:first:border-l-0"
           >
             <p className="flex items-baseline gap-2 font-mono text-label uppercase text-muted-foreground">
               <span>{item.step}</span>
               <span className="text-foreground">{item.when}</span>
             </p>
-            <div className="mt-3 text-base">{item.value}</div>
+            <div {...(animated ? enterStep(7 + index * 2) : {})} className="mt-3 text-base">
+              {item.value}
+            </div>
             <p className="mt-2 max-w-[30ch] text-sm text-muted-foreground">{item.body}</p>
           </li>
         ))}

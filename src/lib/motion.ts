@@ -70,3 +70,14 @@ function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
 
   return (x: number) => (x <= 0 ? 0 : x >= 1 ? 1 : sampleY(solveT(x)));
 }
+
+/**
+ * Props for a CSS-only load entrance at a given stagger position. Spread onto
+ * any element: `<h1 {...enterStep(1)}>`. See `[data-enter]` in globals.css.
+ */
+export function enterStep(step: number): {
+  "data-enter": "";
+  style: React.CSSProperties;
+} {
+  return { "data-enter": "", style: { "--enter-step": step } as React.CSSProperties };
+}

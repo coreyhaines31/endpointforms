@@ -399,6 +399,32 @@
   [data-reveal-stagger][data-revealed] > :nth-child(n + 6) { transition-delay: calc(var(--stagger) * 5); }
 }
 
+/* The hero record's write head: a hairline that runs across the four steps as
+   they arrive, then fades into the frame's own rule. Hidden when motion is
+   reduced, since it only exists to move. */
+.record-write-head {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .record-write-head {
+    animation: ef-write-head calc(var(--stagger) * 9 + var(--dur-enter)) var(--ease-move) calc(var(--stagger) * 5) both;
+  }
+}
+@keyframes ef-write-head {
+  from {
+    opacity: 1;
+    transform: scaleX(0);
+  }
+  85% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  to {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+
 @media print {
   [data-reveal],
   [data-reveal-stagger] > * {
