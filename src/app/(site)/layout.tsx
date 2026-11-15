@@ -4,6 +4,7 @@ import { FONT_VARIABLES } from "@/lib/fonts";
 import "../globals.css";
 import { RootShell } from "@/components/root-shell";
 import { TracerKit } from "@/components/tracerkit";
+import { RevealObserver } from "@/components/motion/reveal-observer";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 
@@ -95,6 +96,7 @@ export default function SiteLayout({ children }: { children: React.ReactNode }) 
   return (
     <RootShell htmlClassName={FONT_VARIABLES}>
       <TracerKit />
+      <RevealObserver />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
