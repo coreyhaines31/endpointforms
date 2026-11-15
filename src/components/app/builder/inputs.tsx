@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
  */
 
 const FIELD_CLASS =
-  "w-full min-w-0 rounded-md border border-border-control bg-card px-2.5 py-2 text-sm text-foreground placeholder:text-subtle-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-60";
+  "w-full min-w-0 rounded-md border border-border-control bg-card px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-60";
 
 /** The mono uppercase caption the app uses for a field's name. docs/03 §6. */
 export function EditorLabel({

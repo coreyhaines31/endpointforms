@@ -90,7 +90,7 @@ export default async function LoginPage({
 
       <div className="my-7 flex items-center gap-4">
         <span className="h-px flex-1 bg-border" />
-        <span className="font-mono text-label uppercase text-subtle-foreground">or</span>
+        <span className="font-mono text-label uppercase text-muted-foreground">or</span>
         <span className="h-px flex-1 bg-border" />
       </div>
       <EmailCodeSignInForm next={next} />
@@ -99,7 +99,7 @@ export default async function LoginPage({
         <>
           <div className="my-7 flex items-center gap-4">
             <span className="h-px flex-1 bg-border" />
-            <span className="font-mono text-label uppercase text-subtle-foreground">or</span>
+            <span className="font-mono text-label uppercase text-muted-foreground">or</span>
             <span className="h-px flex-1 bg-border" />
           </div>
           <GoogleSignInForm next={next} />

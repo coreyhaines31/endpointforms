@@ -288,7 +288,7 @@ function BrandColour({
             if (next === "") return onChange(undefined);
             if (isHexColor(next)) onChange(normalizeHex(next));
           }}
-          className="w-full min-w-0 rounded-md border border-border-control bg-card px-2.5 py-2 font-mono text-sm text-foreground placeholder:text-subtle-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          className="w-full min-w-0 rounded-md border border-border-control bg-card px-2.5 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         />
       </div>
       <p className="text-sm text-muted-foreground">
@@ -367,7 +367,7 @@ function ContrastReport({ report }: { report: ReturnType<typeof describeTheme> }
               <span className="font-mono text-sm tabular text-muted-foreground">
                 {format(check.ratio)}:1
               </span>
-              <span className="text-sm text-subtle-foreground">
+              <span className="text-sm text-muted-foreground">
                 needs {check.required}:1 · {check.scheme}
               </span>
               <span

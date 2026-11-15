@@ -129,7 +129,7 @@ export function FieldCard({
           <span className="min-w-0 truncate text-sm font-medium text-foreground">
             {field.label.trim() || field.key.trim() || "Untitled field"}
           </span>
-          <span className="shrink-0 font-mono text-label uppercase text-subtle-foreground">
+          <span className="shrink-0 font-mono text-label uppercase text-muted-foreground">
             {FIELD_TYPE_LABELS[field.type]}
           </span>
           {/* Dropped on a narrow screen. Both chips are `shrink-0`, so on a

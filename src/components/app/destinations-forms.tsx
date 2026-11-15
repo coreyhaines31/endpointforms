@@ -583,7 +583,7 @@ export function UnavailableKinds({ options }: { options: AdapterOption[] }) {
             <dt className="shrink-0 text-sm font-medium text-muted-foreground sm:w-36">
               {option.label}
             </dt>
-            <dd className="mt-0.5 max-w-[62ch] text-sm text-subtle-foreground sm:mt-0">
+            <dd className="mt-0.5 max-w-[62ch] text-sm text-muted-foreground sm:mt-0">
               {option.blurb}
             </dd>
           </div>
