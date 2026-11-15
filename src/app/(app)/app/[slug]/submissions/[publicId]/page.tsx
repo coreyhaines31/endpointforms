@@ -214,10 +214,16 @@ export default async function SubmissionDetailPage({
           description="Every attempt to hand this submission on, and what came back."
         />
         {submission.deliveries.length === 0 ? (
-          <EmptyState title="Nothing is forwarding this endpoint yet.">
-            Destinations — webhook, email, Slack, your CRM — land with #42. Until
-            one exists, the submission lives here and in your exports, which is
-            everything it needs to not be lost.
+          <EmptyState title="Nothing was forwarded for this submission.">
+            No delivery was attempted. The submission lives here and in your
+            exports, which is everything it needs to not be lost.{" "}
+            <Link
+              href={`/app/${workspace.slug}/endpoints/${submission.endpointPublicId}/destinations`}
+              className="rounded-sm text-foreground underline decoration-border-control underline-offset-4 hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              This endpoint’s destinations
+            </Link>{" "}
+            decide where the next one goes.
           </EmptyState>
         ) : (
           <DataTable
@@ -246,7 +252,9 @@ export default async function SubmissionDetailPage({
                     ) : null}
                   </Td>
                   <Td numeric>{delivery.attempt}</Td>
-                  <Td dim={delivery.status === "pending"}>{delivery.status}</Td>
+                  <Td dim={delivery.status === "pending"}>
+                    {DELIVERY_STATUS_LABELS[delivery.status]}
+                  </Td>
                   <Td dim>
                     {delivery.responseStatus ?? delivery.error ?? <Absent>no response</Absent>}
                   </Td>
@@ -500,3 +508,10 @@ function OriginPanel({
     </Panel>
   );
 }
+
+/** Delivery states in words, rather than the raw column value. */
+const DELIVERY_STATUS_LABELS: Record<"pending" | "succeeded" | "failed", string> = {
+  pending: "Pending",
+  succeeded: "Delivered",
+  failed: "Failed",
+};
