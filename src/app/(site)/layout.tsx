@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { GITHUB_URL, SITE_URL } from "@/lib/site";
 import { FONT_VARIABLES } from "@/lib/fonts";
 import "../globals.css";
+import "./motion.css";
 import { RootShell } from "@/components/root-shell";
 import { TracerKit } from "@/components/tracerkit";
 import { RevealObserver } from "@/components/motion/reveal-observer";
