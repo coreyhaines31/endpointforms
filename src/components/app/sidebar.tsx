@@ -173,7 +173,7 @@ export function AppSidebar({
           // the drawer stays painted while it slides out; dropping it at once
           // used to cut the close animation. The desktop collapse is instant:
           // animating width relays out the whole page every frame.
-          "fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r border-border bg-card transition-[transform,visibility] duration-(--dur-slow) ease-drawer lg:transition-none",
+          "fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r border-border bg-card transition-[translate,visibility] duration-(--dur-slow) ease-drawer lg:transition-none",
           open ? "visible translate-x-0" : "invisible -translate-x-full",
           "lg:visible lg:sticky lg:top-0 lg:z-30 lg:h-dvh lg:w-[15.5rem] lg:translate-x-0",
           "lg:group-data-[nav=collapsed]/app:w-[4.5rem]",

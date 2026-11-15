@@ -214,7 +214,7 @@ function NavIndicator({ active }: { active: boolean }) {
     <span
       aria-hidden="true"
       className={cn(
-        "absolute inset-y-1.5 left-0 w-0.5 origin-center rounded-full bg-foreground transition-[transform,opacity] duration-(--dur-base) ease-enter",
+        "absolute inset-y-1.5 left-0 w-0.5 origin-center rounded-full bg-foreground transition-[scale,opacity] duration-(--dur-base) ease-enter",
         active
           ? "scale-y-100 opacity-100"
           : pending
