@@ -44,7 +44,7 @@ export function Pillars() {
           button.
         </h2>
 
-        <div className="mt-12 grid grid-cols-1 border-t border-border md:grid-cols-3">
+        <div data-reveal-stagger className="mt-12 grid grid-cols-1 border-t border-border md:grid-cols-3">
           {pillars.map((pillar) => (
             <article
               key={pillar.capability}

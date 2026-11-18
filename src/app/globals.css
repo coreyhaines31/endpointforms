@@ -139,8 +139,54 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* motion ------------------------------------------------------------------
+   Quick, precise, informational. Motion here explains a state change or
+   confirms an input; it never decorates. Every rule that moves something is
+   either inside `prefers-reduced-motion: no-preference` or collapsed by the
+   reduced-motion policy in the base layer. Only transform and opacity animate
+   (colour on hover is the one cheap exception). Mirrors src/lib/motion.ts. */
+@theme {
+  /* `ease-enter` for anything arriving or answering a press. `ease-move` for
+     something already on screen changing size or place. No linear UI motion. */
+  --ease-enter: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-move: cubic-bezier(0.77, 0, 0.175, 1);
+
+  --animate-rise: ef-rise var(--dur-enter) var(--ease-enter) both;
+  --animate-swap: ef-swap var(--dur-base) var(--ease-enter) both;
+  --animate-pop: ef-pop var(--dur-base) var(--ease-enter) both;
+
+  @keyframes ef-rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+  }
+  /* A value that just changed: arrives from slightly above, like a counter
+     rolling. Short enough to repeat on every keystroke without lag. */
+  @keyframes ef-swap {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+  @keyframes ef-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.9);
+    }
+  }
+}
+
 :root {
   --radius: 0.375rem;
+
+  /* durations. UI answers inside 120-320ms; only entrances run longer. */
+  --dur-press: 120ms;
+  --dur-quick: 160ms;
+  --dur-base: 220ms;
+  --dur-slow: 320ms;
+  --dur-enter: 560ms;
+  --stagger: 70ms;
 
   /* neutrals — warm-neutral paper, warm-neutral ink. Not blue-grey. */
   --background: #fcfcfa;
@@ -269,6 +315,25 @@
   html {
     @apply font-sans;
   }
+  /* The reduced-motion policy, in one place. Durations collapse to zero
+     rather than `animation: none`, so every state change lands at once.
+     A zero-length keyframe animation still fires `animationend`; a zero-length
+     transition fires no `transitionend` at all, so nothing may wait on one.
+     Base UI does not: it asks `getAnimations()`, which is empty. The site's
+     own entrance and reveal rules are additionally scoped to `no-preference`,
+     so under `reduce` they never apply at all. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0s !important;
+      animation-delay: 0s !important;
+      transition-duration: 0s !important;
+      transition-delay: 0s !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
   /* Numbers are the product. Never let them jitter. */
   .tabular,
   table td,
@@ -286,5 +351,18 @@
     background-color: var(--signal);
     color: var(--signal-foreground);
     box-shadow: inset 0 0 0 1px var(--signal-edge);
+  }
+}
+
+/* Press feedback for anything clickable that is not a shadcn Button: a 3%
+   scale on :active, which confirms the press without moving the layout.
+   Lists the properties it transitions, so it can replace `transition-colors`
+   on the same element instead of fighting it. */
+@utility press {
+  transition-property: color, background-color, border-color, opacity, transform;
+  transition-duration: var(--dur-quick);
+  transition-timing-function: var(--ease-enter);
+  &:active:not(:disabled, [aria-disabled="true"]) {
+    transform: scale(0.97);
   }
 }

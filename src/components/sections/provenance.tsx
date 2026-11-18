@@ -25,7 +25,7 @@ export function Provenance() {
   return (
     <section id="provenance" className="scroll-mt-20 pb-[clamp(4rem,9vw,7rem)]">
       <Container>
-        <div className="border-t border-border pt-[clamp(3rem,6vw,5rem)]">
+        <div className="border-t border-border pt-[clamp(2.5rem,5vw,4rem)]">
           <p className="font-mono text-label uppercase text-muted-foreground">Origin</p>
           <h2 className="mt-5 max-w-[24ch] text-h2 sm:text-display">
             We don&rsquo;t ask visitors to prove they&rsquo;re human. We ask software to say
@@ -43,7 +43,7 @@ export function Provenance() {
             as one.
           </p>
 
-          <dl className="mt-12">
+          <dl data-reveal-stagger className="mt-12">
             <div aria-hidden="true" className="hidden grid-cols-[13rem_1fr_1fr] gap-8 border-b border-border pb-3 md:grid">
               <span className="font-mono text-label uppercase text-muted-foreground">
                 Origin

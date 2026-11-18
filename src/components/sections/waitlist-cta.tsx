@@ -27,7 +27,7 @@ export function WaitlistCta() {
           </p>
         </div>
 
-        <aside className="self-start border border-border bg-card p-6">
+        <aside data-reveal className="self-start border border-border bg-card p-6">
           <p className="font-mono text-label uppercase text-muted-foreground">
             Not for everyone
           </p>

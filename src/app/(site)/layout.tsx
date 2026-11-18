@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import { GITHUB_URL, SITE_URL } from "@/lib/site";
 import { FONT_VARIABLES } from "@/lib/fonts";
 import "../globals.css";
+import "./motion.css";
 import { RootShell } from "@/components/root-shell";
 import { TracerKit } from "@/components/tracerkit";
+import { RevealObserver } from "@/components/motion/reveal-observer";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 
@@ -95,12 +97,23 @@ export default function SiteLayout({ children }: { children: React.ReactNode }) 
   return (
     <RootShell htmlClassName={FONT_VARIABLES}>
       <TracerKit />
+      <RevealObserver />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
+      {/* First in tab order, visible only when focused: skips the nine
+          header stops that would otherwise come before every page. */}
+      <a
+        href="#content"
+        className="sr-only z-[60] rounded-md bg-foreground px-3 py-2 text-sm font-medium text-background focus-visible:not-sr-only focus-visible:fixed focus-visible:left-4 focus-visible:top-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      >
+        Skip to content
+      </a>
       <SiteHeader />
-      <div className="flex flex-1 flex-col">{children}</div>
+      <div id="content" tabIndex={-1} className="flex flex-1 flex-col outline-none">
+        {children}
+      </div>
       <SiteFooter />
     </RootShell>
   );

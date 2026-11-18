@@ -53,7 +53,7 @@ export function VerdictPanel() {
   return (
     <MockupPanel title="Verdict">
       <div className="px-4 py-4">
-        <div aria-hidden="true" className="flex h-3 w-full border border-border">
+        <div data-grow aria-hidden="true" className="flex h-3 w-full border border-border">
           {verdicts.map((slice) => (
             <span
               key={slice.label}

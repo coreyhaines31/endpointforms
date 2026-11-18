@@ -26,7 +26,9 @@ export function Prose({ children, className }: ProseProps) {
         "[&>h3]:mt-10 [&>h3]:text-h4",
         "[&>ul]:list-disc [&>ul]:pl-5 [&>ul>li]:mt-2 [&>ul>li]:pl-1",
         "[&>ol]:list-decimal [&>ol]:pl-5 [&>ol>li]:mt-2 [&>ol>li]:pl-1",
-        "[&_code]:rounded-sm [&_code]:bg-sunken [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-sm",
+        // Inline code only. A code block styles its own <code>, and these
+        // per-line chips are what made the install block look ragged.
+        "[&_:not(pre)>code]:rounded-sm [&_:not(pre)>code]:bg-sunken [&_:not(pre)>code]:px-1.5 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:font-mono [&_:not(pre)>code]:text-sm",
         className,
       )}
     >

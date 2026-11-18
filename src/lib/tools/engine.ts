@@ -264,6 +264,7 @@ export const spamCostFields: FieldSpec[] = [
     max: 10_000_000,
     step: 100,
     default: 12_000,
+    help: "Monthly spend on the campaigns that send traffic to this form.",
   },
   {
     key: "cpl",
@@ -724,6 +725,7 @@ export const timeToOutcomeFields: FieldSpec[] = [
     max: 100,
     step: 0.1,
     default: 3,
+    help: "From your CRM: closed-won deals divided by form submissions.",
   },
   {
     key: "liftPct",
@@ -836,7 +838,7 @@ export function computeTimeToOutcome(v: Inputs): TimeToOutcomeResult {
 
 export const fieldPaybackFields: FieldSpec[] = [
   { key: "visitors", label: "People who reach the form each month", unit: "count", min: 0, max: 10_000_000, step: 100, default: 5_000 },
-  { key: "completionRate", label: "Completion rate today", unit: "percent", min: 0, max: 100, step: 0.1, default: 12 },
+  { key: "completionRate", label: "Completion rate today", unit: "percent", min: 0, max: 100, step: 0.1, default: 12, help: "Submissions divided by the people who reached the form." },
   {
     key: "dropPct",
     label: "Completion you expect to lose by adding the field",
@@ -848,7 +850,7 @@ export const fieldPaybackFields: FieldSpec[] = [
     help: "Relative, not percentage points: 8% turns a 12% completion rate into 11.04%. This is your assumption, not our statistic — see the note below the result.",
   },
   { key: "closeRate", label: "Share of submissions that close today", unit: "percent", min: 0, max: 100, step: 0.1, default: 4 },
-  { key: "dealValue", label: "Average closed deal", unit: "currency", min: 0, max: 10_000_000, step: 100, default: 3_500 },
+  { key: "dealValue", label: "Average closed deal", unit: "currency", min: 0, max: 10_000_000, step: 100, default: 3_500, help: "The average value of a closed-won deal that came through this form." },
   {
     key: "expectedLiftPct",
     label: "Close-rate improvement you expect from the better leads",
@@ -956,7 +958,19 @@ export function computeFieldPayback(v: Inputs): FieldPaybackResult {
 const planFields = (id: "a" | "b" | "c", label: string, price: number, included: number, overage: number): FieldSpec[] => [
   { key: `${id}Price`, label: `${label} — monthly price`, unit: "currency", min: 0, max: 100_000, step: 1, default: price },
   { key: `${id}Included`, label: `${label} — responses included`, unit: "count", min: 0, max: 10_000_000, step: 100, default: included },
-  { key: `${id}Overage`, label: `${label} — price per extra response`, unit: "currency", min: 0, max: 1_000, step: 0.01, default: overage },
+  {
+    key: `${id}Overage`,
+    label: `${label} — price per extra response`,
+    unit: "currency",
+    min: 0,
+    max: 1_000,
+    step: 0.01,
+    default: overage,
+    // Said once, on the first plan; the other two work the same way.
+    ...(id === "a"
+      ? { help: "Charged for each response past the included amount. Use 0 if extra responses are free." }
+      : {}),
+  },
 ];
 
 export const responseCostFields: FieldSpec[] = [
@@ -1124,8 +1138,8 @@ export const reconciliationFields: FieldSpec[] = [
     help: "The headline number. The one that looks fine.",
   },
   { key: "inCrm", label: "Records that actually arrived in the CRM", unit: "count", min: 0, max: 10_000_000, step: 1, default: 790 },
-  { key: "attempted", label: "Leads someone attempted to contact", unit: "count", min: 0, max: 10_000_000, step: 1, default: 640 },
-  { key: "reached", label: "Leads someone actually reached", unit: "count", min: 0, max: 10_000_000, step: 1, default: 250 },
+  { key: "attempted", label: "Leads someone attempted to contact", unit: "count", min: 0, max: 10_000_000, step: 1, default: 640, help: "Leads a rep called or emailed at least once." },
+  { key: "reached", label: "Leads someone actually reached", unit: "count", min: 0, max: 10_000_000, step: 1, default: 250, help: "Leads where a rep got a reply or a conversation." },
   {
     key: "real",
     label: "Leads that turned out to be real prospects",
@@ -1136,7 +1150,7 @@ export const reconciliationFields: FieldSpec[] = [
     default: 180,
     help: "Not bots, not fake details, not somebody who had no idea they filled anything in.",
   },
-  { key: "won", label: "Closed-won", unit: "count", min: 0, max: 10_000_000, step: 1, default: 21 },
+  { key: "won", label: "Closed-won", unit: "count", min: 0, max: 10_000_000, step: 1, default: 21, help: "Leads from this batch marked closed-won in the CRM." },
 ];
 
 export type Stage = {
@@ -1269,9 +1283,9 @@ export const dropOffFields: FieldSpec[] = [
   { key: "step3", label: "Step 3 — people who reached it", unit: "count", min: 0, max: 10_000_000, step: 1, default: 1_180 },
   { key: "step4", label: "Step 4 — people who reached it", unit: "count", min: 0, max: 10_000_000, step: 1, default: 1_010 },
   { key: "step5", label: "Step 5 — people who reached it", unit: "count", min: 0, max: 10_000_000, step: 1, default: 0 },
-  { key: "completed", label: "Submitted", unit: "count", min: 0, max: 10_000_000, step: 1, default: 880 },
-  { key: "closeRate", label: "Share of submissions that close", unit: "percent", min: 0, max: 100, step: 0.1, default: 4 },
-  { key: "dealValue", label: "Average closed deal", unit: "currency", min: 0, max: 10_000_000, step: 100, default: 3_500 },
+  { key: "completed", label: "Submitted", unit: "count", min: 0, max: 10_000_000, step: 1, default: 880, help: "People who pressed submit on the last step." },
+  { key: "closeRate", label: "Share of submissions that close", unit: "percent", min: 0, max: 100, step: 0.1, default: 4, help: "From your CRM: closed-won deals divided by form submissions." },
+  { key: "dealValue", label: "Average closed deal", unit: "currency", min: 0, max: 10_000_000, step: 100, default: 3_500, help: "The average value of a closed-won deal that came through this form." },
 ];
 
 export type Transition = {

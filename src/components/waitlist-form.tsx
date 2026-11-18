@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Check, LoaderCircle } from "lucide-react";
 import { joinWaitlist } from "@/actions/waitlist";
 import { initialWaitlistState, type WaitlistState } from "@/actions/waitlist-state";
 import {
@@ -64,11 +64,19 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
   const [sending, setSending] = useState(false);
   const [token, setToken] = useState<string | null>(null);
 
-  const shown = direct ?? state;
-  const succeeded = shown.status === "success";
-  const failed = shown.status === "error";
+  // Set by typing after an error, cleared by the next send: once someone
+  // starts fixing the address, stop shouting at them about the old one.
+  const [editing, setEditing] = useState(false);
+
+  const result = direct ?? state;
+  const succeeded = result.status === "success";
+  const failed = result.status === "error" && !editing;
+  const shown = result.status === "error" && editing ? { ...result, message: "" } : result;
   const busy = sending || pending;
   const successRef = useRef<HTMLDivElement>(null);
+  // The form's height at the moment it was sent. The confirmation that
+  // replaces it keeps at least this much room, so nothing below it jumps.
+  const [reserved, setReserved] = useState<number | null>(null);
 
   // Minted on page load rather than on submit, so the gap between the two is a
   // real dwell time rather than a number we manufactured. Failure is silent and
@@ -101,6 +109,9 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
   }, [succeeded]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    setReserved(event.currentTarget.offsetHeight);
+    setEditing(false);
+
     // No endpoint configured: let the form action submit natively, exactly as
     // it did before any of this existed.
     if (!WAITLIST_ENDPOINT_URL) return;
@@ -144,9 +155,13 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
         tabIndex={-1}
         role="status"
         aria-live="polite"
-        className={cn("max-w-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring", className)}
+        style={reserved ? { minHeight: reserved } : undefined}
+        className={cn("animate-rise max-w-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring", className)}
       >
-        <p className="font-mono text-label uppercase text-signal-ink">On the list</p>
+        <p className="flex items-center gap-2 font-mono text-label uppercase text-signal-ink">
+          <Check className="animate-pop size-3.5 [animation-delay:var(--dur-quick)]" aria-hidden="true" />
+          On the list
+        </p>
         <p className="mt-3 text-base text-foreground">{shown.message}</p>
       </div>
     );
@@ -159,12 +174,13 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
       className={cn("max-w-xl", className)}
       noValidate
     >
-      {note ? (
-        <p className="mb-3 font-mono text-label uppercase text-muted-foreground">{note}</p>
-      ) : null}
-
-      <label htmlFor={emailId} className="sr-only">
-        Work email
+      {/* Visible, not placeholder-only: the placeholder disappears the moment
+          someone starts typing, and with it the only cue for what goes here. */}
+      <label
+        htmlFor={emailId}
+        className="mb-3 block font-mono text-label uppercase text-muted-foreground"
+      >
+        {note ? `${note} · Work email` : "Work email"}
       </label>
 
       {/* Carried on the no-JavaScript path too, so a signup from a calculator
@@ -180,11 +196,16 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
           placeholder="you@agency.com"
           required
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={(event) => {
+            setEmail(event.target.value);
+            if (result.status === "error") setEditing(true);
+          }}
           aria-invalid={failed || undefined}
           aria-describedby={shown.message ? messageId : undefined}
           className={cn(
-            "h-11 min-w-0 flex-1 rounded-md border bg-card px-3 text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+            // w-full when stacked, flex-1 only in a row: flex-1 in a column
+            // sets a zero basis and collapsed the box to one line of text.
+            "h-11 w-full min-w-0 rounded-md border bg-card px-3 text-base text-foreground transition-colors duration-(--dur-quick) placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:flex-1",
             failed ? "border-destructive" : "border-border-control",
           )}
         />
@@ -201,13 +222,37 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
           className="sr-only"
         />
 
+        {/* Both labels sit in one grid cell, so the button is always as wide
+            as the longer one and never resizes while sending. */}
         <button
           type="submit"
           disabled={busy}
-          className="signal-fill inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-md pl-4 pr-3 text-base font-medium transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-60"
+          aria-busy={busy || undefined}
+          className="signal-fill press group/submit grid h-11 shrink-0 place-items-center rounded-md pl-4 pr-3 text-base font-medium hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-70"
         >
-          {busy ? "Adding you…" : "Join the waitlist"}
-          <ArrowRight className="size-4" aria-hidden="true" />
+          <span
+            aria-hidden={busy || undefined}
+            className={cn(
+              "col-start-1 row-start-1 inline-flex items-center gap-1.5 transition-[opacity,translate,scale,rotate] duration-(--dur-quick) ease-enter",
+              busy && "-translate-y-1 opacity-0",
+            )}
+          >
+            Join the waitlist
+            <ArrowRight
+              className="size-4 transition-transform duration-(--dur-quick) ease-enter group-hover/submit:translate-x-0.5"
+              aria-hidden="true"
+            />
+          </span>
+          <span
+            aria-hidden={!busy || undefined}
+            className={cn(
+              "col-start-1 row-start-1 inline-flex items-center gap-1.5 transition-[opacity,translate,scale,rotate] duration-(--dur-quick) ease-enter",
+              !busy && "translate-y-1 opacity-0",
+            )}
+          >
+            <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            Adding you
+          </span>
         </button>
       </div>
 
@@ -220,7 +265,11 @@ export function WaitlistForm({ className, note, tool }: WaitlistFormProps) {
           failed ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        {shown.message}
+        {shown.message ? (
+          <span key={shown.message} className="animate-swap block">
+            {shown.message}
+          </span>
+        ) : null}
       </p>
     </form>
   );

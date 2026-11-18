@@ -45,7 +45,11 @@ export function ResultHeadline({
       {/* Size token and colour never share a cn() call — twMerge reads
           `text-display` as a colour and drops it. See src/components/prose.tsx. */}
       <p className="mt-3 font-mono text-display tabular">
-        <span className="text-foreground">{value}</span>
+        {/* Keyed on the value, so each new answer drops in and the eye
+            catches that it changed while the inputs are being typed. */}
+        <span key={value} className="animate-swap inline-block text-foreground">
+          {value}
+        </span>
       </p>
       {sub ? <div className="mt-3 max-w-[46ch] text-sm text-muted-foreground">{sub}</div> : null}
     </div>
@@ -102,7 +106,15 @@ export function Stat({
       <dt className="font-mono text-label uppercase text-muted-foreground">{label}</dt>
       <dd className="mt-2">
         <span className="font-mono text-h3 tabular">
-          <span className={tone === "neutral" ? "text-foreground" : toneText[tone]}>{value}</span>
+          <span
+            key={value}
+            className={cn(
+              "animate-swap inline-block",
+              tone === "neutral" ? "text-foreground" : toneText[tone],
+            )}
+          >
+            {value}
+          </span>
         </span>
         {note ? <p className="mt-2 max-w-[34ch] text-sm text-muted-foreground">{note}</p> : null}
       </dd>
@@ -136,9 +148,19 @@ export function Meter({
     <div
       role="img"
       aria-label={label}
-      className="h-1.5 w-full overflow-hidden rounded-sm bg-sunken"
+      // The ring is the track's visible end: bg-sunken alone is 1.10:1
+      // against the page, so the proportion had nothing to be read against.
+      className="h-1.5 w-full overflow-hidden rounded-sm bg-sunken ring-1 ring-border-control ring-inset"
     >
-      <div className={cn("h-full", fill)} style={{ width: `${safe * 100}%` }} />
+      {/* scaleX, not width: the bar follows every keystroke, and a transform
+          moves without re-laying-out the result panel around it. */}
+      <div
+        className={cn(
+          "h-full w-full origin-left transition-transform duration-(--dur-slow) ease-move",
+          fill,
+        )}
+        style={{ transform: `scaleX(${safe})` }}
+      />
     </div>
   );
 }
@@ -168,7 +190,13 @@ export function ResultTable({
   caption?: string;
 }) {
   return (
-    <div className="-mx-[5%] overflow-x-auto px-[5%] lg:mx-0 lg:px-0">
+    // Focusable so a keyboard can scroll it when it overflows (WCAG 2.1.1).
+    <div
+      tabIndex={0}
+      role="region"
+      aria-label={caption ?? "Result table"}
+      className="-mx-[5%] overflow-x-auto px-[5%] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring lg:mx-0 lg:px-0"
+    >
       <table className="w-full min-w-[34rem] border-collapse text-left">
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <thead>

@@ -90,12 +90,14 @@ export function FeatureDetail({ feature, mockup }: FeatureDetailProps) {
       </Container>
 
       {mockup ? (
-        <Container className="mt-[clamp(2.5rem,5vw,3.5rem)]">{mockup}</Container>
+        <Container className="mt-[clamp(2.5rem,5vw,3.5rem)]">
+          <div data-reveal>{mockup}</div>
+        </Container>
       ) : null}
 
       <Container className="mt-[clamp(3.5rem,7vw,5rem)]">
         <h2 className="text-h3 sm:text-h2">How it works</h2>
-        <ol className="mt-10 grid grid-cols-1 border-t border-border sm:grid-cols-2">
+        <ol data-reveal-stagger className="mt-10 grid grid-cols-1 border-t border-border sm:grid-cols-2">
           {feature.how.map((item) => (
             <li
               key={item.step}

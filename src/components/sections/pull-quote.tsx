@@ -6,7 +6,7 @@ export function PullQuote() {
   return (
     <section className="pb-[clamp(4rem,9vw,7rem)]">
       <Container>
-        <figure className="border-l-2 border-foreground pl-6 sm:pl-8 lg:ml-[28%]">
+        <figure data-reveal className="border-l-2 border-foreground pl-6 sm:pl-8 lg:ml-[28%]">
           <p className="font-mono text-label uppercase text-muted-foreground">
             From the research
           </p>

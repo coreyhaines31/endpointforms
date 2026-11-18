@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Star } from "lucide-react";
+import { CodeBlock } from "@/components/code-block";
 import { Container } from "@/components/container";
 import { PageHeader } from "@/components/page-header";
 import { Prose } from "@/components/prose";
@@ -144,12 +145,10 @@ export default function OpenSourcePage() {
             One-command self-host is the single thing we think we can beat Formbricks and
             OpnForm on, and it is the reason this page exists at all. It ships now:
           </p>
-          <pre>
-            <code>
-              git clone https://github.com/coreyhaines31/endpointforms.git{"\n"}cd
-              endpointforms{"\n"}bash scripts/setup.sh
-            </code>
-          </pre>
+          <CodeBlock
+            label="Install commands"
+            code={"git clone https://github.com/coreyhaines31/endpointforms.git\ncd endpointforms\nbash scripts/setup.sh"}
+          />
           <p>
             That installs dependencies, generates every secret, starts Postgres, applies the
             migrations, and seeds a workspace with realistic data. Then{" "}
@@ -204,7 +203,7 @@ export default function OpenSourcePage() {
               href={GITHUB_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="signal-fill inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 text-base font-medium transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              className="signal-fill press inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 text-base font-medium hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
               <Star className="size-4" aria-hidden="true" />
               Star the repo

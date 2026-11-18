@@ -1,0 +1,125 @@
+/*
+ * Marketing-site motion. Imported by `src/app/(site)/layout.tsx` only.
+ *
+ * Kept out of `globals.css` on purpose: `(forms)/forms.css` imports globals,
+ * so anything here would ship inline on every hosted form, a paid-traffic page
+ * that uses none of it. Tokens and the reduced-motion policy stay in globals,
+ * because every surface needs those.
+ */
+
+/* Entrance on load, for content above the fold. Pure CSS, so it runs with
+   JavaScript off and always ends visible. `--enter-step` orders a stagger:
+   style={{ "--enter-step": 2 }}. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-enter] {
+    animation: ef-enter var(--dur-enter) var(--ease-enter) both;
+    animation-delay: calc(var(--enter-step, 0) * var(--stagger));
+  }
+}
+
+@keyframes ef-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* Reveal on scroll, once. Nothing is hidden until <RevealObserver> has run
+   and set `data-reveal-ready` on <html>, after marking whatever is already in
+   view as revealed. So with JavaScript off, or before hydration, or if the
+   observer never loads, every element is simply visible. Hiding is instant
+   (no transition) because it only ever happens off screen. */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-reveal-ready] [data-reveal]:not([data-revealed]),
+  html[data-reveal-ready] [data-reveal-stagger]:not([data-revealed]) > * {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  html[data-reveal-ready] [data-reveal][data-revealed],
+  html[data-reveal-ready] [data-reveal-stagger][data-revealed] > * {
+    transition:
+      opacity var(--dur-enter) var(--ease-enter),
+      transform var(--dur-enter) var(--ease-enter);
+  }
+  [data-reveal-stagger][data-revealed] > :nth-child(2) { transition-delay: calc(var(--stagger) * 1); }
+  [data-reveal-stagger][data-revealed] > :nth-child(3) { transition-delay: calc(var(--stagger) * 2); }
+  [data-reveal-stagger][data-revealed] > :nth-child(4) { transition-delay: calc(var(--stagger) * 3); }
+  [data-reveal-stagger][data-revealed] > :nth-child(5) { transition-delay: calc(var(--stagger) * 4); }
+  [data-reveal-stagger][data-revealed] > :nth-child(n + 6) { transition-delay: calc(var(--stagger) * 5); }
+
+  /* A meter inside revealed content fills from the left once, after the
+     content has settled, so the eye reads the proportion as a quantity. */
+  [data-revealed=""] [data-grow] {
+    transform-origin: left;
+    animation: ef-grow calc(var(--dur-slow) * 2) var(--ease-move) var(--dur-base) both;
+  }
+}
+
+@keyframes ef-grow {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* The marketing header's bottom rule fades in over the first 48px of scroll,
+   driven by the scroll position itself (no listener, no JavaScript). Where
+   scroll timelines are unsupported the rule is simply always there. */
+@supports (animation-timeline: scroll()) {
+  .site-header {
+    animation: ef-header-rule linear both;
+    animation-timeline: scroll(root);
+    animation-range: 0 48px;
+  }
+}
+@keyframes ef-header-rule {
+  from {
+    border-bottom-color: transparent;
+  }
+}
+
+/* Theme switch: the default root crossfade, shortened. Scoped to the
+   attribute the toggle sets, so route view transitions keep their own. */
+html[data-theme-switch]::view-transition-old(root),
+html[data-theme-switch]::view-transition-new(root) {
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-enter);
+}
+
+/* Same-page anchors land below the 64px sticky header, not under it. */
+html {
+  scroll-padding-top: 5rem;
+}
+
+/* The hero record's write head: a hairline that runs across the four steps as
+   they arrive, then fades into the frame's own rule. Hidden when motion is
+   reduced, since it only exists to move. */
+.record-write-head {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .record-write-head {
+    animation: ef-write-head calc(var(--stagger) * 4 + var(--dur-enter)) var(--ease-move) calc(var(--stagger) * 4) both;
+  }
+}
+@keyframes ef-write-head {
+  from {
+    opacity: 1;
+    transform: scaleX(0);
+  }
+  85% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  to {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+
+@media print {
+  [data-reveal],
+  [data-reveal-stagger] > * {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

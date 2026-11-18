@@ -66,7 +66,7 @@ export default function ThanksPage() {
               </p>
               <Link
                 href={ARGUMENT_PATH}
-                className="mt-5 inline-flex h-11 items-center justify-center gap-2 rounded-md border border-border-control px-4 text-base font-medium text-foreground transition-colors hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                className="press mt-5 inline-flex h-11 items-center justify-center gap-2 rounded-md border border-border-control px-4 text-base font-medium text-foreground hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
               >
                 The dishonest dashboard
                 <ArrowRight className="size-4" aria-hidden="true" />
